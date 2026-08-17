@@ -2,3 +2,5 @@
 
 pub mod manager;
 pub mod proxy;
+
+pub use manager::SidecarManager;

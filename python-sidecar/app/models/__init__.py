@@ -41,3 +41,15 @@ class ChatQueryResponse(BaseModel):
 
 class ChatStreamResponse(BaseModel):
     status: str
+
+
+class HandshakeChallenge(BaseModel):
+    """握手请求体：Rust 客户端发送的 nonce（hex 编码 64 字符）。"""
+
+    nonce: str
+
+
+class HandshakeResponse(BaseModel):
+    """握手响应体：Sidecar 用 PSK 对 ``handshake-ok|{nonce}`` 签名后返回的 proof。"""
+
+    proof: str

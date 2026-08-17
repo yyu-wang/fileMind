@@ -5,6 +5,7 @@
 //! `events`（前端事件负载）。
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
 pub mod commands;
@@ -54,4 +55,10 @@ impl From<db::models::FileRecord> for FileInfo {
 pub struct AppState {
     /// 数据库句柄（互斥保护，SQLite 连接单线程访问）。
     pub db: Mutex<db::Database>,
+    /// Sidecar 握手后的 PSK；握手前为 `None`，握手成功后为 `Some`。
+    /// 安全映射：S-01（Sidecar 端口冒充）。
+    pub sidecar_psk: Mutex<Option<Vec<u8>>>,
+    /// 请求序号（单调递增），用于 Sidecar 防重放校验。
+    /// 安全映射：T-01（Sidecar 通信篡改）。
+    pub request_seq: AtomicU64,
 }

@@ -13,6 +13,16 @@ pub enum AppError {
     #[error("Sidecar 不可用: {0}")]
     SidecarUnavailable(String),
 
+    /// 握手协议失败：响应签名不匹配、Sidecar 身份未通过验证。
+    /// 安全映射：S-01（Sidecar 端口冒充）。
+    #[error("握手失败: {0}")]
+    HandshakeFailed(String),
+
+    /// 请求签名验证失败：签名无效或序号重放。
+    /// 安全映射：T-01（Sidecar 通信篡改）。
+    #[error("请求签名验证失败: {0}")]
+    RequestSignatureInvalid(String),
+
     /// `SQLite` 数据库操作错误。
     #[error("数据库错误: {0}")]
     Database(#[from] rusqlite::Error),
