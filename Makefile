@@ -1,4 +1,4 @@
-.PHONY: dev dev:web dev:sidecar test build lint format gen:ipc clean install
+.PHONY: dev dev:web dev:sidecar test build lint format gen:ipc clean install testdata testdata:clean
 
 dev:
 	npm run dev:tauri
@@ -39,3 +39,10 @@ install:
 	npm install
 	source .venv/bin/activate || (python3 -m venv .venv && source .venv/bin/activate)
 	pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
+
+testdata:
+	cargo run --example init_db --manifest-path src-tauri/Cargo.toml
+	python3 scripts/gen_testdata.py
+
+testdata:clean:
+	python3 scripts/gen_testdata.py --clean
