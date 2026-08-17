@@ -1,3 +1,8 @@
+//! 文件操作命令：扫描、预览、批量执行与撤销。
+//!
+//! 所有命令做阻塞文件系统操作，通过 `#[tauri::command(async)]`
+//! 声明为线程池执行，避免阻塞主线程。
+
 use crate::error::AppResult;
 use crate::security;
 use crate::FileInfo;
@@ -7,74 +12,79 @@ use std::path::Path;
 
 const MAX_SCAN_DEPTH: u32 = 10;
 
-#[tauri::command]
+/// 递归扫描目录并返回文件元信息列表。
+///
+/// # Errors
+///
+/// 路径未通过安全校验或文件系统读取失败时返回错误。
+#[tauri::command(async)]
 #[specta::specta]
-pub async fn scan_directory(path: String) -> Result<Vec<FileInfo>, String> {
+pub fn scan_directory(path: String) -> Result<Vec<FileInfo>, String> {
     let safe_path = security::validate(&path).map_err(|e| e.to_string())?;
     let files = scan_files_on_disk(&safe_path).map_err(|e| e.to_string())?;
     Ok(files)
 }
 
-#[tauri::command]
+/// 预览批量文件操作：展示源/目标存在性与冲突，不执行任何变更。
+///
+/// # Errors
+///
+/// 源或目标路径未通过安全校验时返回错误。
+#[tauri::command(async)]
 #[specta::specta]
-pub async fn preview_operations(
-    operations: Vec<FileOperation>,
-) -> Result<Vec<OperationPreview>, String> {
+pub fn preview_operations(operations: Vec<FileOperation>) -> Result<Vec<OperationPreview>, String> {
     let mut previews = Vec::with_capacity(operations.len());
 
-    for op in &operations {
+    for op in operations {
         let source_safe = security::validate(&op.source_path)
             .map_err(|e| format!("FILE-E-002:源路径不安全: {e}"))?;
 
-        let (target_exists, conflict) = match op.operation_type {
-            OperationType::Delete => (false, false),
-            _ => {
-                let target_safe = security::validate_write_target(&op.target_path)
-                    .map_err(|e| format!("FILE-E-003:目标路径不安全: {e}"))?;
-                (
-                    target_safe.exists(),
-                    target_safe.exists() && source_safe != target_safe,
-                )
-            }
+        let (target_exists, conflict) = if matches!(op.operation_type, OperationType::Delete) {
+            (false, false)
+        } else {
+            let target_safe = security::validate_write_target(&op.target_path)
+                .map_err(|e| format!("FILE-E-003:目标路径不安全: {e}"))?;
+            let exists = target_safe.exists();
+            (exists, exists && source_safe != target_safe)
         };
 
         previews.push(OperationPreview {
-            operation: op.clone(),
             source_exists: source_safe.exists(),
             target_exists,
             conflict,
+            operation: op,
         });
     }
 
     Ok(previews)
 }
 
-#[tauri::command]
+/// 逐项执行批量文件操作，返回每项结果与成功/失败计数。
+///
+/// # Errors
+///
+/// 仅在内部严重错误时返回；单项失败记录在结果列表中。
+#[tauri::command(async)]
 #[specta::specta]
-pub async fn execute_operations(operations: Vec<FileOperation>) -> Result<BatchResult, String> {
+pub fn execute_operations(operations: Vec<FileOperation>) -> Result<BatchResult, String> {
     let mut results = Vec::with_capacity(operations.len());
     let mut success_count = 0u32;
     let mut failed_count = 0u32;
 
-    for op in &operations {
-        match execute_single(op) {
-            Ok(_) => {
-                success_count += 1;
-                results.push(OperationResult {
-                    operation: op.clone(),
-                    success: true,
-                    error: None,
-                });
-            }
-            Err(e) => {
-                failed_count += 1;
-                results.push(OperationResult {
-                    operation: op.clone(),
-                    success: false,
-                    error: Some(e.to_string()),
-                });
-            }
+    for op in operations {
+        let outcome = execute_single(&op);
+        let success = outcome.is_ok();
+        let error = outcome.err().map(|e| e.to_string());
+        if success {
+            success_count += 1;
+        } else {
+            failed_count += 1;
         }
+        results.push(OperationResult {
+            operation: op,
+            success,
+            error,
+        });
     }
 
     Ok(BatchResult {
@@ -84,20 +94,27 @@ pub async fn execute_operations(operations: Vec<FileOperation>) -> Result<BatchR
     })
 }
 
-#[tauri::command]
+/// 按批次 ID 撤销已执行的批量操作（待操作日志链实现）。
+///
+/// # Errors
+///
+/// 操作日志查询尚未实现时始终返回 `FILE-E-004` 错误。
+#[tauri::command(async)]
 #[specta::specta]
-pub async fn undo_batch(batch_id: String) -> Result<BatchResult, String> {
+pub fn undo_batch(batch_id: String) -> Result<BatchResult, String> {
     Err(format!(
         "FILE-E-004:撤销操作尚未实现 (batch_id={batch_id})，需要操作日志查询支持"
     ))
 }
 
+/// 从磁盘根目录扫描文件，收集元信息。
 fn scan_files_on_disk(root: &Path) -> AppResult<Vec<FileInfo>> {
     let mut files = Vec::new();
     scan_dir_recursive(root, &mut files, 0)?;
     Ok(files)
 }
 
+/// 递归遍历目录，超过最大深度时跳过并记录警告。
 fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppResult<()> {
     if depth > MAX_SCAN_DEPTH {
         log::warn!("超过最大扫描深度 {MAX_SCAN_DEPTH}，跳过: {}", dir.display());
@@ -139,6 +156,7 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
     Ok(())
 }
 
+/// 校验路径安全后执行单个文件操作。
 fn execute_single(op: &FileOperation) -> AppResult<()> {
     let source = security::validate(&op.source_path)?;
 
@@ -173,44 +191,66 @@ fn execute_single(op: &FileOperation) -> AppResult<()> {
     Ok(())
 }
 
+/// 将系统时间格式化为 `YYYY-MM-DD HH:MM:SS`（UTC）。
 fn format_system_time(time: std::time::SystemTime) -> String {
     let dt: DateTime<Utc> = time.into();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// 文件操作类型。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub enum OperationType {
+    /// 移动文件（可跨目录，自动创建父目录）。
     Move,
+    /// 重命名文件（同目录内改名）。
     Rename,
+    /// 删除文件。
     Delete,
 }
 
+/// 单个文件操作描述。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct FileOperation {
+    /// 源文件绝对路径。
     pub source_path: String,
+    /// 目标绝对路径（Delete 时忽略）。
     pub target_path: String,
+    /// 操作类型。
     pub operation_type: OperationType,
 }
 
+/// 单个操作的预览结果。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct OperationPreview {
+    /// 被预览的操作。
     pub operation: FileOperation,
+    /// 源路径是否存在。
     pub source_exists: bool,
+    /// 目标路径是否存在。
     pub target_exists: bool,
+    /// 是否存在冲突（目标已存在且不同于源）。
     pub conflict: bool,
 }
 
+/// 单个操作的执行结果。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct OperationResult {
+    /// 已执行的操作。
     pub operation: FileOperation,
+    /// 是否成功。
     pub success: bool,
+    /// 失败原因（成功时为 `None`）。
     pub error: Option<String>,
 }
 
+/// 批量操作汇总结果。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct BatchResult {
+    /// 逐项结果列表。
     pub results: Vec<OperationResult>,
+    /// 成功数量。
     pub success_count: u32,
+    /// 失败数量。
     pub failed_count: u32,
 }
 
@@ -324,11 +364,10 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_undo_batch_returns_error() -> Result<(), Box<dyn std::error::Error>> {
-        let result = undo_batch("test-batch".to_string()).await;
+    #[test]
+    fn test_undo_batch_returns_error() {
+        let result = undo_batch("test-batch".to_string());
         assert!(result.is_err());
-        Ok(())
     }
 
     #[test]

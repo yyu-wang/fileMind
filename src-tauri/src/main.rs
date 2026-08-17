@@ -1,3 +1,5 @@
+//! `FileMind` 桌面应用入口：初始化数据库、注册 IPC 命令并启动 Tauri。
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -12,13 +14,19 @@ fn get_db_path() -> PathBuf {
     PathBuf::from(home).join(".filemind").join("filemind.db")
 }
 
+/// 应用入口：初始化日志与数据库后启动 Tauri 事件循环。
+///
+/// `generate_context!` 宏在编译期生成较大的上下文结构体（框架行为），
+/// 栈占用为 Tauri 已知模式，非业务代码问题，定点豁免此 nursery lint。
+#[allow(clippy::large_stack_frames)]
 fn main() {
+    env_logger::init();
     let db_path = get_db_path();
 
     let database = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("Failed to initialize database: {e}");
+            log::error!("Failed to initialize database: {e}");
             std::process::exit(1);
         }
     };
@@ -47,7 +55,7 @@ fn main() {
         ]);
 
     if let Err(e) = builder.run(tauri::generate_context!()) {
-        eprintln!("Error while running tauri application: {e}");
+        log::error!("Error while running tauri application: {e}");
         std::process::exit(1);
     }
 }

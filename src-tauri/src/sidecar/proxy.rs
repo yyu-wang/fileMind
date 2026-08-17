@@ -1,7 +1,14 @@
+//! Sidecar HTTP 转发：Rust 作为唯一出口代理 Python 服务。
+
 use crate::error::{AppError, AppResult};
 
 const SIDECAR_BASE_URL: &str = "http://127.0.0.1:8765";
 
+/// 转发 GET 请求到 Sidecar 并返回响应文本。
+///
+/// # Errors
+///
+/// 请求发送或响应读取失败时返回 `SidecarUnavailable`。
 pub async fn forward_get(path: &str) -> AppResult<String> {
     let url = format!("{SIDECAR_BASE_URL}{path}");
     let resp = reqwest::get(&url)
@@ -14,6 +21,11 @@ pub async fn forward_get(path: &str) -> AppResult<String> {
     Ok(body)
 }
 
+/// 转发 JSON POST 请求到 Sidecar 并返回响应文本。
+///
+/// # Errors
+///
+/// 请求发送或响应读取失败时返回 `SidecarUnavailable`。
 pub async fn forward_post(path: &str, body: &str) -> AppResult<String> {
     let url = format!("{SIDECAR_BASE_URL}{path}");
     let client = reqwest::Client::new();

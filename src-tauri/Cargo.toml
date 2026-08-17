@@ -44,6 +44,10 @@ mockall = "0.15"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+# Tauri IPC 命令参数必须按值反序列化（String/State 等），无法改为引用；
+# 函数体内以引用转发给 repo 层是正确设计，此 lint 对命令层是框架性误报。
+# 仅此一项豁免，不得扩展到其他 lint。
+needless_pass_by_value = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

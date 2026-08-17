@@ -1,17 +1,30 @@
+//! `SQLite` 数据库连接管理：打开、PRAGMA 调优与迁移执行。
+
 use std::path::Path;
 
-use refinery::embed_migrations;
 use rusqlite::Connection;
 
 use crate::error::{AppError, AppResult};
 
-embed_migrations!("src/db/migrations");
+mod migrations_inner {
+    //! 迁移模块封装：嵌入 `src/db/migrations` 下的 SQL 迁移脚本。
 
+    use refinery::embed_migrations;
+    embed_migrations!("src/db/migrations");
+}
+
+/// 数据库句柄：包装 `SQLite` 连接并保证迁移已执行。
 pub struct Database {
+    /// 底层 `SQLite` 连接。
     conn: Connection,
 }
 
 impl Database {
+    /// 打开（或创建）数据库，启用 WAL 与外键，并执行增量迁移。
+    ///
+    /// # Errors
+    ///
+    /// 连接创建、PRAGMA 执行或迁移失败时返回错误。
     pub fn open(db_path: &Path) -> AppResult<Self> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -21,9 +34,11 @@ impl Database {
 
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
-        let report = migrations::runner().run(&mut conn).map_err(|e| {
-            AppError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-        })?;
+        let report = migrations_inner::migrations::runner()
+            .run(&mut conn)
+            .map_err(|e| {
+                AppError::Database(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+            })?;
 
         if report.applied_migrations().is_empty() {
             log::info!("Database migrations: already up to date");
@@ -37,10 +52,16 @@ impl Database {
         Ok(Self { conn })
     }
 
-    pub fn conn(&self) -> &Connection {
+    /// 获取底层连接引用。
+    pub const fn conn(&self) -> &Connection {
         &self.conn
     }
 
+    /// 在单个事务中执行闭包，成功则提交，失败自动回滚。
+    ///
+    /// # Errors
+    ///
+    /// 事务开启、闭包执行或提交失败时返回错误。
     pub fn transaction<F, T>(&mut self, f: F) -> AppResult<T>
     where
         F: FnOnce(&rusqlite::Transaction<'_>) -> AppResult<T>,
@@ -71,7 +92,7 @@ mod tests {
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")?;
         let tables: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         assert!(tables.contains(&"files".to_string()));

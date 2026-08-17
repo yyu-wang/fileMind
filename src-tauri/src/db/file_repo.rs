@@ -1,3 +1,5 @@
+//! `files` 表数据仓库：批量写入、查询、分类更新与软删除。
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +22,15 @@ const GET_BY_PATH_SQL: &str = "
     FROM files WHERE path = ?1 AND is_deleted = 0
 ";
 
+/// `files` 表仓库：全部方法接收外部连接，便于事务组合。
 pub struct FileRepo;
 
 impl FileRepo {
+    /// 在单个事务中批量插入文件记录。
+    ///
+    /// # Errors
+    ///
+    /// 事务开启、插入或提交失败时返回错误。
     pub fn insert_batch(conn: &Connection, files: &[FileRecord]) -> AppResult<usize> {
         let tx = conn.unchecked_transaction()?;
         let mut count = 0;
@@ -46,6 +54,11 @@ impl FileRepo {
         Ok(count)
     }
 
+    /// 按路径查找未删除文件。
+    ///
+    /// # Errors
+    ///
+    /// 查询失败时返回错误；不存在时返回 `None`。
     pub fn get_by_path(conn: &Connection, path: &str) -> AppResult<Option<FileRecord>> {
         let mut stmt = conn.prepare(GET_BY_PATH_SQL)?;
         let result = stmt.query_row(params![path], map_file_record);
@@ -57,6 +70,11 @@ impl FileRepo {
         }
     }
 
+    /// 按 ID 查找未删除文件。
+    ///
+    /// # Errors
+    ///
+    /// 查询失败时返回错误；不存在时返回 `None`。
     pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Option<FileRecord>> {
         let result = conn.query_row(
             "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
@@ -72,6 +90,11 @@ impl FileRepo {
         }
     }
 
+    /// 分页列出未删除文件，可按分类过滤，按更新时间倒序。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
     pub fn list(
         conn: &Connection,
         category: Option<&str>,
@@ -104,6 +127,11 @@ impl FileRepo {
         Ok(files)
     }
 
+    /// 统计未删除文件数量，可按分类过滤。
+    ///
+    /// # Errors
+    ///
+    /// 聚合查询失败时返回错误。
     pub fn count(conn: &Connection, category: Option<&str>) -> AppResult<i64> {
         let count: i64 = match category {
             Some(cat) => conn.query_row(
@@ -120,6 +148,11 @@ impl FileRepo {
         Ok(count)
     }
 
+    /// 更新指定文件的分类。
+    ///
+    /// # Errors
+    ///
+    /// 文件不存在时返回 `QueryReturnedNoRows`；更新失败返回数据库错误。
     pub fn update_category(conn: &Connection, id: &str, category: &str) -> AppResult<()> {
         let affected = conn.execute(
             "UPDATE files SET category = ?1, updated_at = datetime('now') WHERE id = ?2 AND is_deleted = 0",
@@ -132,6 +165,11 @@ impl FileRepo {
         Ok(())
     }
 
+    /// 批量增量写入：内容哈希未变化的跳过，变化的更新，新路径插入。
+    ///
+    /// # Errors
+    ///
+    /// 事务开启、查询、写入或提交失败时返回错误。
     pub fn upsert_batch(conn: &Connection, files: &[FileRecord]) -> AppResult<UpsertResult> {
         let tx = conn.unchecked_transaction()?;
         let mut result = UpsertResult::default();
@@ -172,6 +210,11 @@ impl FileRepo {
         Ok(result)
     }
 
+    /// 软删除指定文件（置 `is_deleted` 标记）。
+    ///
+    /// # Errors
+    ///
+    /// 文件不存在时返回 `QueryReturnedNoRows`；更新失败返回数据库错误。
     pub fn soft_delete(conn: &Connection, id: &str) -> AppResult<()> {
         let affected = conn.execute(
             "UPDATE files SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
@@ -184,6 +227,11 @@ impl FileRepo {
         Ok(())
     }
 
+    /// 按内容哈希查找所有未删除文件（用于重复文件分组）。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
     pub fn get_by_hash(conn: &Connection, content_hash: &str) -> AppResult<Vec<FileRecord>> {
         let mut stmt = conn.prepare(
             "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
@@ -199,13 +247,18 @@ impl FileRepo {
     }
 }
 
+/// 批量增量写入统计。
 #[derive(Debug, Default, Clone, Serialize, Deserialize, specta::Type)]
 pub struct UpsertResult {
+    /// 新增条数。
     pub added: u32,
+    /// 更新条数。
     pub updated: u32,
+    /// 内容未变化跳过的条数。
     pub skipped: u32,
 }
 
+/// 将查询行映射为 [`FileRecord`]。
 fn map_file_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
     Ok(FileRecord {
         id: row.get(0)?,

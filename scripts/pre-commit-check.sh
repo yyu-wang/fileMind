@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# rustup 默认安装到 ~/.cargo/bin，且无法写入 ~/.profile 时需在此补全 PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
 echo "=== Pre-commit 自检 ==="
 
 # 1. TypeScript lint + format check

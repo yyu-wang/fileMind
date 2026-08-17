@@ -1,3 +1,5 @@
+//! 安全模块：路径校验、密钥管理与推理模式切换安全阀。
+
 pub mod keychain;
 pub mod mode_switch;
 pub mod path_guard;

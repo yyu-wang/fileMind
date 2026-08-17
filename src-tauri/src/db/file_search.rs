@@ -1,19 +1,27 @@
+//! 文件搜索：FTS5 全文搜索与文件名模糊搜索。
+
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::db::models::FileRecord;
 use crate::error::AppResult;
 
+/// 搜索入口：全文搜索走 FTS5，文件名搜索走 LIKE。
 pub struct FileSearch;
 
 impl FileSearch {
+    /// FTS5 全文搜索，按 bm25 相关度升序返回。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
     pub fn search(conn: &Connection, query: &str, limit: i64) -> AppResult<Vec<SearchResult>> {
         let sanitized = sanitize_query(query);
         if sanitized.is_empty() {
             return Ok(Vec::new());
         }
 
-        let fts_query = format!("\"{}\"*", sanitized);
+        let fts_query = format!("\"{sanitized}\"*");
 
         let mut stmt = conn.prepare(
             "SELECT f.id, f.path, f.file_name, f.file_size, f.content_hash,
@@ -50,6 +58,11 @@ impl FileSearch {
         Ok(results)
     }
 
+    /// 按文件名子串模糊搜索，按更新时间倒序返回。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
     pub fn search_by_filename(
         conn: &Connection,
         pattern: &str,
@@ -88,12 +101,16 @@ impl FileSearch {
     }
 }
 
+/// 全文搜索命中结果。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct SearchResult {
+    /// 命中的文件记录。
     pub file: FileRecord,
+    /// bm25 相关度得分（越小越相关）。
     pub score: f64,
 }
 
+/// 清洗用户查询：仅保留字母数字、空格与下划线，防止 FTS5 语法注入。
 fn sanitize_query(query: &str) -> String {
     query
         .chars()

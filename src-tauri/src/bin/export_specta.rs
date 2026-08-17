@@ -3,6 +3,7 @@
 use filemind_lib::commands;
 
 fn main() {
+    env_logger::init();
     let builder =
         tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
             commands::file_ops::scan_directory,
@@ -24,7 +25,7 @@ fn main() {
         specta_typescript::Typescript::default(),
         "../src/types/ipc.ts",
     ) {
-        eprintln!("Failed to export IPC types: {e}");
+        log::error!("Failed to export IPC types: {e}");
         std::process::exit(1);
     }
 }

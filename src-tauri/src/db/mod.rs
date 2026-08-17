@@ -1,3 +1,5 @@
+//! 数据访问层：数据库连接、文件仓库与搜索。
+
 pub mod database;
 pub mod file_repo;
 pub mod file_search;

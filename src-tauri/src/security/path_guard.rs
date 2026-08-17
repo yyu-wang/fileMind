@@ -1,3 +1,5 @@
+//! 路径安全守卫：规范化路径并拦截系统目录黑名单与越界访问。
+
 use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
@@ -15,6 +17,11 @@ const BLOCKED_PATTERNS: &[&str] = &[
     "C:\\Program Files",
 ];
 
+/// 校验读路径：规范化并检查黑名单，返回规范化路径。
+///
+/// # Errors
+///
+/// 路径不存在、无法解析或命中黑名单时返回 `UnsafePath`。
 pub fn validate(path: &str) -> AppResult<PathBuf> {
     let canonical = Path::new(path)
         .canonicalize()
@@ -28,13 +35,14 @@ pub fn validate(path: &str) -> AppResult<PathBuf> {
         }
     }
 
-    if canonical.is_dir() && !canonical.exists() {
-        return Err(AppError::UnsafePath(format!("目录不存在: {path}")));
-    }
-
     Ok(canonical)
 }
 
+/// 校验路径必须位于指定根目录内（防越界）。
+///
+/// # Errors
+///
+/// 同 [`validate`]；此外路径不在根目录内时返回 `UnsafePath`。
 pub fn validate_within_root(path: &str, root: &Path) -> AppResult<PathBuf> {
     let canonical = validate(path)?;
     let root_canonical = root
@@ -52,10 +60,13 @@ pub fn validate_within_root(path: &str, root: &Path) -> AppResult<PathBuf> {
     Ok(canonical)
 }
 
-/// Validates a target path for write operations (move/rename).
-/// Unlike `validate`, this does not require the path to exist.
-/// Checks the path string against blocked patterns and validates
-/// the parent directory if it exists.
+/// 校验写目标路径（移动/重命名）：目标本身可不存在。
+///
+/// 逐级检查路径字符串黑名单，并校验已存在的父目录。
+///
+/// # Errors
+///
+/// 目标为空、命中黑名单或父目录无法解析时返回 `UnsafePath`。
 pub fn validate_write_target(target: &str) -> AppResult<PathBuf> {
     if target.is_empty() {
         return Err(AppError::UnsafePath("目标路径为空".to_string()));
@@ -110,11 +121,10 @@ mod tests {
     use std::env;
 
     #[test]
-    fn test_valid_path() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_valid_path() {
         let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let result = validate(&home);
         assert!(result.is_ok());
-        Ok(())
     }
 
     #[test]
@@ -180,9 +190,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_write_target_blocked_parent() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_validate_write_target_blocked_parent() {
         let result = validate_write_target("/usr/local/new_file.txt");
         assert!(result.is_err());
-        Ok(())
     }
 }
