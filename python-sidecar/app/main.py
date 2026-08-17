@@ -25,6 +25,7 @@ from app.api import (
     routes_handshake,
     routes_health,
     routes_index,
+    routes_shutdown,
 )
 from app.middleware.hmac_auth import HMACMiddleware
 
@@ -70,6 +71,7 @@ app.add_middleware(HMACMiddleware)
 
 app.include_router(routes_handshake.router)
 app.include_router(routes_health.router)
+app.include_router(routes_shutdown.router)
 app.include_router(routes_classify.router)
 app.include_router(routes_index.router)
 app.include_router(routes_chat.router)

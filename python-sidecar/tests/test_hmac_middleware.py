@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,13 +55,11 @@ def _signed_get(client: TestClient, path: str, seq: int, psk: bytes = _TEST_PSK)
     """携带正确签名 + seq 访问 GET 路由。"""
     canonical = _build_canonical("GET", path, "", seq)
     signature = _sign(psk, canonical)
-    return cast(
-        "Response",
-        client.get(
-            path,
-            headers={"X-Signature": signature, "X-Request-Seq": str(seq)},
-        ),
+    resp: Response = client.get(
+        path,
+        headers={"X-Signature": signature, "X-Request-Seq": str(seq)},
     )
+    return resp
 
 
 def test_middleware_verify_pass(client: TestClient) -> None:

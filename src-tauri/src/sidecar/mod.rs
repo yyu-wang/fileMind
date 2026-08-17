@@ -3,4 +3,4 @@
 pub mod manager;
 pub mod proxy;
 
-pub use manager::SidecarManager;
+pub use manager::{SidecarManager, WatchdogAction};

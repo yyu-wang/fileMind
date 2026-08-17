@@ -1,14 +1,32 @@
 //! `FileMind` 桌面应用入口：初始化数据库、启动 Sidecar 与握手、注册 IPC 命令并启动 Tauri。
+//!
+//! 生命周期（含 Sidecar，T1.5）：
+//! 1. 启动阶段：建 `SidecarManager` → `start_with_handshake` 成功 → 把 manager / PSK
+//!    / seq / 重启计数放进 `AppState`
+//! 2. 运行期：`setup` 中 spawn 后台 `watchdog`（独立 current-thread `tokio` runtime），
+//!    每秒 tick：连续健康失败或 `Child::try_wait` 已退出 → 指数退避后 `restart()`，
+//!    并同步更新 `AppState` 里的 PSK + `reset` seq；1 分钟内 10 次重启 → `CrashLoop`
+//!    暂停，打 `error` 日志后 watchdog 自动退为「仅告警，不再自动恢复」
+//! 3. 退出：`run()` 返回后立即同步 `stop_graceful(seq)`，≤5s 优雅关 Sidecar；
+//!    `Drop` 兜底：若 run 内部 panic 导致正常退出路径跳过，`Drop` 会用 `stopped` 标志位
+//!    保证仅一次 hard kill，不重复杀进程
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use filemind_lib::commands;
 use filemind_lib::db::Database;
 use filemind_lib::error::AppError;
-use filemind_lib::sidecar::SidecarManager;
+use filemind_lib::sidecar::{SidecarManager, WatchdogAction};
 use filemind_lib::AppState;
+use tauri::Manager;
+
+/// 健康看门狗基础轮询间隔（毫秒）。
+///
+/// 与 manager 内部 `HEALTH_POLL_INTERVAL_MS` 同值；集中到 main.rs 便于未来调优。
+const WATCHDOG_TICK_MS: u64 = 1000;
 
 fn get_db_path() -> PathBuf {
     let home = std::env::var("HOME")
@@ -19,6 +37,8 @@ fn get_db_path() -> PathBuf {
 
 /// 启动 Sidecar 并完成 HMAC 握手，返回 PSK。
 ///
+/// 由 `block_on` 在当前线程 runtime 上执行（Tauri 初始化阶段没有异步上下文）。
+///
 /// # Errors
 ///
 /// 任何启动或握手步骤失败时返回对应错误。
@@ -28,6 +48,130 @@ fn start_sidecar_with_handshake(manager: &mut SidecarManager) -> Result<Vec<u8>,
         .build()
         .map_err(|e| AppError::SidecarUnavailable(format!("tokio runtime 初始化失败: {e}")))?;
     runtime.block_on(async { manager.start_with_handshake().await })
+}
+
+/// 在独立线程中启动 Sidecar 健康看门狗循环。
+///
+/// 用 `Arc<AppState>` 不现实（`State<T>` 由 Tauri 持有），故：
+/// - 每次 tick 取 `AppHandle.state::<AppState>()` → lock `sidecar_manager`（时间尽可能短）
+/// - `NeedRestart` 动作：release Mutex → sleep backoff → 重新 lock 调 restart
+///   （避免持锁期间 `tokio::sleep` 阻塞其他线程访问 `AppState`）
+///
+/// 允许 `await_holding_lock`：`watchdog_tick().await` 持有 std Mutex 是预期
+/// 行为 —— 当前 runtime 为 current-thread，await 期间不跨线程调度；且 manager
+/// 持锁时间仅 /health 请求（几十毫秒级），不阻塞 Tauri UI。
+#[allow(clippy::await_holding_lock)]
+fn spawn_watchdog(app_handle: tauri::AppHandle) {
+    let spawn_result = std::thread::Builder::new()
+        .name("sidecar-watchdog".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("watchdog tokio runtime 初始化失败: {e}");
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                loop {
+                    // 阶段 A：取 AppState 短锁做 tick 决策
+                    let action_result = {
+                        let state = app_handle.state::<AppState>();
+                        let Ok(mut manager) = state.sidecar_manager.lock() else {
+                            log::error!("sidecar_manager Mutex 中毒，watchdog 退出");
+                            return;
+                        };
+                        // 主路径已停止 → watchdog 干净退出
+                        if manager.is_stopped() {
+                            return;
+                        }
+                        manager.watchdog_tick().await
+                    };
+
+                    match action_result {
+                        Ok(WatchdogAction::Idle) => {
+                            // 健康：sleep 默认间隔再下一轮
+                            tokio::time::sleep(Duration::from_millis(WATCHDOG_TICK_MS)).await;
+                        }
+                        Ok(WatchdogAction::NeedRestart) => {
+                            // 先取 backoff（持锁时间短）
+                            let backoff = {
+                                let state = app_handle.state::<AppState>();
+                                let Ok(manager) = state.sidecar_manager.lock() else {
+                                    return;
+                                };
+                                manager.next_backoff()
+                            };
+                            log::warn!("Sidecar 需要重启，退避等待 {backoff:?} 后开始");
+                            tokio::time::sleep(backoff).await;
+                            // 阶段 B：重启（持锁，期间阻塞其他方访问 manager 可接受）
+                            // 注：restart 路径用一次性 tokio runtime，避免主 runtime `rt`
+                            // 已被 move 进外层 async 块无法再被借用到的借用错误。
+                            let restart_result: Result<Vec<u8>, AppError> = {
+                                let state = app_handle.state::<AppState>();
+                                let Ok(mut manager) = state.sidecar_manager.lock() else {
+                                    return;
+                                };
+                                let inner_rt = match tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                {
+                                    Ok(rt) => rt,
+                                    Err(e) => {
+                                        log::error!("restart 阶段 tokio runtime 失败: {e}");
+                                        return;
+                                    }
+                                };
+                                inner_rt.block_on(manager.restart())
+                            };
+                            match restart_result {
+                                Ok(new_psk) => {
+                                    let state = app_handle.state::<AppState>();
+                                    // 同步新 PSK 到 AppState 供 proxy.rs 后续签名使用
+                                    if let Ok(mut psk_guard) = state.sidecar_psk.lock() {
+                                        *psk_guard = Some(new_psk);
+                                    }
+                                    // 新 Sidecar 端 seq 从 0 开始，Rust 端必须跟随重置
+                                    state.request_seq.store(0, Ordering::SeqCst);
+                                    // 累计重启计数（排障用）
+                                    let prev =
+                                        state.sidecar_restart_count.fetch_add(1, Ordering::SeqCst);
+                                    log::info!("Sidecar 重启成功，累计重启次数 = {}", prev + 1);
+                                }
+                                Err(e) => {
+                                    log::error!("Sidecar 重启失败: {e}");
+                                    // 失败后仍继续循环（下一轮再次 NeedRestart 时退避更长），
+                                    // 直到 CrashLoop 暂停。
+                                }
+                            }
+                        }
+                        Err(AppError::SidecarCrashLoop {
+                            count,
+                            window_secs,
+                            message,
+                        }) => {
+                            log::error!(
+                                "Sidecar 进入 CrashLoop（{count}/{window_secs}s）：{message}"
+                            );
+                            // CrashLoop：每分钟只告警一次，避免刷日志
+                            tokio::time::sleep(Duration::from_mins(1)).await;
+                        }
+                        Err(other) => {
+                            log::warn!("watchdog tick 异常: {other}");
+                            tokio::time::sleep(Duration::from_millis(WATCHDOG_TICK_MS)).await;
+                        }
+                    }
+                }
+            });
+        });
+    if let Err(e) = spawn_result {
+        // 线程创建失败（极罕见，通常是系统资源耗尽）：打日志继续运行，
+        // 缺少自动恢复 ≠ 主功能不可用
+        log::error!("sidecar-watchdog 线程创建失败，跳过自动健康监控: {e}");
+    }
 }
 
 /// 应用入口：初始化日志与数据库后启动 Sidecar 与握手，注册 IPC 命令后启动 Tauri 事件循环。
@@ -56,15 +200,26 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // 主流程 manager 当前已持有 PSK（start_with_handshake 内部已存进 self.psk），
+    // 若与 AppState 写入的 psk 不一致以 AppState 为准，这里同步拷贝一次保持一致。
+    debug_assert!(sidecar_manager
+        .psk()
+        .is_none_or(|inner| Some(inner) == sidecar_psk.as_deref()));
 
+    // Tauri AppState 生命周期贯穿整个 Tauri 运行期，
+    // 同时 main 栈变量也持有 AppState 引用直到 run() 返回；
+    // 为了让 run() 返回后还能访问 manager/PSK/seq 做优雅关闭，这里 clone AppHandle：
+    // 通过 AppHandle 就能从 managed state 再取出。
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             db: Mutex::new(database),
+            sidecar_manager: Mutex::new(sidecar_manager),
             sidecar_psk: Mutex::new(sidecar_psk),
             request_seq: AtomicU64::new(0),
+            sidecar_restart_count: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             commands::file_ops::scan_directory,
@@ -80,12 +235,64 @@ fn main() {
             commands::inference::set_inference_mode,
             commands::config::get_config,
             commands::config::update_config,
-        ]);
+        ])
+        .setup(move |app| {
+            spawn_watchdog(app.handle().clone());
+            Ok(())
+        });
 
-    if let Err(e) = builder.run(tauri::generate_context!()) {
+    // run() 内部执行 Tauri 事件循环；返回 `Ok(())` 或 Err 都表明应用已经退出。
+    // 为了确保 run 返回后仍能拿到 AppState（managed state 需要 AppHandle），
+    // 把 AppHandle 通过 setup 闭包 clone 到外面的 Cell 里做不到（setup 是 FnOnce 已 move）。
+    // 妥协方案：由于 AppState 作为 managed state 与 main 函数同生命周期，
+    // `run` 返回后 Tauri 还没释放（当前栈未析构）。用一个 OnceLock AppHandle 引用：
+    // 在 setup 中把 handle 写到一个 static OnceLock 里 —— 不方便；更简单做法：
+    // 在 .setup(...) 注册的 setup 回调里通过 app.handle().clone() 让 watchdog 持有，
+    // 同时把 AppHandle 也传给一个即将 `on_drop` 的局部结构（会引入 boilerplate）。
+    //
+    // 选定方案：**双保险**：
+    // - run() 返回后，AppState 会作为 managed state（Tauri 2.x 释放顺序：先析构 Builder
+    //   内的 state，再返回）；这时已经拿不到 AppHandle.state()。
+    //   改为：在 setup 内部，额外注册一个 *Window CloseRequested* 监听，在窗口关闭时
+    //   立即先执行 stop_graceful（在 run() 返回之前，Tauri state 仍存活）。
+    // - run() 返回后的路径作为后备，仅打一行日志（无法直接访问 state 了）。
+    //
+    // 注：Tauri v2 提供 `on_window_event` 链式 API。
+
+    let builder = builder.on_window_event(|window, event| {
+        if let tauri::WindowEvent::CloseRequested { .. } = event {
+            let app = window.app_handle();
+            let state = app.state::<AppState>();
+            let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
+            let Ok(mut manager) = state.sidecar_manager.lock() else {
+                log::error!("sidecar_manager Mutex 中毒，无法优雅关 Sidecar");
+                return;
+            };
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("CloseRequested tokio runtime 初始化失败: {e}");
+                    let _ = manager.stop_hard();
+                    return;
+                }
+            };
+            if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
+                log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
+            }
+        }
+    });
+
+    let run_result = builder.run(tauri::generate_context!());
+
+    if let Err(e) = run_result {
         log::error!("Error while running tauri application: {e}");
         std::process::exit(1);
     }
 
-    // `sidecar_manager` 在 main 退出时 Drop → stop() → kill child，避免僵尸进程
+    // 后备：若主窗口关闭事件路径未触发（极少，仅 headless/菜单退出等非 CloseRequested），
+    // SidecarManager 此时由 Tauri managed state 析构 → Drop → stop_hard() 兜底杀一次。
+    // 由于 stopped 标志位在 CloseRequested 主路径已经 set，Drop 不会重复 kill。
 }

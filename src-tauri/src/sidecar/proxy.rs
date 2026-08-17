@@ -74,3 +74,32 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
         .map_err(|e| AppError::SidecarUnavailable(format!("读取响应失败: {e}")))?;
     Ok(text)
 }
+
+/// 转发 POST /shutdown 请求到 Sidecar 并返回响应文本。
+///
+/// 与 [`forward_post`] 的区别：`/shutdown` 无 body，对应 canonical string
+/// 中 body 段为空，与中间件验签逻辑保持一致。
+///
+/// # Errors
+///
+/// 签名计算、请求发送或响应读取失败时返回 `SidecarUnavailable`。
+pub async fn forward_shutdown(psk: &[u8], seq: u64) -> AppResult<String> {
+    const PATH: &str = "/shutdown";
+    let url = format!("{SIDECAR_BASE_URL}{PATH}");
+    // body 为空：与 HMAC 中间件空 body canonical 构造完全一致
+    let canonical = handshake::build_request_canonical("POST", PATH, "", seq);
+    let signature = handshake::sign(psk, &canonical)?;
+
+    let resp = client()
+        .post(&url)
+        .header(handshake::SIGNATURE_HEADER, &signature)
+        .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
+        .send()
+        .await
+        .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar shutdown 请求失败: {e}")))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::SidecarUnavailable(format!("读取 shutdown 响应失败: {e}")))?;
+    Ok(body)
+}

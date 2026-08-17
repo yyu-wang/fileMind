@@ -6,6 +6,8 @@ mypy strict 无法检查）。lifespan 启动时填充 PSK，中间件与路由�
 安全映射：S-01（Sidecar 端口冒充）、T-01（Sidecar 通信篡改）。
 """
 
+from __future__ import annotations
+
 # 握手后的 PSK：生产模式由 stdin 注入，dev 模式为 None（跳过验签）
 _psk: bytes | None = None
 # 上一个请求的序号（防重放：新请求 seq 必须 > last_seq）

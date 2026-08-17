@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicU64;
 use std::sync::Mutex;
 
+use crate::sidecar::SidecarManager;
+
 pub mod commands;
 pub mod db;
 pub mod error;
@@ -55,10 +57,17 @@ impl From<db::models::FileRecord> for FileInfo {
 pub struct AppState {
     /// 数据库句柄（互斥保护，SQLite 连接单线程访问）。
     pub db: Mutex<db::Database>,
-    /// Sidecar 握手后的 PSK；握手前为 `None`，握手成功后为 `Some`。
-    /// 安全映射：S-01（Sidecar 端口冒充）。
+    /// Sidecar 进程管理器（互斥保护）：
+    /// 由 `main.rs` 启动 + 握手后放入，生命周期内由 `watchdog` 与 `on_exit` 共同访问。
+    pub sidecar_manager: Mutex<SidecarManager>,
+    /// Sidecar 握手后的 PSK；握手前为 `None`，握手/重启成功后更新为新密钥。
+    /// 安全映射：`S-01`（Sidecar 端口冒充）。
     pub sidecar_psk: Mutex<Option<Vec<u8>>>,
     /// 请求序号（单调递增），用于 Sidecar 防重放校验。
-    /// 安全映射：T-01（Sidecar 通信篡改）。
+    /// Sidecar 重启时需重置为 `0`（新 Sidecar 端序列号从 0 开始）。
+    /// 安全映射：`T-01`（Sidecar 通信篡改）。
     pub request_seq: AtomicU64,
+    /// 历史累计崩溃重启次数（用于状态面板 + 排障）。
+    /// 与 `recent_restarts`（`CrashLoop` 窗口）是两个独立计数器。
+    pub sidecar_restart_count: AtomicU64,
 }

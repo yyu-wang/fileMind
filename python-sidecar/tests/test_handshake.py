@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,14 +54,12 @@ def client() -> TestClient:
 
 def _post_handshake(client: TestClient, nonce: str, signature: str) -> Response:
     """POST /handshake 携带 nonce 与 X-Signature 头。"""
-    return cast(
-        "Response",
-        client.post(
-            "/handshake",
-            json={"nonce": nonce},
-            headers={"X-Signature": signature},
-        ),
+    resp: Response = client.post(
+        "/handshake",
+        json={"nonce": nonce},
+        headers={"X-Signature": signature},
     )
+    return resp
 
 
 def test_handshake_success(client: TestClient) -> None:

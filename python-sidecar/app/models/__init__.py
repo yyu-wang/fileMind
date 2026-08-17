@@ -53,3 +53,9 @@ class HandshakeResponse(BaseModel):
     """握手响应体：Sidecar 用 PSK 对 ``handshake-ok|{nonce}`` 签名后返回的 proof。"""
 
     proof: str
+
+
+class ShutdownResponse(BaseModel):
+    """优雅关闭响应体：POST /shutdown 成功后返回。"""
+
+    status: str

@@ -23,6 +23,18 @@ pub enum AppError {
     #[error("请求签名验证失败: {0}")]
     RequestSignatureInvalid(String),
 
+    /// Sidecar 崩溃次数超过窗口阈值：暂停自动重启以避免死循环 burn CPU。
+    /// 上层应用应弹出错误面板提示用户手动介入（检查 Sidecar 日志/系统资源）。
+    #[error("Sidecar 崩溃重启过于频繁 ({count} 次/{window_secs}s)，已暂停自动恢复：{message}")]
+    SidecarCrashLoop {
+        /// 触发阈值时的重启计数。
+        count: u32,
+        /// 观察窗口（秒）。
+        window_secs: u32,
+        /// 诊断信息（例如「请检查 Sidecar 日志」）。
+        message: String,
+    },
+
     /// `SQLite` 数据库操作错误。
     #[error("数据库错误: {0}")]
     Database(#[from] rusqlite::Error),
