@@ -1,8 +1,10 @@
+//! IPC 类型导出工具：将 Rust 命令签名导出为 TypeScript 类型定义。
+
 use filemind_lib::commands;
 
 fn main() {
-    let builder = tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![
+    let builder =
+        tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
             commands::file_ops::scan_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
@@ -18,7 +20,10 @@ fn main() {
             commands::config::update_config,
         ]);
 
-    if let Err(e) = builder.export(specta_typescript::Typescript::default(), "../src/types/ipc.ts") {
+    if let Err(e) = builder.export(
+        specta_typescript::Typescript::default(),
+        "../src/types/ipc.ts",
+    ) {
         eprintln!("Failed to export IPC types: {e}");
         std::process::exit(1);
     }

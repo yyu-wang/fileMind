@@ -1,16 +1,13 @@
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use crate::db::models::FileRecord;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 
 pub struct FileSearch;
 
 impl FileSearch {
-    pub fn search(
-        conn: &Connection,
-        query: &str,
-        limit: i64,
-    ) -> AppResult<Vec<SearchResult>> {
+    pub fn search(conn: &Connection, query: &str, limit: i64) -> AppResult<Vec<SearchResult>> {
         let sanitized = sanitize_query(query);
         if sanitized.is_empty() {
             return Ok(Vec::new());
@@ -26,7 +23,7 @@ impl FileSearch {
              JOIN files f ON f.id = file_fts.file_id
              WHERE file_fts MATCH ?1 AND f.is_deleted = 0
              ORDER BY score
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![fts_query, limit], |row| {
@@ -66,7 +63,7 @@ impl FileSearch {
              FROM files
              WHERE is_deleted = 0 AND file_name LIKE ?1
              ORDER BY updated_at DESC
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![like_pattern, limit], |row| {
@@ -113,9 +110,9 @@ mod tests {
     use crate::db::file_repo::FileRepo;
     use tempfile::NamedTempFile;
 
-    fn setup_test_db_with_data() -> Database {
-        let tmp = NamedTempFile::new().unwrap();
-        let db = Database::open(tmp.path()).unwrap();
+    fn setup_test_db_with_data() -> Result<Database, Box<dyn std::error::Error>> {
+        let tmp = NamedTempFile::new()?;
+        let db = Database::open(tmp.path())?;
 
         let files = vec![
             FileRecord {
@@ -142,30 +139,33 @@ mod tests {
             },
         ];
 
-        FileRepo::insert_batch(db.conn(), &files).unwrap();
-        db
+        FileRepo::insert_batch(db.conn(), &files)?;
+        Ok(db)
     }
 
     #[test]
-    fn test_search_by_filename() {
-        let db = setup_test_db_with_data();
-        let results = FileSearch::search_by_filename(db.conn(), "report", 10).unwrap();
+    fn test_search_by_filename() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_test_db_with_data()?;
+        let results = FileSearch::search_by_filename(db.conn(), "report", 10)?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "report.pdf");
+        Ok(())
     }
 
     #[test]
-    fn test_search_by_filename_no_match() {
-        let db = setup_test_db_with_data();
-        let results = FileSearch::search_by_filename(db.conn(), "nonexistent", 10).unwrap();
+    fn test_search_by_filename_no_match() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_test_db_with_data()?;
+        let results = FileSearch::search_by_filename(db.conn(), "nonexistent", 10)?;
         assert!(results.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_search_empty_query() {
-        let db = setup_test_db_with_data();
-        let results = FileSearch::search(db.conn(), "", 10).unwrap();
+    fn test_search_empty_query() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_test_db_with_data()?;
+        let results = FileSearch::search(db.conn(), "", 10)?;
         assert!(results.is_empty());
+        Ok(())
     }
 
     #[test]

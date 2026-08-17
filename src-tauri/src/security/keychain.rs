@@ -4,7 +4,7 @@ const KEYRING_SERVICE: &str = "filemind";
 const KEYRING_USER: &str = "api_keys";
 
 pub fn store_key(provider: &str, key: &str) -> AppResult<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, provider)
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .map_err(|e| AppError::SidecarUnavailable(format!("Keychain 初始化失败: {e}")))?;
 
     let mut existing = load_all_keys().unwrap_or_default();
@@ -22,19 +22,19 @@ pub fn get_key(provider: &str) -> AppResult<Option<String>> {
 }
 
 pub fn delete_key(provider: &str) -> AppResult<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|e| AppError::SidecarUnavailable(format!("Keychain 初始化失败: {e}")))?;
+
     let mut keys = load_all_keys().unwrap_or_default();
     keys.remove(provider);
 
-    let entry = keyring::Entry::new(KEYRING_SERVICE, provider)
-        .map_err(|e| AppError::SidecarUnavailable(format!("Keychain 初始化失败: {e}")))?;
-
     if keys.is_empty() {
-        entry
-            .delete_credential()
-            .map_err(|e| AppError::SidecarUnavailable(format!("Keychain 删除失败: {e}")))?;
+        let _ = entry.delete_credential();
     } else {
         let serialized = serde_json::to_string(&keys)?;
-        entry.set_password(&serialized)?;
+        entry
+            .set_password(&serialized)
+            .map_err(|e| AppError::SidecarUnavailable(format!("Keychain 更新失败: {e}")))?;
     }
 
     Ok(())

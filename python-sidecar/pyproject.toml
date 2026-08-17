@@ -1,5 +1,5 @@
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -13,13 +13,17 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "app.models"
+disallow_any_explicit = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

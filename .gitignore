@@ -45,6 +45,9 @@ Thumbs.db
 src-tauri/target/
 src-tauri/gen/
 
+# Local cargo mirror config (network acceleration, not for CI)
+src-tauri/.cargo/
+
 # Generated files
 src/types/ipc.ts
 

@@ -1,15 +1,17 @@
 from fastapi import APIRouter
 
+from app.models import ChatQueryResponse, ChatStreamResponse
+
 router = APIRouter(prefix="/chat", tags=["RAG 问答"])
 
 
-@router.post("/query")
-async def query() -> dict:
+@router.post("/query", response_model=ChatQueryResponse)
+async def query() -> ChatQueryResponse:
     """RAG 问答查询。"""
-    return {"answer": "", "citations": [], "tokens": 0}
+    return ChatQueryResponse(answer="", citations=[], tokens=0)
 
 
-@router.post("/query/stream")
-async def query_stream() -> dict:
+@router.post("/query/stream", response_model=ChatStreamResponse)
+async def query_stream() -> ChatStreamResponse:
     """RAG 问答流式输出。"""
-    return {"status": "streaming"}
+    return ChatStreamResponse(status="streaming")

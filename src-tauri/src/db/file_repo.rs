@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 use crate::db::models::FileRecord;
 use crate::error::{AppError, AppResult};
@@ -10,6 +11,7 @@ const INSERT_FILE_SQL: &str = "
         file_name = excluded.file_name,
         file_size = excluded.file_size,
         content_hash = excluded.content_hash,
+        is_deleted = 0,
         updated_at = datetime('now')
 ";
 
@@ -77,7 +79,7 @@ impl FileRepo {
         limit: i64,
     ) -> AppResult<Vec<FileRecord>> {
         let sql = match category {
-            Some(cat) => {
+            Some(_) => {
                 "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
                  FROM files WHERE is_deleted = 0 AND category = ?1
                  ORDER BY updated_at DESC LIMIT ?2 OFFSET ?3"
@@ -118,11 +120,7 @@ impl FileRepo {
         Ok(count)
     }
 
-    pub fn update_category(
-        conn: &Connection,
-        id: &str,
-        category: &str,
-    ) -> AppResult<()> {
+    pub fn update_category(conn: &Connection, id: &str, category: &str) -> AppResult<()> {
         let affected = conn.execute(
             "UPDATE files SET category = ?1, updated_at = datetime('now') WHERE id = ?2 AND is_deleted = 0",
             params![category, id],
@@ -134,10 +132,7 @@ impl FileRepo {
         Ok(())
     }
 
-    pub fn upsert_batch(
-        conn: &Connection,
-        files: &[FileRecord],
-    ) -> AppResult<UpsertResult> {
+    pub fn upsert_batch(conn: &Connection, files: &[FileRecord]) -> AppResult<UpsertResult> {
         let tx = conn.unchecked_transaction()?;
         let mut result = UpsertResult::default();
 
@@ -149,7 +144,7 @@ impl FileRepo {
             );
 
             match existing {
-                Ok(Some(hash)) if hash == file.content_hash => {
+                Ok(Some(hash)) if file.content_hash.as_ref() == Some(&hash) => {
                     result.skipped += 1;
                 }
                 _ => {
@@ -189,10 +184,7 @@ impl FileRepo {
         Ok(())
     }
 
-    pub fn get_by_hash(
-        conn: &Connection,
-        content_hash: &str,
-    ) -> AppResult<Vec<FileRecord>> {
+    pub fn get_by_hash(conn: &Connection, content_hash: &str) -> AppResult<Vec<FileRecord>> {
         let mut stmt = conn.prepare(
             "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
              FROM files WHERE content_hash = ?1 AND is_deleted = 0"

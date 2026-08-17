@@ -4,45 +4,46 @@ version = "0.1.0"
 description = "Desktop file organizer with RAG Q&A"
 authors = ["FileMind"]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.97"
 
 [lib]
 name = "filemind_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.1", features = ["protocol-asset"] }
-tauri-plugin-shell = "2.0"
-tauri-plugin-dialog = "2.0"
-tauri-plugin-fs = "2.0"
-specta = { version = "2.0", features = ["derive"] }
-specta-typescript = "0.0.7"
-tauri-specta = { version = "2.0", features = ["javascript", "typescript"] }
+tauri = { version = "2.11", features = ["protocol-asset"] }
+tauri-plugin-shell = "2.3"
+tauri-plugin-dialog = "2.7"
+tauri-plugin-fs = "2.5"
+specta = "=2.0.0-rc.25"
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["javascript", "typescript"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.40", features = ["full"] }
-thiserror = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
-refinery = { version = "0.8", features = ["rusqlite-bundled"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
-uuid = { version = "1.10", features = ["v4"] }
-sha2 = "0.10"
+tokio = { version = "1.53", features = ["full"] }
+thiserror = "2.0"
+rusqlite = { version = "0.39", features = ["bundled"] }
+refinery = { version = "0.9", features = ["rusqlite-bundled"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+uuid = { version = "1.24", features = ["v4"] }
+sha2 = "0.11"
 hex = "0.4"
+chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"
-keyring = "3.0"
+keyring = "4.1"
 
 [dev-dependencies]
-tempfile = "3.12"
-mockall = "0.13"
+tempfile = "3.27"
+mockall = "0.15"
 
 [lints.clippy]
-all = "deny"
-pedantic = "warn"
-nursery = "warn"
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

@@ -44,10 +44,7 @@ pub async fn search_files(
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<SearchResult>, String> {
-    let search_limit = limit
-        .unwrap_or(50) as i64
-        .min(MAX_PAGE_SIZE)
-        .max(1);
+    let search_limit = (limit.unwrap_or(50) as i64).clamp(1, MAX_PAGE_SIZE);
 
     let db = lock_db(&state.db)?;
     let results = FileSearch::search(db.conn(), &query, search_limit)
@@ -63,10 +60,7 @@ pub async fn search_by_filename(
     pattern: String,
     limit: Option<u32>,
 ) -> Result<Vec<FileInfo>, String> {
-    let search_limit = limit
-        .unwrap_or(50) as i64
-        .min(MAX_PAGE_SIZE)
-        .max(1);
+    let search_limit = (limit.unwrap_or(50) as i64).clamp(1, MAX_PAGE_SIZE);
 
     let db = lock_db(&state.db)?;
     let files = FileSearch::search_by_filename(db.conn(), &pattern, search_limit)
@@ -78,16 +72,20 @@ pub async fn search_by_filename(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn get_file_stats(
-    state: State<'_, AppState>,
-) -> Result<FileStats, String> {
+pub async fn get_file_stats(state: State<'_, AppState>) -> Result<FileStats, String> {
     let db = lock_db(&state.db)?;
 
-    let total: i64 = db.conn()
-        .query_row("SELECT COUNT(*) FROM files WHERE is_deleted = 0", [], |row| row.get(0))
+    let total: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
 
-    let categorized: i64 = db.conn()
+    let categorized: i64 = db
+        .conn()
         .query_row(
             "SELECT COUNT(*) FROM files WHERE is_deleted = 0 AND category IS NOT NULL",
             [],
@@ -95,7 +93,8 @@ pub async fn get_file_stats(
         )
         .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
 
-    let duplicates: i64 = db.conn()
+    let duplicates: i64 = db
+        .conn()
         .query_row(
             "SELECT COUNT(*) - COUNT(DISTINCT content_hash) FROM files
              WHERE is_deleted = 0 AND content_hash IS NOT NULL",
@@ -104,7 +103,8 @@ pub async fn get_file_stats(
         )
         .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
 
-    let total_size: i64 = db.conn()
+    let total_size: i64 = db
+        .conn()
         .query_row(
             "SELECT COALESCE(SUM(file_size), 0) FROM files WHERE is_deleted = 0",
             [],
@@ -129,17 +129,18 @@ pub async fn update_file_category(
     category: String,
 ) -> Result<(), String> {
     let db = lock_db(&state.db)?;
-    FileRepo::update_category(db.conn(), &id, &category)
-        .map_err(|e| match e {
-            AppError::Database(rusqlite::Error::QueryReturnedNoRows) => {
-                "FILE-E-001:文件不存在".to_string()
-            }
-            _ => format!("DB-U-001:更新失败 ({e})"),
-        })?;
+    FileRepo::update_category(db.conn(), &id, &category).map_err(|e| match e {
+        AppError::Database(rusqlite::Error::QueryReturnedNoRows) => {
+            "FILE-E-001:文件不存在".to_string()
+        }
+        _ => format!("DB-U-001:更新失败 ({e})"),
+    })?;
     Ok(())
 }
 
-fn lock_db(db: &Mutex<crate::db::Database>) -> Result<std::sync::MutexGuard<'_, crate::db::Database>, String> {
+fn lock_db(
+    db: &Mutex<crate::db::Database>,
+) -> Result<std::sync::MutexGuard<'_, crate::db::Database>, String> {
     db.lock().map_err(|e| {
         log::error!("DB lock poisoned: {e}");
         "DB-U-001:数据读取失败，请重启应用".to_string()

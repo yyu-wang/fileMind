@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub mod commands;
@@ -8,7 +8,7 @@ pub mod events;
 pub mod security;
 pub mod sidecar;
 
-#[derive(Debug, Serialize, Clone, specta::Type)]
+#[derive(Debug, Serialize, Deserialize, Clone, specta::Type)]
 pub struct FileInfo {
     pub id: String,
     pub path: String,
