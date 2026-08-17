@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Build artifacts
+dist/
+target/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.app
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Generated files
+src/types/ipc.ts
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+*.db
+*.db-journal
+*.sqlite
