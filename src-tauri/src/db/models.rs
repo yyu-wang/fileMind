@@ -25,7 +25,7 @@ pub struct FileRecord {
     pub updated_at: String,
 }
 
-/// `operation_logs` 表记录：批量操作审计日志。
+/// `operations_log` 表记录：批量操作审计日志（行级）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct OperationLog {
     /// 主键（UUID）。
@@ -38,7 +38,7 @@ pub struct OperationLog {
     pub source_path: String,
     /// 目标路径。
     pub target_path: String,
-    /// 执行状态。
+    /// 执行状态（pending/done/failed/undone）。
     pub status: String,
     /// 操作前内容哈希。
     pub prev_hash: String,
@@ -46,4 +46,82 @@ pub struct OperationLog {
     pub current_hash: String,
     /// 记录时间。
     pub created_at: String,
+}
+
+/// `operations_log` 按 `batch_id` 聚合的批次摘要（API §2-2d `get_operation_history` 返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct OperationBatchSummary {
+    /// 批次 ID。
+    pub batch_id: String,
+    /// 操作类型（取批次内首条行，move/rename/delete）。
+    pub op_type: String,
+    /// 批次总条数。
+    pub total_count: i64,
+    /// 成功条数（status='done'）。
+    pub success_count: i64,
+    /// 失败条数（status='failed'）。
+    pub failed_count: i64,
+    /// 批次状态（pending/done/failed/undone）。
+    pub status: String,
+    /// 首条记录时间（批次创建时间近似）。
+    pub created_at: String,
+    /// 是否可撤销：status='done' 即可撤销（窗口期由调用方判断）。
+    pub can_undo: bool,
+}
+
+/// `categories` 表记录：分类体系节点。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct Category {
+    /// 主键（UUID 或系统预置 slug）。
+    pub id: String,
+    /// 分类名（UNIQUE）。
+    pub name: String,
+    /// 父分类 ID（根分类为 `None`）。
+    pub parent_id: Option<String>,
+    /// 图标标识（前端映射）。
+    pub icon: Option<String>,
+    /// 颜色标识（前端映射）。
+    pub color: Option<String>,
+    /// 排序权重（升序）。
+    pub sort_order: i64,
+    /// 系统预置标记（1=内置不可删，0=用户自定义）。
+    pub is_builtin: bool,
+    /// 入库时间。
+    pub created_at: String,
+    /// 最后更新时间。
+    pub updated_at: String,
+}
+
+/// 分类树节点：`Category` + 递归子节点。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[allow(clippy::use_self)]
+pub struct CategoryNode {
+    /// 当前节点。
+    #[serde(flatten)]
+    pub category: Category,
+    /// 子节点列表。
+    pub children: Vec<CategoryNode>,
+}
+
+/// `rules` 表记录：分类规则。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct Rule {
+    /// 主键（UUID）。
+    pub id: String,
+    /// 规则名。
+    pub name: String,
+    /// 规则类型（`extension`/`path_keyword`/`magic_number`/`size`/`regex`）。
+    pub rule_type: String,
+    /// 匹配模式（如 `"pdf,doc"` 或 `"\d{4}-\d{2}"`）。
+    pub pattern: String,
+    /// 匹配后归入的分类 ID。
+    pub target_category: Option<String>,
+    /// 优先级（数字越大越先匹配）。
+    pub priority: i64,
+    /// 是否启用。
+    pub is_enabled: bool,
+    /// 入库时间。
+    pub created_at: String,
+    /// 最后更新时间。
+    pub updated_at: String,
 }

@@ -46,6 +46,10 @@ pub enum AppError {
         current: String,
     },
 
+    /// 业务规则禁止操作（如删除系统内置分类、修改不可变字段）。
+    #[error("操作被禁止: {0}")]
+    Forbidden(String),
+
     /// 文件系统 IO 错误。
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
