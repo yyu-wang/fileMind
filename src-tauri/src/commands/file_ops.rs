@@ -3,15 +3,17 @@
 //! 所有命令做阻塞文件系统操作，通过 `#[tauri::command(async)]`
 //! 声明为线程池执行，避免阻塞主线程。
 
-use crate::db::models::FileRecord;
-use crate::db::FileRepo;
+use crate::db::models::{FileRecord, OperationLog};
+use crate::db::{FileRepo, OperationRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
 use crate::services::hash_service::compute_file_hash;
+use crate::services::operation_executor;
 use crate::{AppState, FileInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::path::{Path, PathBuf};
 
@@ -232,38 +234,164 @@ fn aggregate_summary(plan: &[PlanItem]) -> PreviewSummary {
     summary
 }
 
-/// 逐项执行批量文件操作，返回每项结果与成功/失败计数。
+/// 批量执行文件操作（API §s2-2b）。
+///
+/// 流程：
+///   1. 接收 `ExecuteRequest { batch_id, plan, exclude_file_ids }`
+///   2. 预取所有 `file_id → prev_hash`（一次 `FileRepo::get_by_ids`，避免循环 lock）
+///   3. 逐项调 `operation_executor::execute_plan_item` 执行
+///      - 跳过 `exclude_file_ids` 中的项（计入 `summary.skipped`）
+///      - 跳过非 `Ok` 状态的 plan（Conflict/Error，计入 `summary.skipped`）
+///   4. 成功后更新 `SQLite` `files` 表：
+///      - `Move`/`Rename`：`update_path`（路径变了，文件还在）
+///      - `Copy`：源记录不变，新副本留给下次 `scan_directory` 入库
+///      - `Delete`：`soft_delete`（标记 `is_deleted=1`，便于 T3.4 undo 恢复）
+///   5. 循环结束后一次 `OperationRepo::insert_batch` 写日志（失败只记 warn）
 ///
 /// # Errors
 ///
-/// 仅在内部严重错误时返回；单项失败记录在结果列表中。
+/// 仅在严重错误（DB 锁中毒）时返回；单项失败记录在 `results` 中。
 #[tauri::command(async)]
 #[specta::specta]
-pub fn execute_operations(operations: Vec<FileOperation>) -> Result<BatchResult, String> {
-    let mut results = Vec::with_capacity(operations.len());
-    let mut success_count = 0u32;
-    let mut failed_count = 0u32;
+pub fn execute_operations(
+    request: ExecuteRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<ExecuteResponse, String> {
+    let response = execute_operations_inner(request, &state).map_err(|e| e.to_string())?;
+    Ok(response)
+}
 
-    for op in operations {
-        let outcome = execute_single(&op);
-        let success = outcome.is_ok();
-        let error = outcome.err().map(|e| e.to_string());
-        if success {
-            success_count += 1;
-        } else {
-            failed_count += 1;
+/// 执行逻辑纯函数入口（便于单元测试，不依赖 `tauri::State`）。
+#[allow(clippy::too_many_lines)]
+fn execute_operations_inner(
+    request: ExecuteRequest,
+    state: &AppState,
+) -> AppResult<ExecuteResponse> {
+    let exclude_set: HashSet<String> = request.exclude_file_ids.iter().cloned().collect();
+
+    let mut results = Vec::with_capacity(request.plan.len());
+    let mut summary = ExecuteSummary {
+        total: u32::try_from(request.plan.len()).unwrap_or(u32::MAX),
+        ..Default::default()
+    };
+
+    // 预取所有 file_id → prev_hash（避免循环里反复 lock）
+    let file_ids: Vec<String> = request.plan.iter().map(|p| p.file_id.clone()).collect();
+    let prev_hash_map: HashMap<String, Option<String>> = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        let records = FileRepo::get_by_ids(guard.conn(), &file_ids)?;
+        drop(guard);
+        records
+            .into_iter()
+            .map(|r| (r.id, r.content_hash))
+            .collect()
+    };
+
+    let mut logs_to_insert: Vec<OperationLog> = Vec::new();
+
+    for item in &request.plan {
+        // 跳过用户排除的文件
+        if exclude_set.contains(&item.file_id) {
+            summary.skipped += 1;
+            continue;
         }
-        results.push(OperationResult {
-            operation: op,
+
+        // 跳过非 Ok 状态的 plan（Conflict/Error 不执行）
+        if item.status != PlanStatus::Ok {
+            summary.skipped += 1;
+            results.push(ExecuteResult {
+                file_id: item.file_id.clone(),
+                operation: item.operation.clone(),
+                source_path: item.original_path.clone(),
+                target_path: item.new_path.clone(),
+                success: false,
+                error: Some(format!("plan 状态非 Ok: {:?}", item.status)),
+                prev_hash: None,
+                current_hash: None,
+            });
+            continue;
+        }
+
+        let prev_hash = prev_hash_map.get(&item.file_id).cloned().flatten();
+        let (success, error, current_hash) =
+            operation_executor::execute_plan_item(item, prev_hash.clone());
+
+        if success {
+            summary.success += 1;
+        } else {
+            summary.failed += 1;
+        }
+
+        // 构造 operations_log 行（即使失败也写日志，便于审计）
+        let log = OperationLog {
+            id: uuid::Uuid::new_v4().to_string(),
+            batch_id: request.batch_id.clone(),
+            operation_type: format!("{:?}", item.operation).to_lowercase(),
+            source_path: item.original_path.clone(),
+            target_path: item.new_path.clone().unwrap_or_default(),
+            status: if success { "done" } else { "failed" }.into(),
+            prev_hash: prev_hash.clone().unwrap_or_default(),
+            current_hash: current_hash.clone().unwrap_or_default(),
+            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        };
+        logs_to_insert.push(log);
+
+        // 成功后更新 files 表（path / updated_at / 软删除）
+        if success {
+            if let Ok(guard) = state.db.lock() {
+                let conn = guard.conn();
+                match item.operation {
+                    OperationType::Delete => {
+                        if let Err(e) = FileRepo::soft_delete(conn, &item.file_id) {
+                            log::warn!(
+                                "execute_operations soft_delete 失败（不影响执行结果）: {e}"
+                            );
+                        }
+                    }
+                    OperationType::Move | OperationType::Rename => {
+                        if let Some(new_path) = &item.new_path {
+                            if let Err(e) = FileRepo::update_path(conn, &item.file_id, new_path) {
+                                log::warn!(
+                                    "execute_operations update_path 失败（不影响执行结果）: {e}"
+                                );
+                            }
+                        }
+                    }
+                    OperationType::Copy => {
+                        // Copy 创建副本，源文件记录不变；新副本不入库（留给后续 scan_directory）
+                    }
+                }
+            }
+        }
+
+        results.push(ExecuteResult {
+            file_id: item.file_id.clone(),
+            operation: item.operation.clone(),
+            source_path: item.original_path.clone(),
+            target_path: item.new_path.clone(),
             success,
             error,
+            prev_hash,
+            current_hash,
         });
     }
 
-    Ok(BatchResult {
+    // 批量写日志（一次事务）
+    if !logs_to_insert.is_empty() {
+        if let Ok(guard) = state.db.lock() {
+            if let Err(e) = OperationRepo::insert_batch(guard.conn(), &logs_to_insert) {
+                log::warn!("execute_operations 写 operations_log 失败（不影响执行结果）: {e}");
+            }
+        }
+    }
+
+    Ok(ExecuteResponse {
+        batch_id: request.batch_id,
         results,
-        success_count,
-        failed_count,
+        summary,
     })
 }
 
@@ -330,54 +458,6 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
         }
     }
 
-    Ok(())
-}
-
-/// 校验路径安全后执行单个文件操作。
-fn execute_single(op: &FileOperation) -> AppResult<()> {
-    let source = security::validate(&op.source_path)?;
-
-    match op.operation_type {
-        OperationType::Move => {
-            let target = security::validate_write_target(&op.target_path)?;
-            if target.exists() && source != target {
-                return Err(crate::error::AppError::UnsafePath(format!(
-                    "目标路径已存在且与源路径不同: {}",
-                    target.display()
-                )));
-            }
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(&source, &target)?;
-        }
-        OperationType::Rename => {
-            let target = security::validate_write_target(&op.target_path)?;
-            if target.exists() && source != target {
-                return Err(crate::error::AppError::UnsafePath(format!(
-                    "目标路径已存在且与源路径不同: {}",
-                    target.display()
-                )));
-            }
-            std::fs::rename(&source, &target)?;
-        }
-        OperationType::Copy => {
-            let target = security::validate_write_target(&op.target_path)?;
-            if target.exists() && source != target {
-                return Err(crate::error::AppError::UnsafePath(format!(
-                    "目标路径已存在且与源路径不同: {}",
-                    target.display()
-                )));
-            }
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(&source, &target)?;
-        }
-        OperationType::Delete => {
-            std::fs::remove_file(&source)?;
-        }
-    }
     Ok(())
 }
 
@@ -508,6 +588,69 @@ pub struct PreviewResponse {
     pub summary: PreviewSummary,
 }
 
+// ===================================================================
+// T3.3 执行接口数据模型（API 规格书 §s2-2b）
+// ===================================================================
+
+/// 执行请求体（API §s2-2b）。
+///
+/// 入参 `batch_id` 来自 `preview_operations` 返回值，`plan` 透传该返回值。
+/// `exclude_file_ids` 允许用户在预览后取消勾选某些文件，执行时跳过这些 ID。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ExecuteRequest {
+    /// 来自预览的批次 ID（用于关联 plan 与 `operations_log` 日志）。
+    pub batch_id: String,
+    /// 透传 `preview_operations` 返回的 plan。
+    pub plan: Vec<PlanItem>,
+    /// 用户在预览后取消勾选的文件 ID 列表（执行时跳过这些项，计入 summary.skipped）。
+    pub exclude_file_ids: Vec<String>,
+}
+
+/// 单项执行结果（API §s2-2b `results[]`）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ExecuteResult {
+    /// 文件 ID。
+    pub file_id: String,
+    /// 操作类型。
+    pub operation: OperationType,
+    /// 源路径。
+    pub source_path: String,
+    /// 目标路径（`Delete` 操作时为 `None`）。
+    pub target_path: Option<String>,
+    /// 是否执行成功。
+    pub success: bool,
+    /// 失败原因（成功时为 `None`）。
+    pub error: Option<String>,
+    /// 执行前内容哈希（从 `SQLite` 查出，用于写 `operations_log`）。
+    pub prev_hash: Option<String>,
+    /// 执行后内容哈希（`Delete` 时为 `None`；`Move`/`Copy` 等于 `prev_hash`）。
+    pub current_hash: Option<String>,
+}
+
+/// 执行汇总（API §s2-2b `summary`）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Default)]
+pub struct ExecuteSummary {
+    /// 总条目数（等于 `plan.len()`，含 skipped）。
+    pub total: u32,
+    /// 成功条数。
+    pub success: u32,
+    /// 失败条数。
+    pub failed: u32,
+    /// 跳过条数（`exclude_file_ids` 排除 + 非 `Ok` 状态 plan）。
+    pub skipped: u32,
+}
+
+/// 执行响应体（API §s2-2b 返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ExecuteResponse {
+    /// 批次 ID（与请求的 `batch_id` 一致）。
+    pub batch_id: String,
+    /// 逐项结果。
+    pub results: Vec<ExecuteResult>,
+    /// 汇总统计。
+    pub summary: ExecuteSummary,
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -585,59 +728,6 @@ mod tests {
 
         let files = scan_files_on_disk(tmp.path())?;
         assert!(files.iter().all(|f| f.file_name != "deep.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn test_execute_move() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = tempfile::tempdir()?;
-        let source = create_temp_file(tmp.path(), "source.txt", "content")?;
-        let target = tmp.path().join("target.txt");
-
-        let op = FileOperation {
-            source_path: source.to_string_lossy().to_string(),
-            target_path: target.to_string_lossy().to_string(),
-            operation_type: OperationType::Move,
-        };
-
-        execute_single(&op)?;
-        assert!(!source.exists());
-        assert!(target.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn test_execute_delete() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = tempfile::tempdir()?;
-        let file = create_temp_file(tmp.path(), "to_delete.txt", "bye")?;
-
-        let op = FileOperation {
-            source_path: file.to_string_lossy().to_string(),
-            target_path: String::new(),
-            operation_type: OperationType::Delete,
-        };
-
-        execute_single(&op)?;
-        assert!(!file.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn test_execute_move_rejects_existing_target() -> Result<(), Box<dyn std::error::Error>> {
-        let tmp = tempfile::tempdir()?;
-        let source = create_temp_file(tmp.path(), "source.txt", "content")?;
-        let target = create_temp_file(tmp.path(), "target.txt", "existing")?;
-
-        let op = FileOperation {
-            source_path: source.to_string_lossy().to_string(),
-            target_path: target.to_string_lossy().to_string(),
-            operation_type: OperationType::Move,
-        };
-
-        let result = execute_single(&op);
-        assert!(result.is_err());
-        assert!(source.exists());
-        assert!(target.exists());
         Ok(())
     }
 
@@ -976,6 +1066,248 @@ mod tests {
             .batch_id
             .chars()
             .all(|c| c.is_ascii_hexdigit() || c == '-'));
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // T3.3 execute_operations 测试
+    // ------------------------------------------------------------------
+
+    /// 辅助：从 preview 拿 plan 后调 execute，返回 `ExecuteResponse`。
+    fn preview_then_execute(
+        state: &AppState,
+        scan_root: &Path,
+        names: &[&str],
+        operation: OperationType,
+        target_dir: Option<String>,
+        exclude: Vec<String>,
+    ) -> Result<(PreviewResponse, ExecuteResponse), Box<dyn std::error::Error>> {
+        let ids = seed_files_for_preview(state, scan_root, names)?;
+        let preview = preview_operations_inner(
+            PreviewRequest {
+                file_ids: ids.clone(),
+                operation,
+                target_dir,
+                conflict_strategy: Some(ConflictStrategy::Rename),
+            },
+            state,
+        )?;
+        let execute = execute_operations_inner(
+            ExecuteRequest {
+                batch_id: preview.batch_id.clone(),
+                plan: preview.plan.clone(),
+                exclude_file_ids: exclude,
+            },
+            state,
+        )?;
+        Ok((preview, execute))
+    }
+
+    #[test]
+    fn test_execute_operations_move_full_flow() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["a.txt", "b.txt", "c.txt"],
+            OperationType::Move,
+            Some(target_dir.path().to_string_lossy().to_string()),
+            vec![],
+        )?;
+
+        // 全部成功
+        assert_eq!(exec.summary.total, 3);
+        assert_eq!(exec.summary.success, 3);
+        assert_eq!(exec.summary.failed, 0);
+        assert_eq!(exec.summary.skipped, 0);
+
+        // SQLite files 表路径已更新
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        for r in &exec.results {
+            let file = FileRepo::get_by_id(guard.conn(), &r.file_id).map_err(|e| e.to_string())?;
+            assert!(file.is_some(), "files 表应有记录");
+            let f = file.unwrap();
+            assert!(
+                f.path
+                    .starts_with(target_dir.path().to_string_lossy().as_ref()),
+                "files.path 应已更新到目标目录: {}",
+                f.path
+            );
+            assert!(!f.is_deleted, "Move 后不应软删除");
+        }
+
+        // operations_log 有 3 条 done 记录
+        let logs = OperationRepo::list_by_batch(guard.conn(), &exec.batch_id)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(logs.len(), 3);
+        assert!(logs.iter().all(|l| l.status == "done"));
+        assert!(logs.iter().all(|l| l.batch_id == exec.batch_id));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_operations_with_exclude() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        // 先 preview 拿到 3 个 plan
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["a.txt", "b.txt", "c.txt"])?;
+        let preview = preview_operations_inner(
+            PreviewRequest {
+                file_ids: ids.clone(),
+                operation: OperationType::Move,
+                target_dir: Some(target_dir.path().to_string_lossy().to_string()),
+                conflict_strategy: Some(ConflictStrategy::Rename),
+            },
+            &state,
+        )?;
+
+        // 排除第 2 个文件
+        let excluded_id = ids[1].clone();
+        let exec = execute_operations_inner(
+            ExecuteRequest {
+                batch_id: preview.batch_id.clone(),
+                plan: preview.plan.clone(),
+                exclude_file_ids: vec![excluded_id.clone()],
+            },
+            &state,
+        )?;
+
+        assert_eq!(exec.summary.total, 3);
+        assert_eq!(exec.summary.success, 2);
+        assert_eq!(exec.summary.skipped, 1);
+        assert_eq!(exec.summary.failed, 0);
+
+        // 排除项不应出现在 results 里
+        assert!(
+            !exec.results.iter().any(|r| r.file_id == excluded_id),
+            "排除项不应在 results 中"
+        );
+
+        // operations_log 应该只有 2 条（排除项没写日志）
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        let logs = OperationRepo::list_by_batch(guard.conn(), &exec.batch_id)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(logs.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_operations_delete_soft_deletes() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["del1.txt", "del2.txt"],
+            OperationType::Delete,
+            None,
+            vec![],
+        )?;
+
+        assert_eq!(exec.summary.success, 2);
+
+        // files 表记录应被软删除
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        for r in &exec.results {
+            // get_by_id 只返回未删除记录，软删除后应返回 None
+            let file = FileRepo::get_by_id(guard.conn(), &r.file_id).map_err(|e| e.to_string())?;
+            assert!(file.is_none(), "Delete 后记录应被软删除");
+        }
+
+        // operations_log 有 2 条 done 记录，operation_type='delete'
+        let logs = OperationRepo::list_by_batch(guard.conn(), &exec.batch_id)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(logs.len(), 2);
+        assert!(logs.iter().all(|l| l.operation_type == "delete"));
+        assert!(logs.iter().all(|l| l.target_path.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_operations_copy_does_not_modify_files_table(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["orig.txt"],
+            OperationType::Copy,
+            Some(target_dir.path().to_string_lossy().to_string()),
+            vec![],
+        )?;
+
+        assert_eq!(exec.summary.success, 1);
+
+        // Copy 后 files 表原记录路径不变
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        let file = FileRepo::get_by_id(guard.conn(), &exec.results[0].file_id)
+            .map_err(|e| e.to_string())?;
+        let f = file.expect("files 表应有原记录");
+        assert!(
+            f.path
+                .starts_with(scan_root.path().to_string_lossy().as_ref()),
+            "Copy 后源记录路径不应变化"
+        );
+        assert!(!f.is_deleted);
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_operations_failed_item_still_writes_log(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?; // 真实存在的目录，让 preview 通过
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        // 先 preview 拿到 plan
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["real.txt"])?;
+        let preview = preview_operations_inner(
+            PreviewRequest {
+                file_ids: ids,
+                operation: OperationType::Move,
+                target_dir: Some(target_dir.path().to_string_lossy().to_string()),
+                conflict_strategy: Some(ConflictStrategy::Rename),
+            },
+            &state,
+        )?;
+
+        // 把源文件删除，让 execute 阶段失败（preview 已通过）
+        std::fs::remove_file(scan_root.path().join("real.txt"))?;
+
+        let exec = execute_operations_inner(
+            ExecuteRequest {
+                batch_id: preview.batch_id.clone(),
+                plan: preview.plan.clone(),
+                exclude_file_ids: vec![],
+            },
+            &state,
+        )?;
+
+        // 失败也算入 total，但不计入 skipped
+        assert_eq!(exec.summary.total, 1);
+        assert_eq!(exec.summary.success, 0);
+        assert_eq!(exec.summary.failed, 1);
+
+        // 失败的项也写日志，status=failed
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        let logs = OperationRepo::list_by_batch(guard.conn(), &exec.batch_id)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].status, "failed");
         Ok(())
     }
 }

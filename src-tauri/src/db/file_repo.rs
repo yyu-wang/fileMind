@@ -2,6 +2,7 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::db::models::FileRecord;
 use crate::error::{AppError, AppResult};
@@ -195,6 +196,31 @@ impl FileRepo {
         let affected = conn.execute(
             "UPDATE files SET category = ?1, updated_at = datetime('now') WHERE id = ?2 AND is_deleted = 0",
             params![category, id],
+        )?;
+
+        if affected == 0 {
+            return Err(AppError::Database(rusqlite::Error::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    /// 移动/重命名后更新文件路径 + `updated_at`（`execute_operations` 用）。
+    ///
+    /// # Errors
+    ///
+    /// 文件不存在时返回 `QueryReturnedNoRows`；更新失败返回数据库错误。
+    pub fn update_path(conn: &Connection, id: &str, new_path: &str) -> AppResult<()> {
+        let affected = conn.execute(
+            "UPDATE files SET path = ?1, file_name = ?2, updated_at = datetime('now')
+             WHERE id = ?3 AND is_deleted = 0",
+            params![
+                new_path,
+                Path::new(new_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                id
+            ],
         )?;
 
         if affected == 0 {
