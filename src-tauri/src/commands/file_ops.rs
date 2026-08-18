@@ -10,6 +10,7 @@ use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
 use crate::services::hash_service::compute_file_hash;
 use crate::services::operation_executor;
+use crate::services::undo_executor;
 use crate::{AppState, FileInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -395,17 +396,123 @@ fn execute_operations_inner(
     })
 }
 
-/// 按批次 ID 撤销已执行的批量操作（待操作日志链实现）。
+/// 按批次 ID 撤销已执行的批量操作（API §s2-2c）。
+///
+/// 流程（反向操作链）：
+///   1. `OperationRepo::list_by_batch` 拉取该批次日志（ASC 序）
+///   2. 校验：批次不存在 / 已撤销 / 含 `delete`（当前不支持）→ 报错
+///   3. 反向遍历（DESC），逐条对 `status=done` 的行执行反向文件操作：
+///      - `move`/`rename`：`rename(target → source)` + 回写 `files.path`
+///      - `copy`：删除 `target_path` 处的副本
+///   4. 每项成功后 `update_status(undone)`；单项失败计入 `failed_count`
 ///
 /// # Errors
 ///
-/// 操作日志查询尚未实现时始终返回 `FILE-E-004` 错误。
+/// 批次不存在、已撤销或含 `delete` 时返回错误；单项撤销失败记录在 `failed_count` 中。
 #[tauri::command(async)]
 #[specta::specta]
-pub fn undo_batch(batch_id: String) -> Result<BatchResult, String> {
-    Err(format!(
-        "FILE-E-004:撤销操作尚未实现 (batch_id={batch_id})，需要操作日志查询支持"
-    ))
+pub fn undo_batch(
+    batch_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<UndoResponse, String> {
+    undo_batch_inner(&batch_id, &state).map_err(|e| e.to_string())
+}
+
+/// 撤销逻辑纯函数入口（便于单元测试，不依赖 `tauri::State`）。
+fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse> {
+    let logs = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        OperationRepo::list_by_batch(guard.conn(), batch_id)?
+    };
+
+    if logs.is_empty() {
+        return Err(AppError::InvalidInput(format!(
+            "批次不存在或无可撤销项: {batch_id}"
+        )));
+    }
+
+    // 幂等校验：批次内已有 undone → 拒绝重复撤销
+    if logs.iter().any(|l| l.status == "undone") {
+        return Err(AppError::Forbidden(format!(
+            "批次已撤销，不能重复撤销: {batch_id}"
+        )));
+    }
+
+    // Delete 为永久删除（T3.3），物理文件无法恢复，暂不支持撤销
+    if logs.iter().any(|l| l.operation_type == "delete") {
+        return Err(AppError::Forbidden("删除批次暂不支持撤销".into()));
+    }
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let mut undone_count = 0u32;
+    let mut failed_count = 0u32;
+
+    // 反向遍历：后执行的先撤销（同类操作互相独立，反序仅为语义正确性）
+    for log in logs.iter().rev() {
+        // 只撤销执行成功的项；failed/pending 无文件副作用可回滚，跳过
+        if log.status != "done" {
+            continue;
+        }
+
+        let undo_result = undo_executor::execute_undo_item(
+            &log.operation_type,
+            &log.source_path,
+            &log.target_path,
+        );
+
+        match undo_result {
+            Ok(()) => {
+                // 物理撤销成功后同步 DB（files.path 回写 + 日志标记 undone）
+                if let Ok(guard) = state.db.lock() {
+                    let conn = guard.conn();
+                    match log.operation_type.as_str() {
+                        "move" | "rename" => {
+                            if let Ok(Some(rec)) = FileRepo::get_by_path(conn, &log.target_path) {
+                                if let Err(e) =
+                                    FileRepo::update_path(conn, &rec.id, &log.source_path)
+                                {
+                                    log::warn!("undo_batch 回写 files.path 失败: {e}");
+                                }
+                            }
+                        }
+                        // copy 撤销只删副本，files 表源记录不变
+                        _ => {}
+                    }
+                    if let Err(e) = OperationRepo::update_status(conn, &log.id, "undone") {
+                        log::warn!("undo_batch 标记 undone 失败: {e}");
+                    }
+                }
+                undone_count += 1;
+            }
+            Err(e) => {
+                log::warn!("undo_batch 撤销项失败 (id={}): {e}", log.id);
+                failed_count += 1;
+            }
+        }
+    }
+
+    Ok(UndoResponse {
+        success: failed_count == 0,
+        undone_count,
+        failed_count,
+        task_id,
+    })
+}
+
+/// 撤销响应体（API §s2-2c 返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct UndoResponse {
+    /// 是否全部撤销成功（无失败项）。
+    pub success: bool,
+    /// 成功撤销条数。
+    pub undone_count: u32,
+    /// 撤销失败条数（原路径被占用等）。
+    pub failed_count: u32,
+    /// 本次撤销任务 ID（uuid，用于关联日志/审计）。
+    pub task_id: String,
 }
 
 /// 从磁盘根目录扫描文件，收集元信息。
@@ -731,10 +838,144 @@ mod tests {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // T3.4 undo_batch 测试
+    // ------------------------------------------------------------------
+
     #[test]
-    fn test_undo_batch_returns_error() {
-        let result = undo_batch("test-batch".to_string());
+    fn test_undo_batch_move_full_flow() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["a.txt", "b.txt"],
+            OperationType::Move,
+            Some(target_dir.path().to_string_lossy().to_string()),
+            vec![],
+        )?;
+        assert_eq!(exec.summary.success, 2);
+
+        // 执行后：源目录空，目标目录有文件
+        assert!(!scan_root.path().join("a.txt").exists());
+        assert!(target_dir.path().join("a.txt").exists());
+
+        let undo = undo_batch_inner(&exec.batch_id, &state)?;
+        assert!(undo.success);
+        assert_eq!(undo.undone_count, 2);
+        assert_eq!(undo.failed_count, 0);
+
+        // 撤销后：文件回到源目录，目标目录空
+        assert!(scan_root.path().join("a.txt").exists());
+        assert!(scan_root.path().join("b.txt").exists());
+        assert!(!target_dir.path().join("a.txt").exists());
+
+        // files 表路径回写 + 日志标记 undone
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        let rec = FileRepo::get_by_id(guard.conn(), &exec.results[0].file_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("files 表应有记录")?;
+        assert!(
+            rec.path
+                .starts_with(scan_root.path().to_string_lossy().as_ref()),
+            "撤销后 files.path 应回写源目录: {}",
+            rec.path
+        );
+        let logs = OperationRepo::list_by_batch(guard.conn(), &exec.batch_id)
+            .map_err(|e| e.to_string())?;
+        assert!(logs.iter().all(|l| l.status == "undone"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_batch_copy_removes_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["orig.txt"],
+            OperationType::Copy,
+            Some(target_dir.path().to_string_lossy().to_string()),
+            vec![],
+        )?;
+        assert_eq!(exec.summary.success, 1);
+        assert!(target_dir.path().join("orig.txt").exists());
+
+        let undo = undo_batch_inner(&exec.batch_id, &state)?;
+        assert!(undo.success);
+        assert_eq!(undo.undone_count, 1);
+
+        // 副本已删除，源文件保留
+        assert!(!target_dir.path().join("orig.txt").exists());
+        assert!(scan_root.path().join("orig.txt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_batch_nonexistent_batch_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let result = undo_batch_inner("nonexistent-batch", &state);
         assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AppError::InvalidInput(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_batch_delete_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["del.txt"],
+            OperationType::Delete,
+            None,
+            vec![],
+        )?;
+        assert_eq!(exec.summary.success, 1);
+
+        let result = undo_batch_inner(&exec.batch_id, &state);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AppError::Forbidden(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn test_undo_batch_double_undo_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, exec) = preview_then_execute(
+            &state,
+            scan_root.path(),
+            &["a.txt"],
+            OperationType::Move,
+            Some(target_dir.path().to_string_lossy().to_string()),
+            vec![],
+        )?;
+
+        // 第一次撤销成功
+        let undo1 = undo_batch_inner(&exec.batch_id, &state)?;
+        assert!(undo1.success);
+
+        // 第二次撤销被拒绝
+        let undo2 = undo_batch_inner(&exec.batch_id, &state);
+        assert!(undo2.is_err());
+        assert!(matches!(undo2.unwrap_err(), AppError::Forbidden(_)));
+        Ok(())
     }
 
     #[test]

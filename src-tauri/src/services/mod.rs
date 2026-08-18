@@ -3,6 +3,7 @@
 pub mod conflict_resolver;
 pub mod hash_service;
 pub mod operation_executor;
+pub mod undo_executor;
 
 // 测试模块独立文件（hash_service_tests.rs / conflict_resolver_tests.rs /
 // operation_executor_tests.rs），避免单一源文件膨胀。
