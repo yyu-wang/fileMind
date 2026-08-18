@@ -26,6 +26,7 @@ use crate::error::{AppError, AppResult};
 use crate::security::handshake;
 use crate::sidecar::proxy;
 use std::process::Child;
+use tauri::Manager as _;
 
 const SIDECAR_PORT: u16 = 8765;
 /// Sidecar 就绪轮询最大尝试次数。
@@ -52,6 +53,14 @@ const GRACEFUL_TOTAL_TIMEOUT_SECS: u64 = 5;
 
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
 pub struct SidecarManager {
+    /// Sidecar 二进制绝对路径，由调用方在构造时显式注入。
+    ///
+    /// dev 模式：`resolve_dev_binary_path()` 解析自 env / repo 相对路径；
+    /// bundle 模式：Tauri v2 `app.path().resolve(...)` 解析自 `MacOS` / 安装目录。
+    ///
+    /// 字段名加下划线后缀避免与同名访问器方法 [`SidecarManager::binary_path`] 冲突
+    /// （字段私有，仅内部实现访问；对外一律通过访问器）。
+    binary_path_: std::path::PathBuf,
     /// 子进程句柄（未启动时为 `None`）。
     process: Option<Child>,
     /// Sidecar 监听端口。
@@ -70,10 +79,15 @@ pub struct SidecarManager {
 }
 
 impl SidecarManager {
-    /// 创建管理器（默认端口，尚未启动进程）。
+    /// 用调用方解析好的 Sidecar 二进制绝对路径创建管理器（尚未启动进程）。
+    ///
+    /// 启动语义：本函数不校验 `binary_path` 是否存在，若路径无效，会在
+    /// [`SidecarManager::start`] 的 `Command::spawn` 阶段返回
+    /// [`AppError::SidecarUnavailable`]（附路径信息，便于排障）。
     #[must_use]
-    pub const fn new() -> Self {
+    pub const fn new(binary_path: std::path::PathBuf) -> Self {
         Self {
+            binary_path_: binary_path,
             process: None,
             port: SIDECAR_PORT,
             psk: None,
@@ -82,6 +96,18 @@ impl SidecarManager {
             recent_health_fails: 0,
             stopped: AtomicBool::new(false),
         }
+    }
+
+    /// 当前 Sidecar 二进制路径（供排障面板 / 日志展示）。
+    #[must_use]
+    pub fn binary_path(&self) -> &std::path::Path {
+        &self.binary_path_
+    }
+
+    /// 测试场景：拿到构造时内部 `binary_path` 引用（同 crate 可见，避免对外公开字段）。
+    #[cfg(test)]
+    pub(crate) fn binary_path_inner(&self) -> &std::path::Path {
+        &self.binary_path_
     }
 
     /// 是否已停止（一次性置位）。
@@ -112,15 +138,18 @@ impl SidecarManager {
         let psk = handshake::generate_psk()?;
         let psk_hex = hex::encode(&psk);
 
-        let binary_path = std::env::current_dir()
-            .map_err(|e| AppError::SidecarUnavailable(format!("无法获取当前目录: {e}")))?
-            .join("binaries/filemind-sidecar");
+        log::info!("准备启动 Sidecar，binary={}", self.binary_path_.display());
 
-        let mut child = std::process::Command::new(&binary_path)
+        let mut child = std::process::Command::new(&self.binary_path_)
             .env("SIDECAR_PORT", self.port.to_string())
             .stdin(Stdio::piped())
             .spawn()
-            .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar 启动失败: {e}")))?;
+            .map_err(|e| {
+                AppError::SidecarUnavailable(format!(
+                    "Sidecar 启动失败 (binary={}): {e}",
+                    self.binary_path_.display()
+                ))
+            })?;
 
         // 通过 stdin 注入 PSK（hex 字符串 + 换行），随后关闭管道
         // 安全：stdin 管道仅在父子进程间可见，比 env 更稳妥（防同用户进程 ps 读取）
@@ -452,8 +481,198 @@ pub enum WatchdogAction {
 
 impl Default for SidecarManager {
     fn default() -> Self {
-        Self::new()
+        // Default 仅用于 Mutex::new(Default::default()) 类型占位或单测；
+        // 真实二进制运行前（main/setup）会被具体解析后的路径覆盖。
+        // 拼接 ``${CARGO_MANIFEST_DIR}/../filemind/binaries/filemind-sidecar``，
+        // 即便文件不存在，也保证 binary_path() 字段语义对应约定的 dev 产物位置，
+        // 不会再误指向 Cargo.toml 文本。
+        let dev_stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("filemind")
+            .join("binaries")
+            .join("filemind-sidecar");
+        Self::new(dev_stub)
     }
+}
+
+// ---------- 二进制路径解析（dev 模式 / CI 注入） ----------
+
+/// 根据当前编译目标推断 Rust triple 字符串（用于定位 `filemind-sidecar-{triple}` 产物名）。
+///
+/// 注意：triple 字符串匹配的是 **构建侧** `build-sidecar.sh --target` 的参数。
+/// 对于「本机编译本机跑」场景一致；交叉编译环境下由 `FILEMIND_SIDECAR_BINARY` 覆盖，
+/// 不会走到该回退。
+#[must_use]
+pub fn current_target_triple() -> String {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin".into(),
+        ("macos", "x86_64") => "x86_64-apple-darwin".into(),
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc".into(),
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu".into(),
+        (os, arch) => format!("{arch}-{os}"),
+    }
+}
+
+/// dev 模式解析 Sidecar 二进制绝对路径（打包模式由 Tauri `PathResolver` 代替本函数）。
+///
+/// 优先级从高到低：
+///
+/// 1. `override_env`：调用方读 `FILEMIND_SIDECAR_BINARY` 后传入（绝对/相对都行，
+///    存在即 canonicalize 返回）；传 `None` 或空串 → 跳过。
+/// 2. 基于 `CARGO_MANIFEST_DIR` 环境变量（cargo 注入，指向 ``<repo>/src-tauri``）：
+///    向上回退到 repo 根，然后找 ``filemind/binaries/``：
+///    a. ``filemind-sidecar-{triple}`` 具体架构产物（优先生效）
+///    b. ``filemind-sidecar`` 软链接（兜底，build-sidecar.sh 创建）
+/// 3. 最后回退：``${cwd}/filemind/binaries/filemind-sidecar``（兼容手工启动场景）。
+///
+/// 返回：第一个命中且 `metadata().is_file()` 的路径（已 `canonicalize`，无相对段）。
+///
+/// # Errors
+///
+/// 全部候选路径不存在时返回 [`AppError::SidecarUnavailable`]，错误信息附带候选列表
+/// + 当前 triple 构建建议，便于排障。
+pub fn resolve_dev_binary_path(override_env: Option<&str>) -> AppResult<std::path::PathBuf> {
+    let mut tried: Vec<String> = Vec::new();
+
+    // ---- 优先级 1：显式覆盖（CI / 调试） ----
+    if let Some(ov) = override_env.filter(|s| !s.is_empty()) {
+        let p = std::path::PathBuf::from(ov);
+        tried.push(format!("(override) {}", p.display()));
+        if is_existing_file(&p) {
+            return p.canonicalize().map_err(|e| {
+                AppError::SidecarUnavailable(format!("canonicalize override 失败: {e}"))
+            });
+        }
+    }
+
+    // ---- 优先级 2：CARGO_MANIFEST_DIR → repo 根回退 ----
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let src_tauri = std::path::PathBuf::from(manifest_dir);
+        // CARGO_MANIFEST_DIR = <repo>/src-tauri → repo 根 = parent()
+        if let Some(repo_root) = src_tauri.parent() {
+            let binaries_dir = repo_root.join("filemind").join("binaries");
+            let triple = current_target_triple();
+            let cand_triple = binaries_dir.join(format!("filemind-sidecar-{triple}"));
+            tried.push(format!("(cargo-triple) {}", cand_triple.display()));
+            if is_existing_file(&cand_triple) {
+                return cand_triple.canonicalize().map_err(|e| {
+                    AppError::SidecarUnavailable(format!("canonicalize triple-binary 失败: {e}"))
+                });
+            }
+            let cand_sym = binaries_dir.join("filemind-sidecar");
+            tried.push(format!("(cargo-symlink) {}", cand_sym.display()));
+            if is_existing_file(&cand_sym) {
+                return cand_sym.canonicalize().map_err(|e| {
+                    AppError::SidecarUnavailable(format!("canonicalize sidecar-symlink 失败: {e}"))
+                });
+            }
+        }
+    }
+
+    // ---- 优先级 3：cwd 兜底 ----
+    if let Ok(cwd) = std::env::current_dir() {
+        let fallback = cwd
+            .join("filemind")
+            .join("binaries")
+            .join("filemind-sidecar");
+        tried.push(format!("(cwd) {}", fallback.display()));
+        if is_existing_file(&fallback) {
+            return fallback.canonicalize().map_err(|e| {
+                AppError::SidecarUnavailable(format!("canonicalize cwd fallback 失败: {e}"))
+            });
+        }
+    } else {
+        tried.push("(cwd) 无法读取 current_dir → 已跳过".to_string());
+    }
+
+    // ---- 全部不命中 ----
+    Err(AppError::SidecarUnavailable(format!(
+        "dev 模式未找到 Sidecar 二进制，候选列表:\n  - {}\n\
+         建议：1) 先跑 bash scripts/build-sidecar.sh --target {}；2) 或设置 FILEMIND_SIDECAR_BINARY 指向产物绝对路径",
+        tried.join("\n  - "),
+        current_target_triple()
+    )))
+}
+
+/// 小 helper：`fs::metadata(p).ok()?.is_file()` 走短路，不用再写多处。
+fn is_existing_file(p: &std::path::Path) -> bool {
+    std::fs::metadata(p).ok().is_some_and(|m| m.is_file())
+}
+
+// ---------- 二进制路径解析（bundle 模式 / Tauri resources 回退） ----------
+
+/// bundle 模式下，基于给定的「resources 根目录」解析 Sidecar 可执行文件的绝对路径。
+///
+/// 纯函数：`resolve_bundle_binary_path`（Tauri 封装版）对 `AppHandle` 的 `PathResolver`
+/// 结果再调用本函数；单测可绕过 Tauri 直接传 `tempdir` 验证拼接和错误文案。
+///
+/// 候选查找顺序：
+/// 1. `${resources_root}/filemind-sidecar-{triple}`（架构专属，优先生效）
+/// 2. `${resources_root}/filemind-sidecar`（Windows 上额外兼容 `.exe` 后缀兜底）
+///
+/// # Errors
+///
+/// 全部候选不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，附候选路径列表
+/// 与 `resources_root`，便于现场排障（如打包脚本漏拷了二进制）。
+pub fn resolve_bundle_from_resources(
+    resources_root: &std::path::Path,
+) -> AppResult<std::path::PathBuf> {
+    let triple = current_target_triple();
+    let mut tried: Vec<String> = Vec::new();
+
+    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
+        vec![
+            resources_root.join(format!("filemind-sidecar-{triple}.exe")),
+            resources_root.join("filemind-sidecar.exe"),
+            resources_root.join(format!("filemind-sidecar-{triple}")),
+            resources_root.join("filemind-sidecar"),
+        ]
+    } else {
+        vec![
+            resources_root.join(format!("filemind-sidecar-{triple}")),
+            resources_root.join("filemind-sidecar"),
+        ]
+    };
+
+    for c in candidates {
+        tried.push(format!("{}", c.display()));
+        if is_existing_file(&c) {
+            return c.canonicalize().map_err(|e| {
+                AppError::SidecarUnavailable(format!(
+                    "Sidecar 命中 bundle 候选 {} 但 canonicalize 失败: {e}",
+                    c.display()
+                ))
+            });
+        }
+    }
+
+    Err(AppError::SidecarUnavailable(format!(
+        "Sidecar 二进制在 Tauri resources 目录下未找到: resources_root={}; 候选列表:\n  {}\n请确认打包脚本 build-sidecar.sh 已把产物拷入 resources/",
+        resources_root.display(),
+        tried.join("\n  ")
+    )))
+}
+
+/// bundle 模式下，通过 Tauri [`tauri::Manager::path`] 解析 Sidecar 可执行文件绝对路径。
+///
+/// 解析到的路径即传给 [`SidecarManager::new`] 启动；本函数仅做路径定位，不含进程启动。
+///
+/// 实现层：先取 `app.path().resource_dir()` → 命中再调纯函数
+/// [`resolve_bundle_from_resources`]。这样单测可以不用 Mock Tauri Runtime。
+///
+/// # Errors
+///
+/// - `app.path().resource_dir()` 返回 `None`（极少：非 bundle 环境或平台不支持）
+/// - resources 下所有候选均不命中（详情见 [`resolve_bundle_from_resources`]）
+pub fn resolve_bundle_binary_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<std::path::PathBuf> {
+    let root = app.path().resource_dir().map_err(|e| {
+        AppError::SidecarUnavailable(format!(
+            "Tauri resource_dir 查询失败（非 bundle 环境？）: {e}"
+        ))
+    })?;
+    resolve_bundle_from_resources(&root)
 }
 
 impl Drop for SidecarManager {

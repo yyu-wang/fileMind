@@ -6,3 +6,4 @@ ollama==0.6.2
 httpx==0.28.1
 jieba==0.42.1
 numpy==2.5.2
+psutil>=5.9

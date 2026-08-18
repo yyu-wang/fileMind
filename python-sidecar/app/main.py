@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ from app.api import (
     routes_handshake,
     routes_health,
     routes_index,
+    routes_metrics,
     routes_shutdown,
 )
 from app.middleware.hmac_auth import HMACMiddleware
@@ -41,11 +43,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         生产模式（Rust spawn）：stdin 是 pipe，Rust 通过 stdin 注入 PSK。
         dev 模式（用户直接启动 uvicorn）：stdin 是 tty，无 PSK 注入，
             中间件跳过验签（仅本机测试，发布版不会出现）。
+        PyInstaller onefile 模式（sidecar_entry.py 负责注入）：
+            ``PYINSTALLER_RUNTIME=1`` 且 ``state.get_psk()`` 已非空，跳过
+            二次读 stdin（避免 onefile bootloader 复用 PIPE 时读阻塞）。
 
     shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
     """
-    # 生产模式：stdin 是 pipe，第一行为 PSK hex
-    if not sys.stdin.isatty():
+    if (
+        os.environ.get("PYINSTALLER_RUNTIME") != "1" or state.get_psk() is None
+    ) and not sys.stdin.isatty():
+        # 非 PyInstaller 模式（dev / Rust 直接调 python -m uvicorn），或 PyInstaller
+        # 模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
         psk_hex = sys.stdin.readline().strip()
         if psk_hex:
             state.set_psk(bytes.fromhex(psk_hex))
@@ -72,6 +80,7 @@ app.add_middleware(HMACMiddleware)
 app.include_router(routes_handshake.router)
 app.include_router(routes_health.router)
 app.include_router(routes_shutdown.router)
+app.include_router(routes_metrics.router)
 app.include_router(routes_classify.router)
 app.include_router(routes_index.router)
 app.include_router(routes_chat.router)

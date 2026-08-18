@@ -2,17 +2,90 @@
 //!
 //! 独立文件拆分原因：`manager.rs` 主实现若内嵌 tests 模块会超 Rust<500 行复杂度阈值。
 
+#![allow(clippy::unwrap_used, clippy::panic, clippy::expect_fun_call)]
+// 测试代码允许：unwrap / panic 是测试失败的最直观表达，`expect("<static str>")` 语义等价
+// 但 unwrap 更简洁；`-D clippy::unwrap_used/panic` 在生产代码里需严格遵守。
+
+use std::path::{Path, PathBuf};
+
 use super::*;
+
+// ---------- 工具：RAII 环境变量守卫，避免 set_var 串扰 ----------
+
+/// `env::set_var` 的 RAII 包装：测试结束时恢复（或跳过删除）原值。
+///
+/// 为什么不用 crate：项目 dev-deps 未引入 `temp_env`，用 10 行自写满足需求。
+struct EnvGuard {
+    key: &'static str,
+    old: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl Into<String>) -> Self {
+        // 注：cargo test 默认串行执行测试，多线程场景下 env 变更未做同步
+        // 仅用于本模块的 resolve 单测，避免污染其它运行中的进程。
+        let old = std::env::var(key).ok();
+        std::env::set_var(key, value.into());
+        Self { key, old }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(v) = &self.old {
+            std::env::set_var(self.key, v);
+        }
+        // else: 测试前该 env 不存在 → 不做 remove_var（Rust 下它是 unsafe，
+        // 串行执行时即使保留测试专用 env，也不影响其他测试（各自都有 EnvGuard set 覆盖）。
+    }
+}
+
+/// 在临时目录里创建 ``repo_root/filemind/binaries/{files...}`` 结构，返回 `TempDir`。
+fn build_binaries_structure(files: &[&str]) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("建临时目录失败");
+    let dir = tmp.path().join("filemind").join("binaries");
+    std::fs::create_dir_all(&dir).expect("mkdir binaries 失败");
+    for name in files {
+        let p = dir.join(name);
+        std::fs::write(&p, b"dummy-binary-content").expect("写 dummy binary 失败");
+        // 给执行位：仅 Unix 有效；_is_existing_file 判的是 is_file()，其实不需要；
+        // 保留用于贴近真实侧车二进制场景。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = p.metadata().expect("读刚写完的文件 metadata 不应失败");
+            let mut perms = meta.permissions();
+            perms.set_mode(perms.mode() | 0o755);
+            std::fs::set_permissions(&p, perms).expect("设置执行位失败");
+        }
+    }
+    tmp
+}
+
+/// 写 ``<tmp>/src-tauri/Cargo.toml`` 占位文件，供 `CARGO_MANIFEST_DIR` 测试用。
+fn write_src_tauri(repo_root: &Path) {
+    let src_tauri = repo_root.join("src-tauri");
+    std::fs::create_dir_all(&src_tauri).expect("mkdir src-tauri 失败");
+    std::fs::write(src_tauri.join("Cargo.toml"), b"[package]\nname = 'x'\n")
+        .expect("写占位 Cargo.toml 失败");
+}
+
+// ---------- 原有 8 条测试：适配 new(PathBuf) ----------
+
+fn stub_binary() -> PathBuf {
+    // 用一个真文件占位（不真启动，只做字段校验）。``<src-tauri>/Cargo.toml`` 永远存在。
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+}
 
 #[test]
 fn test_new_has_no_process() {
-    let mut manager = SidecarManager::new();
-    // 未启动时 stop 应成功无副作用；stopped=false 时 stop_hard 也应 ok
+    let mut manager = SidecarManager::new(stub_binary());
     let result = manager.stop_hard();
     assert!(result.is_ok(), "未启动时 stop_hard 应无副作用");
     assert_eq!(manager.psk(), None);
     assert_eq!(manager.pid(), None);
     assert!(!manager.is_stopped());
+    assert_eq!(manager.binary_path_inner(), stub_binary().as_path());
 }
 
 #[test]
@@ -20,9 +93,8 @@ fn test_stopped_flag_idempotent_stop_graceful_path() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("建 tokio runtime");
-    let mut manager = SidecarManager::new();
-    // 未启动时 stop_graceful 不会报进程错误
+        .expect("建 tokio runtime 失败");
+    let mut manager = SidecarManager::new(stub_binary());
     rt.block_on(async {
         let r1 = manager.stop_graceful(1).await;
         let r2 = manager.stop_graceful(2).await;
@@ -34,19 +106,13 @@ fn test_stopped_flag_idempotent_stop_graceful_path() {
 
 #[test]
 fn test_backoff_grows_exponentially_with_cap() {
-    // 构造一个 manager，模拟连续失败：手动加 consecutive_failures
-    let mut manager = SidecarManager::new();
-    // 0 失败 → base
+    let mut manager = SidecarManager::new(stub_binary());
     assert_eq!(
         manager.next_backoff(),
         Duration::from_millis(RESTART_BACKOFF_BASE_MS)
     );
-    // 连续失败：手动递增
     for i in 0u32..=10u32 {
-        // consecutive_failures 的加应该在 restart() 失败时加，但我们直接
-        // 测 backoff：利用结构体可见性（同模块），tests 子模块可访问私有字段。
         manager.consecutive_failures = i;
-        // 2^(min(i,3))
         let shift = i.min(3);
         let expected_ms = u64::min(
             RESTART_BACKOFF_BASE_MS * (1u64 << shift),
@@ -58,7 +124,6 @@ fn test_backoff_grows_exponentially_with_cap() {
             "第 {i} 次连续失败 backoff 应为 {expected_ms}ms"
         );
     }
-    // 超过 shift=3 后都停在 cap
     manager.consecutive_failures = 100;
     assert_eq!(
         manager.next_backoff(),
@@ -68,8 +133,7 @@ fn test_backoff_grows_exponentially_with_cap() {
 
 #[test]
 fn test_crash_loop_window_pauses_after_threshold() {
-    let mut manager = SidecarManager::new();
-    // 构造 CRASH_LOOP_MAX_RESTARTS - 1 次在窗口内的重启：使用私有 recent_restarts
+    let mut manager = SidecarManager::new(stub_binary());
     let now = Instant::now();
     for _ in 0..(CRASH_LOOP_MAX_RESTARTS - 1) {
         manager.recent_restarts.push_back(now);
@@ -80,7 +144,6 @@ fn test_crash_loop_window_pauses_after_threshold() {
         manager.restart_count_in_window(),
         CRASH_LOOP_MAX_RESTARTS
     );
-    // 再 1 条 → 到阈值 → 暂停
     manager.recent_restarts.push_back(now);
     assert!(
         manager.is_crash_loop_paused(),
@@ -90,21 +153,17 @@ fn test_crash_loop_window_pauses_after_threshold() {
 
 #[test]
 fn test_crash_loop_window_expires_old_entries() {
-    // 构造旧条目（超过 CRASH_LOOP_WINDOW_SECS 前） + 几条新条目，验证旧的被清
-    let mut manager = SidecarManager::new();
+    let mut manager = SidecarManager::new(stub_binary());
     let window = Duration::from_secs(u64::from(CRASH_LOOP_WINDOW_SECS));
-    // 10 条刚好超阈值的"老"数据：时间戳 = 现在 - window - 1s
     let old_t = Instant::now()
         .checked_sub(window + Duration::from_secs(1))
-        .expect("系统时钟不支持回退");
+        .expect("系统时钟不支持 checked_sub");
     for _ in 0..CRASH_LOOP_MAX_RESTARTS {
         manager.recent_restarts.push_back(old_t);
     }
-    // 2 条新数据（刚才）
     let new_t = Instant::now();
     manager.recent_restarts.push_back(new_t);
     manager.recent_restarts.push_back(new_t);
-    // 检查：count_in_window 只看 2 条新的
     assert_eq!(
         manager.restart_count_in_window(),
         2,
@@ -121,9 +180,8 @@ fn test_watchdog_stopped_flag_returns_idle() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("建 tokio runtime");
-    let mut manager = SidecarManager::new();
-    // 先设 stopped
+        .expect("建 tokio runtime 失败");
+    let mut manager = SidecarManager::new(stub_binary());
     let _ = manager.stopped.swap(true, Ordering::SeqCst);
     rt.block_on(async {
         let action = manager.watchdog_tick().await.expect("stopped 时应 ok");
@@ -133,8 +191,288 @@ fn test_watchdog_stopped_flag_returns_idle() {
 
 #[test]
 fn test_default_equals_new() {
-    let mut a = SidecarManager::new();
+    // Default/New 目前不派生 PartialEq（Child 不实现），退化为逐字段等价校验：
+    // 都能 stop_hard 无副作用、都是 stopped=false、recent_restarts 空。
+    let mut a = SidecarManager::new(stub_binary());
     let mut b = SidecarManager::default();
     assert!(a.stop_hard().is_ok());
     assert!(b.stop_hard().is_ok());
+    assert_eq!(a.recent_restarts.len(), 0);
+    assert_eq!(b.recent_restarts.len(), 0);
+    assert!(!a.is_stopped());
+    assert!(!b.is_stopped());
+    assert!(
+        b.binary_path_inner().is_file(),
+        "default 占位 binary 必须是存在的文件"
+    );
+}
+
+// ---------- 新增 7 条：resolve / current_triple / new 字段 / start_fail ----------
+
+#[test]
+fn test_current_target_triple_matches_rustc_triple() {
+    // 能跑 cargo test 时 rustc 一定在 PATH；如果调用异常就 skip，不强挂。
+    let Ok(output) = std::process::Command::new("rustc").arg("-vV").output() else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(host) = stdout.lines().find_map(|l| l.strip_prefix("host: ")) else {
+        return;
+    };
+    let got = current_target_triple();
+    let covered = matches!(
+        host,
+        "aarch64-apple-darwin"
+            | "x86_64-apple-darwin"
+            | "x86_64-pc-windows-msvc"
+            | "x86_64-unknown-linux-gnu"
+    );
+    if covered {
+        assert_eq!(got, host, "current_target_triple 应等于 rustc host triple");
+    }
+}
+
+#[test]
+fn test_resolve_env_override_absolute() {
+    let tmp = build_binaries_structure(&[]);
+    let fake = tmp.path().join("fake-sidecar");
+    std::fs::write(&fake, b"x").expect("写 fake 不应失败");
+    let got = resolve_dev_binary_path(Some(fake.to_str().expect("临时路径应为合法 UTF-8")))
+        .expect("override 指向存在文件应解析成功");
+    assert_eq!(
+        got,
+        fake.canonicalize().expect("canonicalize fake 不应失败")
+    );
+}
+
+#[test]
+fn test_resolve_env_override_takes_highest_priority() {
+    // override + CARGO 路径同时存在时，override 必须优先返回
+    let tmp =
+        build_binaries_structure(&["filemind-sidecar-aarch64-apple-darwin", "filemind-sidecar"]);
+    write_src_tauri(tmp.path());
+    let src_tauri = tmp.path().join("src-tauri");
+    let _g = EnvGuard::set(
+        "CARGO_MANIFEST_DIR",
+        src_tauri.to_string_lossy().to_string(),
+    );
+    let other = tmp.path().join("another-file");
+    std::fs::write(&other, b"x").expect("写 another 不应失败");
+    let got = resolve_dev_binary_path(Some(other.to_str().expect("临时路径 UTF-8")))
+        .expect("解析 override 不应失败");
+    assert_eq!(
+        got,
+        other.canonicalize().expect("canonicalize other 不应失败")
+    );
+}
+
+#[test]
+fn test_resolve_fallback_cargo_manifest_triple_file() {
+    let tmp = build_binaries_structure(&["filemind-sidecar-aarch64-apple-darwin"]);
+    write_src_tauri(tmp.path());
+    let src_tauri = tmp.path().join("src-tauri");
+    let _g = EnvGuard::set(
+        "CARGO_MANIFEST_DIR",
+        src_tauri.to_string_lossy().to_string(),
+    );
+    let result = resolve_dev_binary_path(None);
+    // 如果当前平台刚好是 aarch64 mac → 必须解析到我们建的 triple 文件；
+    // 其他架构：triple 名字不对（我们只建了 arm64）→ 走错误路径，只要不 panic 就通过。
+    if std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64" {
+        let want = tmp
+            .path()
+            .join("filemind/binaries/filemind-sidecar-aarch64-apple-darwin")
+            .canonicalize()
+            .expect("canonicalize triple 不应失败");
+        assert_eq!(result.expect("mac arm64 应命中 triple 文件"), want);
+    } else {
+        // 非 mac arm64：不做强断言；保证无 panic
+        let _ = result;
+    }
+}
+
+#[test]
+fn test_resolve_fallback_cargo_manifest_symlink_only() {
+    // 只放默认 filemind-sidecar（软链接名），不放 triple 具体名
+    let tmp = build_binaries_structure(&["filemind-sidecar"]);
+    write_src_tauri(tmp.path());
+    let src_tauri = tmp.path().join("src-tauri");
+    let _g = EnvGuard::set(
+        "CARGO_MANIFEST_DIR",
+        src_tauri.to_string_lossy().to_string(),
+    );
+    let triple = current_target_triple();
+    let want_sym = tmp.path().join("filemind/binaries/filemind-sidecar");
+    let want_triple = tmp
+        .path()
+        .join(format!("filemind/binaries/filemind-sidecar-{triple}"));
+    let result = resolve_dev_binary_path(None);
+    if want_triple.exists() {
+        // triple 名居然刚好被创建了（其他测试一般不会），就用 triple 结果
+        assert_eq!(
+            result.expect("应能解析到 triple 产物"),
+            want_triple
+                .canonicalize()
+                .expect("canonicalize triple 不应失败")
+        );
+    } else {
+        // 常规情况：只有 symlink 文件，解析到 symlink 兜底
+        assert_eq!(
+            result.expect("应能解析到 symlink 兜底产物"),
+            want_sym
+                .canonicalize()
+                .expect("canonicalize symlink 不应失败")
+        );
+    }
+}
+
+#[test]
+fn test_resolve_all_missing_error() {
+    let tmp = tempfile::tempdir().expect("建空临时目录不应失败");
+    let fake_src_tauri = tmp.path().join("empty-src-tauri");
+    std::fs::create_dir_all(&fake_src_tauri).expect("建空 src_tauri 不应失败");
+    // 注意：CARGO_MANIFEST_DIR 原本不存在时也会被 EnvGuard set，测试结束不 remove（见 Drop 注释）
+    let _g1 = EnvGuard::set(
+        "CARGO_MANIFEST_DIR",
+        fake_src_tauri.to_string_lossy().to_string(),
+    );
+    // 把 cwd 切到空临时目录，确保外部碰巧有 binaries 的情况不会串进来
+    let orig_cwd = std::env::current_dir().expect("读 cwd 不应失败");
+    std::env::set_current_dir(tmp.path()).expect("切 cwd 到 tmp 不应失败");
+    let result = resolve_dev_binary_path(None);
+    // 还原 cwd（即使下面断言失败也要尽量保持环境）
+    std::env::set_current_dir(&orig_cwd).expect("还原 cwd 不应失败");
+    match result {
+        Err(AppError::SidecarUnavailable(msg)) => {
+            assert!(
+                msg.contains("候选列表"),
+                "错误信息应包含候选列表便于排障，实际:\n{msg}"
+            );
+            assert!(
+                msg.contains(&current_target_triple()),
+                "错误信息应附带当前 triple 构建建议，实际:\n{msg}"
+            );
+        }
+        other => panic!("期望返回 SidecarUnavailable，实际: {other:?}"),
+    }
+}
+
+#[test]
+fn test_new_holds_given_path() {
+    let p = stub_binary();
+    let m = SidecarManager::new(p.clone());
+    assert_eq!(m.binary_path_inner(), p.as_path());
+    assert_eq!(m.binary_path(), p.as_path());
+}
+
+#[test]
+fn test_start_fails_on_nonexistent_binary_with_nice_message() {
+    // 给一个不存在的路径 → start() 报 SidecarUnavailable 且携带路径信息
+    let mut m = SidecarManager::new(PathBuf::from("/does/not/exist/filemind-sidecar-vx"));
+    match m.start() {
+        Err(AppError::SidecarUnavailable(msg)) => {
+            assert!(
+                msg.contains("/does/not/exist/filemind-sidecar-vx"),
+                "错误信息应包含路径，实际: {msg}"
+            );
+        }
+        other => panic!("start 对不存在的 binary 应返回 SidecarUnavailable，实际: {other:?}"),
+    }
+}
+
+#[test]
+fn test_default_sidecar_uses_dev_binaries_symlink() {
+    // Default binary_path 纯基于编译时 env!("CARGO_MANIFEST_DIR") 常量拼接，
+    // 不读运行时 env，不需要 EnvGuard。拼接结果应为：
+    //   ${CARGO_MANIFEST_DIR}/../filemind/binaries/filemind-sidecar；
+    // 不 canonicalize（真实二进制可能尚未构建），直接比较逻辑路径。
+    let m = SidecarManager::default();
+    let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("filemind")
+        .join("binaries")
+        .join("filemind-sidecar");
+    assert_eq!(m.binary_path_inner(), expected.as_path());
+    assert_eq!(m.binary_path(), expected.as_path());
+}
+
+#[test]
+fn test_start_uses_placeholder_binary_gives_nice_error() {
+    // 覆盖「管理器 binary_path 字段值真的通过 Command::new 执行层」：
+    // 传一个明确不存在的 `filemind/binaries/filemind-sidecar` 风格路径，
+    // start() 会返回 AppError::SidecarUnavailable，且错误信息中包含该路径。
+    // （注意：不能用 SidecarManager::default() —— 真实开发机上 dev 产物可能已存在，
+    //  会真的启动进程并握手成功；此处用固定不存在路径，验证路径透传即可。）
+    let bogus = PathBuf::from("/tmp/filemind-tests-notexist-bogus")
+        .join("filemind")
+        .join("binaries")
+        .join("filemind-sidecar");
+    let mut m = SidecarManager::new(bogus.clone());
+    match m.start() {
+        Err(AppError::SidecarUnavailable(msg)) => {
+            assert!(
+                msg.contains(bogus.to_str().unwrap()),
+                "start() 错误信息应包含传入的路径，实际: {msg}"
+            );
+            assert!(
+                msg.contains("filemind/binaries/filemind-sidecar"),
+                "路径透传到错误信息时应保留 filemind/binaries/ 上下文，实际: {msg}"
+            );
+        }
+        other => {
+            panic!("SidecarManager::new(不存在).start() 应返回 SidecarUnavailable，实际: {other:?}")
+        }
+    }
+}
+
+#[test]
+fn test_resolve_bundle_prefers_triple_specific_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir 不应失败");
+    let triple = current_target_triple();
+    // 放 triple 专属名（比通用名优先生效） + 通用名也放（验证不被优先选）
+    let triple_bin = tmp.path().join(format!("filemind-sidecar-{triple}"));
+    let generic_bin = tmp.path().join("filemind-sidecar");
+    std::fs::write(&triple_bin, b"fake-a").expect("写 triple 文件失败");
+    std::fs::write(&generic_bin, b"fake-b").expect("写 generic 文件失败");
+
+    let got = resolve_bundle_from_resources(tmp.path()).expect("有 triple 文件应解析成功");
+    assert_eq!(got, triple_bin.canonicalize().unwrap());
+}
+
+#[test]
+fn test_resolve_bundle_falls_back_to_generic_name() {
+    let tmp = tempfile::tempdir().expect("tempdir 不应失败");
+    let triple = current_target_triple();
+    // 只放通用名（triple 名不存在）→ 回退通用名
+    let generic_bin = tmp.path().join("filemind-sidecar");
+    std::fs::write(&generic_bin, b"fake-g").expect("写 generic 文件失败");
+    // 放 triple 名的"目录"，非文件 → 应跳过
+    let triple_dir = tmp.path().join(format!("filemind-sidecar-{triple}"));
+    std::fs::create_dir(&triple_dir).expect("建 triple dir 不应失败");
+
+    let got = resolve_bundle_from_resources(tmp.path()).expect("有 generic 文件应解析成功");
+    assert_eq!(got, generic_bin.canonicalize().unwrap());
+}
+
+#[test]
+fn test_resolve_bundle_missing_reports_candidates() {
+    let tmp = tempfile::tempdir().expect("tempdir 不应失败");
+    let triple = current_target_triple();
+    match resolve_bundle_from_resources(tmp.path()) {
+        Err(AppError::SidecarUnavailable(msg)) => {
+            assert!(
+                msg.contains(&format!("filemind-sidecar-{triple}")),
+                "错误信息应列出 triple 候选，实际: {msg}"
+            );
+            assert!(
+                msg.contains("filemind-sidecar"),
+                "错误信息应列出 generic 候选，实际: {msg}"
+            );
+            assert!(
+                msg.contains("resources_root="),
+                "错误信息应包含 resources_root 提示，实际: {msg}"
+            );
+        }
+        other => panic!("候选均不存在时应返回 SidecarUnavailable，实际: {other:?}"),
+    }
 }

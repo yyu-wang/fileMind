@@ -19,7 +19,9 @@ use std::time::Duration;
 use filemind_lib::commands;
 use filemind_lib::db::Database;
 use filemind_lib::error::AppError;
-use filemind_lib::sidecar::{SidecarManager, WatchdogAction};
+use filemind_lib::sidecar::{
+    resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
+};
 use filemind_lib::AppState;
 use tauri::Manager;
 
@@ -178,7 +180,9 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
 ///
 /// `generate_context!` 宏在编译期生成较大的上下文结构体（框架行为），
 /// 栈占用为 Tauri 已知模式，非业务代码问题，定点豁免此 nursery lint。
-#[allow(clippy::large_stack_frames)]
+/// 同时豁免 `too_many_lines`：主入口承担「解析路径 → 握手 → Tauri 构建 → setup → 事件」
+/// 串联职责，硬拆会破坏可读性，已经按段落分层注释。
+#[allow(clippy::large_stack_frames, clippy::too_many_lines)]
 fn main() {
     env_logger::init();
     let db_path = get_db_path();
@@ -192,7 +196,20 @@ fn main() {
     };
 
     // 启动 Sidecar 并完成 HMAC 握手：失败直接退出，避免在未验证身份时进入主循环
-    let mut sidecar_manager = SidecarManager::new();
+    //
+    // 解析 Sidecar 二进制路径（P1 阶段：只做 dev 路径解析；P2 阶段增加 AppHandle
+    // bundle 路径覆盖 + AppState.sidecar_binary 字段暴露）。
+    // FILEMIND_SIDECAR_BINARY env 存在则优先生效，便于 CI / 调试覆盖。
+    let sidecar_binary =
+        match resolve_dev_binary_path(std::env::var("FILEMIND_SIDECAR_BINARY").ok().as_deref()) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Sidecar 二进制解析失败: {e}");
+                std::process::exit(1);
+            }
+        };
+    log::info!("Sidecar binary path: {}", sidecar_binary.display());
+    let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
     let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
         Ok(psk) => Some(psk),
         Err(e) => {
@@ -218,6 +235,7 @@ fn main() {
             db: Mutex::new(database),
             sidecar_manager: Mutex::new(sidecar_manager),
             sidecar_psk: Mutex::new(sidecar_psk),
+            sidecar_binary: Mutex::new(sidecar_binary),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
         })
@@ -237,6 +255,73 @@ fn main() {
             commands::config::update_config,
         ])
         .setup(move |app| {
+            // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖
+            //
+            // 规则矩阵（main dev 解析先用，这里可能替换）：
+            //   FILEMIND_SIDECAR_BINARY env 已设置             → 不动，强制 env 路径
+            //   env 未设置 + 命中 macOS/Windows bundle / force → 走 Tauri resource_dir
+            //   env 未设置 + dev cargo run                      → 保持 dev 解析结果
+            let env_override_set = std::env::var("FILEMIND_SIDECAR_BINARY")
+                .ok()
+                .is_some_and(|s| !s.is_empty());
+            let force_bundle = std::env::var("FILEMIND_FORCE_BUNDLE_PATH").is_ok();
+            let native_bundle =
+                cfg!(any(target_os = "macos", target_os = "windows"));
+            let should_try_bundle = !env_override_set && (force_bundle || native_bundle);
+
+            if should_try_bundle {
+                match resolve_bundle_binary_path(app.handle()) {
+                    Ok(bundle_path) => {
+                        log::info!(
+                            "命中 bundle Sidecar 路径: {}; 将替换当前 dev 路径并重新握手",
+                            bundle_path.display()
+                        );
+                        let mut new_mgr = SidecarManager::new(bundle_path.clone());
+                        match start_sidecar_with_handshake(&mut new_mgr) {
+                            Ok(new_psk) => {
+                                let state = app.state::<AppState>();
+                                // 顺序：先锁旧 manager → 调用 stop_hard 占位对象（dev 路径
+                                // 的 manager 其实是真启动，务必杀避免端口/孤儿泄漏）→ 再 replace
+                                {
+                                    let Ok(mut old_mgr) = state.sidecar_manager.lock() else {
+                                        log::error!("setup 替换 manager 时 Mutex 中毒，放弃 bundle 切换（沿用 dev 路径）");
+                                        spawn_watchdog(app.handle().clone());
+                                        return Ok(());
+                                    };
+                                    // 旧 manager 可能已经在握手后启动（真正持有 Child），
+                                    // stop_hard 兜底确保旧进程一定杀掉。
+                                    let _ = old_mgr.stop_hard();
+                                    *old_mgr = new_mgr;
+                                }
+                                {
+                                    let Ok(mut binary_guard) = state.sidecar_binary.lock() else {
+                                        log::error!("setup 替换 sidecar_binary 时 Mutex 中毒");
+                                        spawn_watchdog(app.handle().clone());
+                                        return Ok(());
+                                    };
+                                    *binary_guard = bundle_path;
+                                }
+                                {
+                                    let Ok(mut psk_guard) = state.sidecar_psk.lock() else {
+                                        log::error!("setup 替换 sidecar_psk 时 Mutex 中毒");
+                                        spawn_watchdog(app.handle().clone());
+                                        return Ok(());
+                                    };
+                                    *psk_guard = Some(new_psk);
+                                }
+                                state.request_seq.store(0, Ordering::SeqCst);
+                                log::info!("Sidecar 已切换为 bundle 路径并重新握手成功");
+                            }
+                            Err(e) => {
+                                log::warn!("bundle manager 启动+握手失败，回退沿用 dev 路径（已可用）: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("未命中 bundle Sidecar 路径（可能是 dev 环境），保持 dev 路径: {e}");
+                    }
+                }
+            }
             spawn_watchdog(app.handle().clone());
             Ok(())
         });

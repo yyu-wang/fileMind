@@ -63,6 +63,10 @@ pub struct AppState {
     /// Sidecar 握手后的 PSK；握手前为 `None`，握手/重启成功后更新为新密钥。
     /// 安全映射：`S-01`（Sidecar 端口冒充）。
     pub sidecar_psk: Mutex<Option<Vec<u8>>>,
+    /// Sidecar 二进制绝对路径（互斥保护）：
+    /// 启动阶段（main）解析 dev 路径占位写入，`setup` 回调内若命中 bundle 模式则
+    /// 替换为 Tauri resources 路径。各模块统一从此字段读实际执行路径。
+    pub sidecar_binary: Mutex<std::path::PathBuf>,
     /// 请求序号（单调递增），用于 Sidecar 防重放校验。
     /// Sidecar 重启时需重置为 `0`（新 Sidecar 端序列号从 0 开始）。
     /// 安全映射：`T-01`（Sidecar 通信篡改）。

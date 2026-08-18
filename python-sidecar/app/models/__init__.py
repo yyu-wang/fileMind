@@ -59,3 +59,12 @@ class ShutdownResponse(BaseModel):
     """优雅关闭响应体：POST /shutdown 成功后返回。"""
 
     status: str
+
+
+class MetricsResponse(BaseModel):
+    """Sidecar 进程内存监控响应：Go/No-Go 第 7 项（<300MB）的判定依据。"""
+
+    rss_mb: float
+    vms_mb: float
+    threshold_mb: int
+    within_limit: bool

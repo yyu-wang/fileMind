@@ -24,6 +24,7 @@ __pycache__/
 htmlcov/
 .coverage
 coverage.xml
+.cache/
 
 # IDE
 .idea/
@@ -59,3 +60,8 @@ npm-debug.log*
 *.db
 *.db-journal
 *.sqlite
+
+# Sidecar onefile binaries (PyInstaller 产物，每平台 23-60MB，构建时生成；只保留 .gitkeep 占位)
+filemind/binaries/*
+!filemind/binaries/.gitkeep
+
