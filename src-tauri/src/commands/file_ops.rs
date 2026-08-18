@@ -5,14 +5,15 @@
 
 use crate::db::models::FileRecord;
 use crate::db::FileRepo;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::security;
+use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
 use crate::services::hash_service::compute_file_hash;
 use crate::{AppState, FileInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::convert::From;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_SCAN_DEPTH: u32 = 10;
 
@@ -77,38 +78,158 @@ impl From<&FileInfo> for FileRecord {
     }
 }
 
-/// 预览批量文件操作：展示源/目标存在性与冲突，不执行任何变更。
+/// 预览批量文件操作：根据 `file_ids` + `operation` + `target_dir` + `conflict_strategy`
+/// 生成 plan，不执行任何文件系统变更。
+///
+/// 流程（API §s2-2a）：
+///   1. 参数校验（`validate_preview_request`）
+///   2. 生成 `batch_id`（`uuid4`，供 T3.3 `execute_operations` 接力）
+///   3. 从 `SQLite` 反查 `file_ids` 对应的 `FileRecord`（`FileRepo::get_by_ids`）
+///   4. 对每个文件调 `build_plan_item` 应用 `conflict_resolver` 生成 `PlanItem`
+///   5. 聚合 `summary` 返回
 ///
 /// # Errors
 ///
-/// 源或目标路径未通过安全校验时返回错误。
+/// 参数校验失败返回 `AppError::InvalidInput`；数据库查询失败返回 `AppError::Database`。
 #[tauri::command(async)]
 #[specta::specta]
-pub fn preview_operations(operations: Vec<FileOperation>) -> Result<Vec<OperationPreview>, String> {
-    let mut previews = Vec::with_capacity(operations.len());
+pub fn preview_operations(
+    request: PreviewRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<PreviewResponse, String> {
+    let response = preview_operations_inner(request, &state).map_err(|e| e.to_string())?;
+    Ok(response)
+}
 
-    for op in operations {
-        let source_safe = security::validate(&op.source_path)
-            .map_err(|e| format!("FILE-E-002:源路径不安全: {e}"))?;
+/// 预览逻辑的纯函数入口（便于单元测试，不依赖 `tauri::State`）。
+fn preview_operations_inner(
+    request: PreviewRequest,
+    state: &AppState,
+) -> AppResult<PreviewResponse> {
+    validate_preview_request(&request)?;
 
-        let (target_exists, conflict) = if matches!(op.operation_type, OperationType::Delete) {
-            (false, false)
-        } else {
-            let target_safe = security::validate_write_target(&op.target_path)
-                .map_err(|e| format!("FILE-E-003:目标路径不安全: {e}"))?;
-            let exists = target_safe.exists();
-            (exists, exists && source_safe != target_safe)
-        };
+    // 提前生成 batch_id：即使后续失败也能在日志里关联本次预览尝试
+    let batch_id = uuid::Uuid::new_v4().to_string();
 
-        previews.push(OperationPreview {
-            source_exists: source_safe.exists(),
-            target_exists,
-            conflict,
-            operation: op,
+    // 从 SQLite 反查文件记录（顺序与 file_ids 一致；不存在的 id 静默跳过）
+    // MutexGuard<Database> 不 Send+Sync（rusqlite StatementCache 用 RefCell），
+    // 用 to_string 把 PoisonError 转为普通字符串错误，避开类型约束
+    let files = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::get_by_ids(guard.conn(), &request.file_ids)?
+    };
+
+    let strategy = request.conflict_strategy.unwrap_or_default();
+    let mut plan = Vec::with_capacity(files.len());
+    for f in &files {
+        let item = build_plan_item(f, &request, strategy)?;
+        plan.push(item);
+    }
+
+    let summary = aggregate_summary(&plan);
+
+    Ok(PreviewResponse {
+        batch_id,
+        plan,
+        summary,
+    })
+}
+
+/// 预览请求参数校验（API §s2-2a 隐含规则）。
+///
+/// 规则：
+///   - `file_ids` 不能为空
+///   - `operation = Move | Copy` 时 `target_dir` 必填
+///   - `operation = Delete` 时 `target_dir` 可为 `None` 或任意值（忽略不报错）
+fn validate_preview_request(req: &PreviewRequest) -> AppResult<()> {
+    if req.file_ids.is_empty() {
+        return Err(AppError::InvalidInput("file_ids 不能为空".into()));
+    }
+    match req.operation {
+        OperationType::Move | OperationType::Copy | OperationType::Rename => {
+            if req.target_dir.as_ref().is_none_or(|s| s.trim().is_empty()) {
+                return Err(AppError::InvalidInput(format!(
+                    "operation={:?} 需要 target_dir",
+                    req.operation
+                )));
+            }
+        }
+        OperationType::Delete => {
+            // Delete 忽略 target_dir，不校验
+        }
+    }
+    Ok(())
+}
+
+/// 把单个 `FileRecord` 转为 `PlanItem`：应用 `conflict_resolver` 算出
+/// `new_path` / `status` / `conflict_type`。
+///
+/// `Delete` 操作直接返回 `new_path=None, status=Ok`，不走 `conflict_resolver`。
+fn build_plan_item(
+    f: &FileRecord,
+    req: &PreviewRequest,
+    strategy: ConflictStrategy,
+) -> AppResult<PlanItem> {
+    let original_path = PathBuf::from(&f.path);
+
+    // Delete 操作：不调 conflict_resolver
+    if matches!(req.operation, OperationType::Delete) {
+        return Ok(PlanItem {
+            file_id: f.id.clone(),
+            file_name: f.file_name.clone(),
+            original_path: f.path.clone(),
+            new_path: None,
+            operation: OperationType::Delete,
+            status: PlanStatus::Ok,
+            conflict_type: None,
         });
     }
 
-    Ok(previews)
+    // Move/Copy/Rename：从 target_dir + file_name 拼目标
+    let target_dir = req
+        .target_dir
+        .as_ref()
+        .ok_or_else(|| AppError::InvalidInput("target_dir 缺失（不应到达此分支）".into()))?;
+
+    // 安全校验目标目录（防止路径遍历到黑名单目录）
+    security::validate(target_dir)?;
+
+    let (new_path, status, conflict_type) = conflict_resolver::resolve(
+        &f.file_name,
+        &original_path,
+        Path::new(target_dir),
+        strategy,
+    );
+
+    Ok(PlanItem {
+        file_id: f.id.clone(),
+        file_name: f.file_name.clone(),
+        original_path: f.path.clone(),
+        new_path: new_path.map(|p| p.to_string_lossy().to_string()),
+        operation: req.operation.clone(),
+        status,
+        conflict_type,
+    })
+}
+
+/// 聚合 plan 生成 summary（按 `PlanStatus` 计数）。
+fn aggregate_summary(plan: &[PlanItem]) -> PreviewSummary {
+    let total = u32::try_from(plan.len()).unwrap_or(u32::MAX);
+    let mut summary = PreviewSummary {
+        total,
+        ..Default::default()
+    };
+    for item in plan {
+        match item.status {
+            PlanStatus::Ok => summary.ok += 1,
+            PlanStatus::Conflict => summary.conflict += 1,
+            PlanStatus::Error => summary.error += 1,
+        }
+    }
+    summary
 }
 
 /// 逐项执行批量文件操作，返回每项结果与成功/失败计数。
@@ -240,6 +361,19 @@ fn execute_single(op: &FileOperation) -> AppResult<()> {
             }
             std::fs::rename(&source, &target)?;
         }
+        OperationType::Copy => {
+            let target = security::validate_write_target(&op.target_path)?;
+            if target.exists() && source != target {
+                return Err(crate::error::AppError::UnsafePath(format!(
+                    "目标路径已存在且与源路径不同: {}",
+                    target.display()
+                )));
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&source, &target)?;
+        }
         OperationType::Delete => {
             std::fs::remove_file(&source)?;
         }
@@ -254,12 +388,14 @@ fn format_system_time(time: std::time::SystemTime) -> String {
 }
 
 /// 文件操作类型。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 pub enum OperationType {
     /// 移动文件（可跨目录，自动创建父目录）。
     Move,
     /// 重命名文件（同目录内改名）。
     Rename,
+    /// 复制文件（保留源，目标为新副本）。
+    Copy,
     /// 删除文件。
     Delete,
 }
@@ -310,7 +446,76 @@ pub struct BatchResult {
     pub failed_count: u32,
 }
 
+// ===================================================================
+// T3.2 预览接口数据模型（API 规格书 §s2-2a）
+// 领域类型 `ConflictStrategy` / `PlanStatus` / `ConflictType` 定义在
+// `services::conflict_resolver`，本文件通过 use 引入（保持 services 单向依赖）
+// ===================================================================
+
+/// 单个文件的预览计划项（API §s2-2a `plan[]`）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PlanItem {
+    /// 文件 ID（从 `SQLite` `files.id` 反查得到）。
+    pub file_id: String,
+    /// 文件名（便于前端展示，不参与路径计算）。
+    pub file_name: String,
+    /// 源文件绝对路径。
+    pub original_path: String,
+    /// 目标绝对路径（`Delete` 操作时为 `None`）。
+    pub new_path: Option<String>,
+    /// 操作类型。
+    pub operation: OperationType,
+    /// 该项的最终状态。
+    pub status: PlanStatus,
+    /// 冲突类型（仅在 `status=Conflict` 时有值，其它为 `None`）。
+    pub conflict_type: Option<ConflictType>,
+}
+
+/// 预览汇总（API §s2-2a `summary`）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Default)]
+pub struct PreviewSummary {
+    /// 总条目数（等于 `plan.len()`）。
+    pub total: u32,
+    /// 可执行条目数。
+    pub ok: u32,
+    /// 冲突条目数。
+    pub conflict: u32,
+    /// 错误条目数。
+    pub error: u32,
+}
+
+/// 预览请求体（API §s2-2a）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PreviewRequest {
+    /// 待操作的文件 ID 列表（从 `SQLite` 反查路径）。
+    pub file_ids: Vec<String>,
+    /// 操作类型（`Move`/`Copy`/`Delete`；`Rename` 在预览阶段视为 `Move`）。
+    pub operation: OperationType,
+    /// 目标目录（`Move`/`Copy` 必填，`Delete` 忽略）。
+    pub target_dir: Option<String>,
+    /// 冲突策略（`None` 时取默认 `Rename`）。
+    pub conflict_strategy: Option<ConflictStrategy>,
+}
+
+/// 预览响应体（API §s2-2a 返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PreviewResponse {
+    /// 本次预览的批次 ID（`uuid4`，供 `execute_operations` 接力使用）。
+    pub batch_id: String,
+    /// 逐项计划。
+    pub plan: Vec<PlanItem>,
+    /// 汇总统计。
+    pub summary: PreviewSummary,
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::redundant_clone,
+    clippy::unnecessary_wraps,
+    clippy::significant_drop_tightening
+)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -541,6 +746,236 @@ mod tests {
         assert_eq!(rec.content_hash.as_deref(), Some("abc"));
         assert_eq!(rec.category.as_deref(), Some("cat"));
         assert!(!rec.is_deleted);
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // T3.2 preview_operations 测试
+    // ------------------------------------------------------------------
+
+    /// 往临时 `AppState` 的 `SQLite` 里塞多个文件记录，返回它们的 ID。
+    ///
+    /// 内部把 `PoisonError<MutexGuard<Database>>` 和 `rusqlite::Error` 转字符串后
+    /// 包成 `Box<dyn Error>`，避开 `MutexGuard` 的非 `'static` 借用问题
+    /// （`Database` 含 `RefCell`，不满足 `Sync`）。
+    fn seed_files_for_preview(
+        state: &AppState,
+        scan_root: &Path,
+        names: &[&str],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut ids = Vec::new();
+        let mut records = Vec::new();
+        for name in names {
+            let path = scan_root.join(name);
+            std::fs::write(&path, b"x")?;
+            ids.push(uuid::Uuid::new_v4().to_string());
+            records.push(FileRecord {
+                id: ids.last().unwrap().clone(),
+                path: path.to_string_lossy().to_string(),
+                file_name: (*name).to_string(),
+                file_size: 1,
+                content_hash: Some("dummy".into()),
+                category: None,
+                is_deleted: false,
+                created_at: "2025-01-01".into(),
+                updated_at: "2025-01-01".into(),
+            });
+        }
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+        FileRepo::upsert_batch(guard.conn(), &records)
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+        drop(guard);
+        Ok(ids)
+    }
+
+    #[test]
+    fn test_preview_operations_move_rename_strategy() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["a.txt", "b.txt", "c.txt"])?;
+        assert_eq!(ids.len(), 3);
+
+        let target_dir = tempfile::tempdir()?;
+        let req = PreviewRequest {
+            file_ids: ids.clone(),
+            operation: OperationType::Move,
+            target_dir: Some(target_dir.path().to_string_lossy().to_string()),
+            conflict_strategy: Some(ConflictStrategy::Rename),
+        };
+
+        let resp = preview_operations_inner(req, &state)?;
+
+        // 全部 status=Ok
+        assert_eq!(resp.summary.total, 3);
+        assert_eq!(resp.summary.ok, 3);
+        assert_eq!(resp.summary.conflict, 0);
+        assert_eq!(resp.summary.error, 0);
+
+        // new_path = target_dir/{原文件名}
+        for item in &resp.plan {
+            assert_eq!(item.status, PlanStatus::Ok);
+            let new_path = item.new_path.as_ref().expect("Move 应有 new_path");
+            assert!(new_path.starts_with(target_dir.path().to_string_lossy().as_ref()));
+        }
+
+        // batch_id 是 36 字符 uuid（带连字符，与 uuid::Uuid::new_v4().to_string() 一致）
+        assert_eq!(resp.batch_id.len(), 36);
+        // 形如 xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        assert_eq!(resp.batch_id.matches('-').count(), 4);
+        assert!(resp
+            .batch_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-'));
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_operations_move_with_conflict_rename() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        // 源文件
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["a.txt"])?;
+
+        // 目标目录已存在同名文件 a.txt → 应触发 rename 为 a_1.txt
+        let target_dir = tempfile::tempdir()?;
+        create_temp_file(target_dir.path(), "a.txt", "existing")?;
+
+        let req = PreviewRequest {
+            file_ids: ids,
+            operation: OperationType::Move,
+            target_dir: Some(target_dir.path().to_string_lossy().to_string()),
+            conflict_strategy: Some(ConflictStrategy::Rename),
+        };
+        let resp = preview_operations_inner(req, &state)?;
+
+        assert_eq!(resp.summary.ok, 1);
+        let new_path = resp.plan[0].new_path.as_ref().unwrap();
+        assert!(
+            new_path.ends_with("a_1.txt"),
+            "Rename 策略下冲突应生成 _1 后缀: {new_path}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_operations_delete_no_target_dir() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["x.txt", "y.txt"])?;
+
+        let req = PreviewRequest {
+            file_ids: ids,
+            operation: OperationType::Delete,
+            target_dir: None,
+            conflict_strategy: None,
+        };
+        let resp = preview_operations_inner(req, &state)?;
+
+        assert_eq!(resp.summary.total, 2);
+        assert_eq!(resp.summary.ok, 2);
+        for item in &resp.plan {
+            assert!(item.new_path.is_none(), "Delete 操作 new_path 应为 None");
+            assert_eq!(item.operation, OperationType::Delete);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_operations_missing_target_dir_for_move() {
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let state = make_test_app_state(tmp_db.path());
+
+        let req = PreviewRequest {
+            file_ids: vec!["fake-id".into()],
+            operation: OperationType::Move,
+            target_dir: None,
+            conflict_strategy: None,
+        };
+        let result = preview_operations_inner(req, &state);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidInput(_)),
+            "期望 InvalidInput"
+        );
+    }
+
+    #[test]
+    fn test_preview_operations_empty_file_ids() {
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let state = make_test_app_state(tmp_db.path());
+
+        let req = PreviewRequest {
+            file_ids: vec![],
+            operation: OperationType::Delete,
+            target_dir: None,
+            conflict_strategy: None,
+        };
+        let result = preview_operations_inner(req, &state);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), AppError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_preview_operations_unknown_file_id_silently_skipped(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let real_ids = seed_files_for_preview(&state, scan_root.path(), &["real.txt"])?;
+        let mut all_ids = real_ids.clone();
+        all_ids.push("non-existent-uuid".into()); // 不存在的 ID
+
+        let target_dir = tempfile::tempdir()?;
+        let req = PreviewRequest {
+            file_ids: all_ids,
+            operation: OperationType::Move,
+            target_dir: Some(target_dir.path().to_string_lossy().to_string()),
+            conflict_strategy: None, // 默认 Rename
+        };
+
+        let resp = preview_operations_inner(req, &state)?;
+        // 不存在的 ID 静默跳过 → plan 只有 1 项（真实文件）
+        assert_eq!(resp.plan.len(), 1);
+        assert_eq!(resp.summary.total, 1);
+        assert_eq!(resp.summary.ok, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_operations_batch_id_is_uuid_format() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["only.txt"])?;
+
+        let req = PreviewRequest {
+            file_ids: ids,
+            operation: OperationType::Delete,
+            target_dir: None,
+            conflict_strategy: None,
+        };
+        let resp = preview_operations_inner(req, &state)?;
+
+        // uuid4 → 36 字符（带连字符）
+        assert_eq!(resp.batch_id.len(), 36);
+        assert_eq!(resp.batch_id.matches('-').count(), 4);
+        assert!(resp
+            .batch_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-'));
         Ok(())
     }
 }

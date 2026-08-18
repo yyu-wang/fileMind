@@ -90,6 +90,44 @@ impl FileRepo {
         }
     }
 
+    /// 批量按 ID 反查文件记录（`preview_operations` 用）。
+    ///
+    /// 行为：
+    ///   - 顺序保证返回顺序与 `ids` 输入顺序一致（`SQL IN (...)` 不保证顺序，
+    ///     这里用 `HashMap<id, FileRecord>` 重排）
+    ///   - 不存在的 ID 静默跳过（调用方通过 `result.len()` vs `ids.len()` 判断丢失）
+    ///   - 已软删除的记录（`is_deleted=1`）也跳过
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
+    pub fn get_by_ids(conn: &Connection, ids: &[String]) -> AppResult<Vec<FileRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+             FROM files WHERE id IN ({placeholders}) AND is_deleted = 0"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), map_file_record)?;
+
+        // SQL IN 不保证顺序，按 ids 顺序重排
+        let mut by_id: std::collections::HashMap<String, FileRecord> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let r = row?;
+            by_id.insert(r.id.clone(), r);
+        }
+        let result = ids.iter().filter_map(|id| by_id.remove(id)).collect();
+        Ok(result)
+    }
+
     /// 分页列出未删除文件，可按分类过滤，按更新时间倒序。
     ///
     /// # Errors

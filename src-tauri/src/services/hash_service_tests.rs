@@ -1,4 +1,4 @@
-//! services::hash_service 单元测试：与 Python hash_service.py 的行为逐一对齐。
+//! `services::hash_service` 单元测试：与 Python `hash_service.py` 的行为逐一对齐。
 //!
 //! 覆盖：空文件 hash、小文件已知值、大文件流式读取、不存在文件错误回包、
 //! hex 输出格式（64 字符、全小写、全 hex 字符集）。

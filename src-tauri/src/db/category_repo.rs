@@ -159,6 +159,7 @@ fn map_category(row: &rusqlite::Row<'_>) -> rusqlite::Result<Category> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::db::database::Database;
@@ -173,7 +174,7 @@ mod tests {
         Category {
             id: id.to_string(),
             name: name.to_string(),
-            parent_id: parent.map(|p| p.to_string()),
+            parent_id: parent.map(std::string::ToString::to_string),
             icon: None,
             color: None,
             sort_order: 0,

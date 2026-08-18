@@ -50,6 +50,11 @@ pub enum AppError {
     #[error("操作被禁止: {0}")]
     Forbidden(String),
 
+    /// 用户输入参数校验失败（如 `move` 操作未提供 `target_dir`、`file_ids` 为空）。
+    /// 用于 IPC 命令入口的轻量校验，区别于 `Forbidden` 的业务规则与 `UnsafePath` 的安全策略。
+    #[error("参数无效: {0}")]
+    InvalidInput(String),
+
     /// 文件系统 IO 错误。
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
