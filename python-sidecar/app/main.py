@@ -31,6 +31,7 @@ from app.api import (
     routes_search,
     routes_shutdown,
 )
+from app.core import embedding_models
 from app.core.logging import getLogger
 from app.db.lancedb_repo import LanceDBManager
 from app.middleware.hmac_auth import HMACMiddleware
@@ -83,6 +84,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             DEFAULT_EMBEDDING_DIM,
         )
         state.set_lancedb(mgr)
+        # 把「当前模型 + 当前版本」写入 state（注册表单一来源）
+        # T2.6 不做状态改变——只在启动时注入初始值
+        state.set_current_model(embedding_models.DEFAULT_MODEL)
+        state.set_current_embedding_version(DEFAULT_EMBEDDING_VERSION)
         logger.info(
             "lancedb.ready",
             home=str(LANCEDB_HOME),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.index_service import IncrementalChange  # noqa: TC001
 
@@ -111,3 +111,50 @@ class SearchResponse(BaseModel):
     tokens: list[str]
     top_k: int
     mode: str
+
+
+class EmbeddingSwitchRequest(BaseModel):
+    """POST /embedding/switch 请求体（API 规格书 §s3-6a）。
+
+    说明：预检查阶段只做「是否需要全量重建」的判定，不修改任何状态；
+    真实切换动作留在 T3.x（Rust 侧 IPC confirm_embedding_rebuild 触发）。
+    """
+
+    new_model: str = Field(description="目标模型名（需在 MODEL_REGISTRY 中存在）")
+    current_model: str = Field(description="当前模型名")
+    indexed_files: int = Field(
+        ge=0, description="已索引文件数（用于预估 files_to_rebuild/est_minutes）"
+    )
+
+
+class EmbeddingSwitchResult(BaseModel):
+    """POST /embedding/switch 返回值的 data 字段（API 规格书 §s3-6a）。
+
+    业务规则（与 plans/T2.6 对齐）：
+      - 模型名变了（即使 dim 相同）→ dim_changed=True、files_to_rebuild=indexed_files
+        （向量空间不同，必须重 embedding）
+      - 模型相同 → dim_changed=False、files_to_rebuild=0（下次增量索引覆盖）
+      - old_table_preserved 固定为 True（rules/sql.md：版本变更新建表，不删旧表）
+    """
+
+    dim_changed: bool = Field(description="向量维度是否变化（或模型不同）")
+    current_dim: int = Field(ge=0, description="当前模型向量维度")
+    new_dim: int = Field(ge=0, description="目标模型向量维度")
+    files_to_rebuild: int = Field(ge=0, description="预估需重建文件数")
+    est_minutes: int = Field(ge=0, description="预估耗时（分钟，上限 999）")
+    new_table_name: str = Field(description="目标 LanceDB 表名 documents_{model}_v{N+1}")
+    new_version: int = Field(ge=1, description="目标模型分配到的新版本号")
+    old_table_preserved: bool = Field(default=True, description="旧表是否保留（固定 True）")
+
+
+class RebuildStatusResponse(BaseModel):
+    """GET /embedding/rebuild/status 返回值的 data 字段（API 规格书 §s3-6b）。"""
+
+    task_id: str
+    status: str = Field(description="pending | in_progress | paused | done | failed | cancelled")
+    done: int = Field(ge=0, description="已处理文件数")
+    total: int = Field(ge=0, description="总文件数")
+    current_file: str | None = Field(description="当前正在处理的文件名（展示用）")
+    est_remaining_minutes: int | None = Field(description="预估剩余分钟（done=0 时为 None）")
+    can_pause: bool = Field(description="是否可暂停（仅 in_progress）")
+    can_resume: bool = Field(description="是否可恢复（paused/failed 状态）")

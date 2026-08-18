@@ -21,6 +21,10 @@ _last_seq: int = 0
 _used_nonces: set[str] = set()
 # LanceDB 管理器（lifespan 初始化后非 None）
 _lancedb: LanceDBManager | None = None
+# 当前 Embedding 模型名（lifespan 启动时注入 DEFAULT_MODEL）
+_current_model: str | None = None
+# 当前 Embedding 模型版本号（与 LanceDB documents_{model}_v{N} 对应）
+_current_embedding_version: int | None = None
 
 
 def get_psk() -> bytes | None:
@@ -75,10 +79,34 @@ def set_lancedb(mgr: LanceDBManager | None) -> None:
     _lancedb = mgr
 
 
+def get_current_model() -> str | None:
+    """返回当前 Embedding 模型名（未初始化时为 None）。"""
+    return _current_model
+
+
+def set_current_model(model: str) -> None:
+    """设置当前模型（lifespan 启动时一次；T3.x 切换确认后也会写）。"""
+    global _current_model
+    _current_model = model
+
+
+def get_current_embedding_version() -> int | None:
+    """返回当前 Embedding 版本号（未初始化时为 None）。"""
+    return _current_embedding_version
+
+
+def set_current_embedding_version(version: int) -> None:
+    """设置当前 Embedding 版本号。"""
+    global _current_embedding_version
+    _current_embedding_version = version
+
+
 def reset_state() -> None:
     """重置全部状态（仅测试用，生产代码禁止调用）。"""
-    global _psk, _last_seq, _used_nonces, _lancedb
+    global _psk, _last_seq, _used_nonces, _lancedb, _current_model, _current_embedding_version
     _psk = None
     _last_seq = 0
     _used_nonces = set()
     _lancedb = None
+    _current_model = None
+    _current_embedding_version = None
