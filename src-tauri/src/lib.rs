@@ -15,6 +15,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 pub mod security;
+pub mod services;
 pub mod sidecar;
 
 /// 文件信息（IPC 传输视图）。

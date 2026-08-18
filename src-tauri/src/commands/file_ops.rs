@@ -3,26 +3,78 @@
 //! 所有命令做阻塞文件系统操作，通过 `#[tauri::command(async)]`
 //! 声明为线程池执行，避免阻塞主线程。
 
+use crate::db::models::FileRecord;
+use crate::db::FileRepo;
 use crate::error::AppResult;
 use crate::security;
-use crate::FileInfo;
+use crate::services::hash_service::compute_file_hash;
+use crate::{AppState, FileInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::convert::From;
 use std::path::Path;
 
 const MAX_SCAN_DEPTH: u32 = 10;
 
-/// 递归扫描目录并返回文件元信息列表。
+/// 递归扫描目录并返回文件元信息列表（含 `content_hash`），并 `upsert` 到 `SQLite`。
+///
+/// 行为：
+///   1. 路径安全校验（`security::validate`）
+///   2. 递归扫描目录 + 读取元信息 + 计算 SHA-256 hash（单文件失败退化为 None，不阻塞全量扫描）
+///   3. 把扫描结果 `upsert` 到 `SQLite`（`FileRepo::upsert_batch`，按 `path` 去重）
+///   4. `SQLite` 写入失败只记 `warn` 日志，不影响返回给前端的扫描结果（`UI` 优先）
 ///
 /// # Errors
 ///
-/// 路径未通过安全校验或文件系统读取失败时返回错误。
+/// 路径未通过安全校验或目录读取完全失败时返回错误。
 #[tauri::command(async)]
 #[specta::specta]
-pub fn scan_directory(path: String) -> Result<Vec<FileInfo>, String> {
+pub fn scan_directory(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FileInfo>, String> {
     let safe_path = security::validate(&path).map_err(|e| e.to_string())?;
     let files = scan_files_on_disk(&safe_path).map_err(|e| e.to_string())?;
+
+    // —— SQLite 写入：非关键路径，失败只记 warn —— //
+    // （扫描是高频 UI 操作，不能因 DB 短暂不可用而阻塞返回）
+    match state.db.lock() {
+        Ok(conn_guard) => {
+            let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
+            if let Err(e) = FileRepo::upsert_batch(conn_guard.conn(), &records) {
+                log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}");
+            }
+        }
+        Err(poisoned) => {
+            log::warn!("scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}");
+        }
+    }
+
     Ok(files)
+}
+
+/// 把 IPC 视图 `FileInfo` → 持久化视图 `FileRecord`。
+///
+/// 约定：`scan_directory` 插入的新记录 `is_deleted=0`；`created_at/updated_at`
+/// 由 `SQLite` `datetime('now')` 触发，但 `FileRecord` 字段不允许空，这里
+/// 用 `FileInfo` 已有的时间戳占位（Upsert SQL 实际覆盖写入 `datetime('now')`，
+/// 所以占位值不会持久化到表中，只是满足字段非空）。
+impl From<&FileInfo> for FileRecord {
+    fn from(f: &FileInfo) -> Self {
+        Self {
+            id: f.id.clone(),
+            path: f.path.clone(),
+            file_name: f.file_name.clone(),
+            // u64 → i64：文件大小最大 2^63-1（约 8 EB）足够；超出则饱和到最大值
+            file_size: (f.file_size.min(i64::MAX as u64)).cast_signed(),
+            content_hash: f.content_hash.clone(),
+            category: f.category.clone(),
+            is_deleted: false,
+            // 占位：Upsert SQL 实际会覆盖为 datetime('now')，参考 file_repo.rs 第 10-18 行
+            created_at: f.created_at.clone(),
+            updated_at: f.updated_at.clone(),
+        }
+    }
 }
 
 /// 预览批量文件操作：展示源/目标存在性与冲突，不执行任何变更。
@@ -140,12 +192,16 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
                 .map(format_system_time)
                 .unwrap_or_default();
 
+            // content_hash 计算失败（权限/IO）退化为 None，不阻塞整次扫描
+            // （避免 1 个不可读文件导致整个扫描目录命令失败）
+            let content_hash = compute_file_hash(&path).ok();
+
             files.push(FileInfo {
                 id: uuid::Uuid::new_v4().to_string(),
                 path: path.to_string_lossy().to_string(),
                 file_name: entry.file_name().to_string_lossy().to_string(),
                 file_size: metadata.len(),
-                content_hash: None,
+                content_hash,
                 category: None,
                 created_at,
                 updated_at,
@@ -272,18 +328,26 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_files_finds_files() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_scan_files_finds_files_with_hash() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         create_temp_file(tmp.path(), "a.txt", "hello")?;
         create_temp_file(tmp.path(), "b.md", "world")?;
 
         let files = scan_files_on_disk(tmp.path())?;
         assert_eq!(files.len(), 2);
+        for f in &files {
+            let hash = f.content_hash.as_deref().ok_or("hash 未计算")?;
+            assert_eq!(hash.len(), 64, "hash 长度应为 64 hex: {hash}");
+            assert!(
+                hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "hash 非十六进制小写: {hash}"
+            );
+        }
         Ok(())
     }
 
     #[test]
-    fn test_scan_files_recursive() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_scan_files_recursive_hash() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let subdir = tmp.path().join("subdir");
         std::fs::create_dir(&subdir)?;
@@ -293,6 +357,14 @@ mod tests {
         let files = scan_files_on_disk(tmp.path())?;
         assert_eq!(files.len(), 2);
         assert!(files.iter().any(|f| f.file_name == "nested.txt"));
+        // 两个不同内容 hash 不同
+        let mut hashes: Vec<String> = files
+            .iter()
+            .map(|f| f.content_hash.clone().expect("hash not none"))
+            .collect();
+        hashes.sort();
+        hashes.dedup();
+        assert_eq!(hashes.len(), 2, "两个不同文件 hash 应该不同");
         Ok(())
     }
 
@@ -376,5 +448,99 @@ mod tests {
         let formatted = format_system_time(now);
         assert!(formatted.contains('-'));
         assert!(formatted.contains(':'));
+    }
+
+    // ------------------------------------------------------------------
+    // scan_directory → SQLite 落库测试（IT-001 的单元层验证）
+    // ------------------------------------------------------------------
+
+    #[allow(unused_imports)]
+    use super::*;
+    use crate::db::Database;
+    use crate::sidecar::SidecarManager;
+    use crate::AppState;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Mutex;
+
+    /// 构造最小可用 AppState（DB 指向临时 DB，Sidecar/PSK 用占位）。
+    fn make_test_app_state(db_path: &std::path::Path) -> AppState {
+        let db = Database::open(db_path).expect("打开测试 DB 失败");
+        AppState {
+            db: std::sync::Mutex::new(db),
+            sidecar_manager: Mutex::new(SidecarManager::new(
+                "/dev/null/sidecar-nonexistent".into(),
+            )),
+            sidecar_psk: Mutex::new(None),
+            sidecar_binary: Mutex::new("/dev/null/sidecar-nonexistent".into()),
+            request_seq: AtomicU64::new(0),
+            sidecar_restart_count: AtomicU64::new(0),
+        }
+    }
+
+    #[test]
+    fn test_scan_directory_writes_sqlite() -> Result<(), Box<dyn std::error::Error>> {
+        // 1. 准备：临时扫描目录 + 3 个文件
+        let scan_root = tempfile::tempdir()?;
+        create_temp_file(scan_root.path(), "one.pdf", "one")?;
+        create_temp_file(scan_root.path(), "two.docx", "two")?;
+        create_temp_file(scan_root.path(), "three.jpg", "three")?;
+
+        // 2. 准备：临时 SQLite DB + AppState
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        // 3. 执行：scan_directory（通过包装态调用）
+        //    用 tauri State 很难在 test 下构造，这里直接复用内部流程：
+        //    先拿 files（等同于扫描），然后走 SQLite upsert 代码段，
+        //    保证与 scan_directory 实现的写库逻辑一致
+        let files = scan_files_on_disk(scan_root.path())?;
+        assert_eq!(files.len(), 3);
+
+        {
+            let conn_guard = state.db.lock().unwrap();
+            let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
+            FileRepo::upsert_batch(conn_guard.conn(), &records)
+                .map_err(|e| format!("upsert 失败: {e}"))?;
+        }
+
+        // 4. 验证：查 files 表，存在 3 条记录且 hash 非空
+        let db = state.db.lock().unwrap();
+        let count: i64 = db.conn().query_row(
+            "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 3, "files 表落库条目数不对");
+
+        let null_hash_count: i64 = db.conn().query_row(
+            "SELECT COUNT(*) FROM files WHERE is_deleted = 0 AND content_hash IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(null_hash_count, 0, "有未计算 hash 的文件记录落库");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fileinfo_to_filerecord_from_impl() -> Result<(), Box<dyn std::error::Error>> {
+        // From<&FileInfo> for FileRecord 手工验证：is_deleted=false、file_size 转 i64 正确
+        let fi = FileInfo {
+            id: "id".into(),
+            path: "/a/b.txt".into(),
+            file_name: "b.txt".into(),
+            file_size: 4096,
+            content_hash: Some("abc".into()),
+            category: Some("cat".into()),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-02".into(),
+        };
+        let rec: FileRecord = (&fi).into();
+        assert_eq!(rec.id, "id");
+        assert_eq!(rec.file_size, 4096);
+        assert_eq!(rec.content_hash.as_deref(), Some("abc"));
+        assert_eq!(rec.category.as_deref(), Some("cat"));
+        assert!(!rec.is_deleted);
+        Ok(())
     }
 }
