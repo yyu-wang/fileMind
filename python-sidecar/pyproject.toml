@@ -26,9 +26,29 @@ module = "app.models"
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
+module = "app.db.lancedb_repo"
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = "app.services.index_service"
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
 module = "app.api.routes_metrics"
 ignore_missing_imports = true
 follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+# jieba 未提供 py.typed / stubs，运行时为动态模块
+module = "jieba"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# logging.py 用 Protocol 兼容 structlog / 标准 logging 两种实现，
+# structlog 缺 stubs 导致 Any 返回 + unused-ignore 噪声；非 T2.4 引入
+module = "app.core.logging"
+warn_return_any = false
+disable_error_code = ["unused-ignore", "return-value"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,12 +8,19 @@ mypy strict 无法检查）。lifespan 启动时填充 PSK，中间件与路由�
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.db.lancedb_repo import LanceDBManager
+
 # 握手后的 PSK：生产模式由 stdin 注入，dev 模式为 None（跳过验签）
 _psk: bytes | None = None
 # 上一个请求的序号（防重放：新请求 seq 必须 > last_seq）
 _last_seq: int = 0
 # 已使用的握手 nonce 集合（防握手重放）
 _used_nonces: set[str] = set()
+# LanceDB 管理器（lifespan 初始化后非 None）
+_lancedb: LanceDBManager | None = None
 
 
 def get_psk() -> bytes | None:
@@ -57,9 +64,21 @@ def add_nonce(nonce: str) -> bool:
     return True
 
 
+def get_lancedb() -> LanceDBManager | None:
+    """返回 LanceDB 管理器（未初始化时为 None）。"""
+    return _lancedb
+
+
+def set_lancedb(mgr: LanceDBManager | None) -> None:
+    """设置 LanceDB 管理器（lifespan 启动时调用一次；测试关闭/重启时允许 None）。"""
+    global _lancedb
+    _lancedb = mgr
+
+
 def reset_state() -> None:
     """重置全部状态（仅测试用，生产代码禁止调用）。"""
-    global _psk, _last_seq, _used_nonces
+    global _psk, _last_seq, _used_nonces, _lancedb
     _psk = None
     _last_seq = 0
     _used_nonces = set()
+    _lancedb = None

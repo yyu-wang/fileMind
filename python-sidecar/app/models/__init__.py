@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 from pydantic import BaseModel
+
+from app.services.index_service import IncrementalChange  # noqa: TC001
 
 
 class HealthResponse(BaseModel):
@@ -18,10 +22,22 @@ class IndexBuildResponse(BaseModel):
     skipped_count: int
 
 
-class IndexIncrementalResponse(BaseModel):
-    added: int
-    updated: int
-    deleted: int
+class IncrementalIndexResponse(BaseModel):
+    """增量索引响应（对齐 API 规格书 POST /index/incremental）。"""
+
+    indexed: int = 0
+    skipped: int = 0
+    deleted: int = 0
+    duration_ms: int = 0
+
+
+class IncrementalChangeRequest(BaseModel):
+    """增量索引请求体（对齐 API 规格书 POST /index/incremental）。"""
+
+    changes: list[IncrementalChange]
+    embedding_model: str
+    embedding_version: int
+    table_name: str
 
 
 class EmbeddingModelsResponse(BaseModel):
@@ -68,3 +84,30 @@ class MetricsResponse(BaseModel):
     vms_mb: float
     threshold_mb: int
     within_limit: bool
+
+
+class SearchRequest(BaseModel):
+    """搜索请求体：POST /search。
+
+    Sidecar 仅做"查询构造"——jieba 分词 + 转义拼装，不直接访问 SQLite
+    （项目硬约束：所有 DB 操作由 Rust 层执行）。Rust 层拿到 fts_query 后
+    通过 rusqlite 执行 MATCH。
+    """
+
+    query: str
+    top_k: int = 20
+    mode: str = "fts"  # fts | vector | hybrid
+
+
+class SearchResponse(BaseModel):
+    """搜索响应体：返回构造好的 FTS5 MATCH 表达式 + 分词结果。
+
+    - ``fts_query``：FTS5 MATCH 表达式，每个 token 已用双引号包裹防语法注入
+    - ``tokens``：jieba 分词结果，便于前端高亮命中词
+    - ``top_k`` / ``mode``：调用方传入的执行参数，原样回显
+    """
+
+    fts_query: str
+    tokens: list[str]
+    top_k: int
+    mode: str

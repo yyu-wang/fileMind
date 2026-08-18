@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -27,28 +28,40 @@ from app.api import (
     routes_health,
     routes_index,
     routes_metrics,
+    routes_search,
     routes_shutdown,
 )
+from app.core.logging import getLogger
+from app.db.lancedb_repo import LanceDBManager
 from app.middleware.hmac_auth import HMACMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+logger = getLogger()
+
+# 默认 Embedding 模型：bge-large-zh-v1.5（1024 维，中文场景下语义向量 SOTA）
+# 与 E2 后续任务 T2.6（模型切换流程）的"初始默认表"保持一致
+DEFAULT_EMBEDDING_MODEL = "bge-large-zh-v1.5"
+DEFAULT_EMBEDDING_DIM = 1024
+DEFAULT_EMBEDDING_VERSION = 1
+
+# 数据根目录：与 SQLite (~/.filemind/data/filemind.db) 同层
+DATA_HOME = Path(os.environ.get("FILEMIND_DATA_HOME", str(Path.home() / ".filemind")))
+LANCEDB_HOME = DATA_HOME / "data" / "lancedb"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期钩子。
 
-    startup：从 stdin 读取 PSK（hex 编码 64 字符 + 换行）。
-        生产模式（Rust spawn）：stdin 是 pipe，Rust 通过 stdin 注入 PSK。
-        dev 模式（用户直接启动 uvicorn）：stdin 是 tty，无 PSK 注入，
-            中间件跳过验签（仅本机测试，发布版不会出现）。
-        PyInstaller onefile 模式（sidecar_entry.py 负责注入）：
-            ``PYINSTALLER_RUNTIME=1`` 且 ``state.get_psk()`` 已非空，跳过
-            二次读 stdin（避免 onefile bootloader 复用 PIPE 时读阻塞）。
+    startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
+        1. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
+        2. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
 
     shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
     """
+    # --- 步骤 1：PSK 注入 -------------------------------------------------
     if (
         os.environ.get("PYINSTALLER_RUNTIME") != "1" or state.get_psk() is None
     ) and not sys.stdin.isatty():
@@ -58,6 +71,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if psk_hex:
             state.set_psk(bytes.fromhex(psk_hex))
     # dev 模式：PSK 保持 None，中间件跳过验签
+
+    # --- 步骤 2：LanceDB 初始化（T2.2 新增） ------------------------------
+    # 异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过
+    try:
+        mgr = LanceDBManager(LANCEDB_HOME)
+        mgr.connect()
+        default_table = mgr.ensure_table(
+            DEFAULT_EMBEDDING_MODEL,
+            DEFAULT_EMBEDDING_VERSION,
+            DEFAULT_EMBEDDING_DIM,
+        )
+        state.set_lancedb(mgr)
+        logger.info(
+            "lancedb.ready",
+            home=str(LANCEDB_HOME),
+            default_table=default_table,
+            model=DEFAULT_EMBEDDING_MODEL,
+            version=DEFAULT_EMBEDDING_VERSION,
+            dim=DEFAULT_EMBEDDING_DIM,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # LanceDB 初始化失败 → 记录日志 + 让 state 保持 None，后续路由在
+        # get_lancedb() is None 时抛 503 Service Unavailable（T2.3/T2.5 时统一）
+        logger.warning("lancedb.init_failed", home=str(LANCEDB_HOME), error=str(exc))
+        state.set_lancedb(None)
+
     yield
 
 
@@ -85,3 +124,4 @@ app.include_router(routes_classify.router)
 app.include_router(routes_index.router)
 app.include_router(routes_chat.router)
 app.include_router(routes_embedding.router)
+app.include_router(routes_search.router)

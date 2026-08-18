@@ -110,11 +110,18 @@ pub struct SearchResult {
     pub score: f64,
 }
 
-/// 清洗用户查询：仅保留字母数字、空格与下划线，防止 FTS5 语法注入。
+/// 清洗用户查询：保留 Unicode 字母数字（含中文/日文/韩文）、空白与下划线。
+///
+/// 安全说明：
+/// - 移除 FTS5 特殊字符（``*`` ``"`` ``(`` ``)`` ``OR`` 等），防止语法注入
+/// - ``is_alphanumeric`` 走 Unicode ``Alphabetic`` / ``Numeric`` 属性，CJK 字符
+///   在该属性中为 true，因此中文查询能透传到 FTS5 MATCH
+/// - ``is_whitespace`` 允许任意 Unicode 空白（含全角空格、制表符），便于多 token 查询
+/// - 保留下划线 ``_``：常见于文件名（如 ``my_report.pdf``），FTS5 视为普通字符
 fn sanitize_query(query: &str) -> String {
     query
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '_')
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || *c == '_')
         .collect::<String>()
         .trim()
         .to_string()
@@ -187,8 +194,19 @@ mod tests {
 
     #[test]
     fn test_sanitize_query() {
+        // 英文：保留字母数字与空格
         assert_eq!(sanitize_query("hello world"), "hello world");
+        // 注入防御：FTS5 特殊字符 ``;`` 被过滤
         assert_eq!(sanitize_query("hello; DROP TABLE"), "hello DROP TABLE");
         assert_eq!(sanitize_query(""), "");
+        // 中文：is_alphanumeric 对 CJK 返回 true，应原样保留
+        assert_eq!(sanitize_query("文件管理"), "文件管理");
+        assert_eq!(sanitize_query("FileMind 文件管理"), "FileMind 文件管理");
+        // 标点过滤：`,` `!` 等被移除，空格保留
+        assert_eq!(sanitize_query("hello, world!"), "hello world");
+        // 下划线保留：常见于文件名
+        assert_eq!(sanitize_query("my_report"), "my_report");
+        // FTS5 通配符与引号被过滤，防止语法注入
+        assert_eq!(sanitize_query("hello*\" OR 1=1"), "hello OR 11");
     }
 }
