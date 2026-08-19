@@ -14,6 +14,10 @@ export default defineConfig({
       '@lib': path.resolve(__dirname, './src/lib'),
     },
   },
+  // pdf.js 体积大且含 worker，跳过预打包避免构建慢/双实例
+  optimizeDeps: {
+    exclude: ['pdfjs-dist'],
+  },
   clearScreen: false,
   server: {
     port: 1420,

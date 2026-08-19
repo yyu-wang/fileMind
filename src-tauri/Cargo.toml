@@ -33,6 +33,8 @@ reqwest = { version = "0.13", features = ["json", "stream"] }
 uuid = { version = "1.24", features = ["v4"] }
 sha2 = "0.11"
 hex = "0.4"
+# T6.4 文件预览：图片/PDF 内容 base64 编码传输
+base64 = "0.22"
 # T1.4 握手协议：HMAC-SHA256 签名与随机数生成
 hmac = "0.13"
 rand = "0.10"

@@ -22,7 +22,11 @@ fn main() {
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
             commands::file_ops::undo_batch,
+            // T6.4 文件预览（文本 / 图片 / PDF）
+            commands::file_preview::read_file_preview,
             commands::file_query::list_files,
+            // T6.4 全量文件列表（虚拟滚动）
+            commands::file_query::list_all_files,
             commands::file_query::search_files,
             commands::file_query::search_by_filename,
             commands::file_query::get_file_stats,

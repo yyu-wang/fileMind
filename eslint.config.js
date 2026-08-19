@@ -27,8 +27,11 @@ export default [
         File: 'readonly',
         FileReader: 'readonly',
         HTMLElement: 'readonly',
+        HTMLDivElement: 'readonly',
+        HTMLInputElement: 'readonly',
         Event: 'readonly',
         CustomEvent: 'readonly',
+        __dirname: 'readonly',
       },
     },
     plugins: {
@@ -61,6 +64,13 @@ export default [
     },
   },
   {
-    ignores: ['node_modules/', 'dist/', 'src-tauri/', 'python-sidecar/', 'src/types/ipc.ts'],
+    ignores: [
+      'node_modules/',
+      '.venv/',
+      'dist/',
+      'src-tauri/',
+      'python-sidecar/',
+      'src/types/ipc.ts',
+    ],
   },
 ];
