@@ -22,7 +22,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use filemind_lib::commands;
-use filemind_lib::db::{Database, OperationRepo};
+use filemind_lib::db::{CategoryRepo, Database, OperationRepo};
 use filemind_lib::error::AppError;
 use filemind_lib::sidecar::{
     resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
@@ -209,6 +209,13 @@ fn main() {
         }
     };
 
+    // T6.5 内置分类种子：保证启发式分类有目标分类可用（幂等，失败不阻断启动）
+    match CategoryRepo::seed_builtin_categories(database.conn()) {
+        Ok(0) => log::info!("内置分类已存在，跳过种子"),
+        Ok(n) => log::info!("内置分类种子：新增 {n} 个分类"),
+        Err(e) => log::warn!("内置分类种子失败（不影响启动）: {e}"),
+    }
+
     // T3.5：启动时校验操作日志链式哈希完整性，检测到篡改仅告警、不阻断启动
     match OperationRepo::verify_chain(database.conn()) {
         Ok(None) => log::info!("操作日志链式哈希校验通过"),
@@ -270,6 +277,8 @@ fn main() {
             sidecar_restart_count: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
+            // T6.5 智能分类预览（规则引擎 + 启发式）
+            commands::classify::classify_preview,
             commands::file_ops::scan_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,

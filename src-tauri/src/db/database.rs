@@ -104,6 +104,22 @@ mod tests {
     }
 
     #[test]
+    fn test_v009_categories_has_target_dir() -> Result<(), Box<dyn std::error::Error>> {
+        let db = create_test_db()?;
+        let mut stmt = db.conn().prepare("PRAGMA table_info(categories)")?;
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(std::result::Result::ok)
+            .collect();
+
+        assert!(
+            columns.contains(&"target_dir".to_string()),
+            "categories 表应含 target_dir 列，实际列: {columns:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_wal_mode_enabled() -> Result<(), Box<dyn std::error::Error>> {
         let db = create_test_db()?;
         let mode: String = db

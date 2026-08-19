@@ -1,0 +1,301 @@
+// classifyStore 单元测试：预览生成、分块执行、待确认/冲突排除、暂停/取消、撤销。
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../lib/ipc', () => ({
+  fileIpc: {
+    classifyPreview: vi.fn(),
+    executeOperations: vi.fn(),
+    updateFileCategory: vi.fn(),
+    undoBatch: vi.fn(),
+    listAllFiles: vi.fn(),
+    getFileStats: vi.fn(),
+    scanDirectory: vi.fn(),
+  },
+}));
+
+import { fileIpc } from '../lib/ipc';
+import { ClassifyStatus } from '../types/models';
+import type { ClassifyPlanItem, ClassifyPreview, ExecuteResponse } from '../types/ipc';
+import { useClassifyStore } from './classifyStore';
+import { useFileStore } from './fileStore';
+
+const SCAN_ROOT = '/tmp/root';
+
+function makeItem(id: string, overrides: Partial<ClassifyPlanItem> = {}): ClassifyPlanItem {
+  return {
+    file_id: id,
+    file_name: `${id}.png`,
+    original_path: `${SCAN_ROOT}/${id}.png`,
+    target_path: `${SCAN_ROOT}/图片/${id}.png`,
+    category_name: '图片',
+    rule_source: 'heuristic',
+    status: 'Ok',
+    conflict_type: null,
+    ...overrides,
+  };
+}
+
+function makePreview(items: ClassifyPlanItem[]): ClassifyPreview {
+  const categorized = items.filter((i) => i.category_name != null).length;
+  return {
+    batch_id: 'batch-preview',
+    items,
+    stats: {
+      total: items.length,
+      categorized,
+      pending: items.length - categorized,
+      by_rule: 0,
+      by_heuristic: categorized,
+    },
+  };
+}
+
+function okExecute(batchId: string, fileIds: string[]): ExecuteResponse {
+  return {
+    batch_id: batchId,
+    results: fileIds.map((fid) => ({
+      file_id: fid,
+      operation: 'Move',
+      source_path: `${SCAN_ROOT}/${fid}.png`,
+      target_path: `${SCAN_ROOT}/图片/${fid}.png`,
+      success: true,
+      error: null,
+      prev_hash: null,
+      current_hash: null,
+    })),
+    summary: { total: fileIds.length, success: fileIds.length, failed: 0, skipped: 0 },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+beforeEach(() => {
+  useClassifyStore.setState({
+    status: ClassifyStatus.Idle,
+    preview: null,
+    pendingIds: [],
+    progress: { done: 0, total: 0 },
+    execSummary: null,
+    lastBatchId: null,
+    error: null,
+  });
+  useFileStore.setState({ scanPath: SCAN_ROOT, files: [], selectedIds: [] });
+  vi.clearAllMocks();
+  vi.mocked(fileIpc.listAllFiles).mockResolvedValue({ status: 'ok', data: [] });
+  vi.mocked(fileIpc.getFileStats).mockResolvedValue({
+    status: 'ok',
+    data: {
+      total_files: 0,
+      categorized_files: 0,
+      uncategorized_files: 0,
+      duplicate_groups: 0,
+      total_size_bytes: 0,
+    },
+  });
+});
+
+describe('generatePreview', () => {
+  it('calls classifyPreview with scanPath from fileStore and stores pending ids', async () => {
+    const preview = makePreview([
+      makeItem('a'),
+      makeItem('p', { category_name: null, rule_source: 'pending' }),
+    ]);
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({ status: 'ok', data: preview });
+
+    await useClassifyStore.getState().generatePreview(['a', 'p']);
+
+    expect(fileIpc.classifyPreview).toHaveBeenCalledWith(['a', 'p'], SCAN_ROOT);
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Idle);
+    expect(useClassifyStore.getState().preview).toEqual(preview);
+    expect(useClassifyStore.getState().pendingIds).toEqual(['p']);
+  });
+
+  it('sets error without calling IPC when scanPath is missing', async () => {
+    useFileStore.setState({ scanPath: null });
+    await useClassifyStore.getState().generatePreview(['a']);
+
+    expect(fileIpc.classifyPreview).not.toHaveBeenCalled();
+    expect(useClassifyStore.getState().error).toBe('请先在文件页选择要整理的目录');
+  });
+
+  it('sets error and stays Idle when preview fails', async () => {
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({ status: 'error', error: '扫描根无效' });
+    await useClassifyStore.getState().generatePreview(['a']);
+
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Idle);
+    expect(useClassifyStore.getState().error).toBe('扫描根无效');
+  });
+});
+
+describe('execute', () => {
+  it('splits plan into chunks and updates category for each success', async () => {
+    const ids = Array.from({ length: 55 }, (_, n) => `f${n}`);
+    const items = ids.map((id) => makeItem(id));
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(ids);
+
+    vi.mocked(fileIpc.executeOperations)
+      .mockResolvedValueOnce({ status: 'ok', data: okExecute('b1', ids.slice(0, 50)) })
+      .mockResolvedValueOnce({ status: 'ok', data: okExecute('b1', ids.slice(50)) });
+
+    await useClassifyStore.getState().execute();
+
+    expect(fileIpc.executeOperations).toHaveBeenCalledTimes(2);
+    const firstPlan = vi.mocked(fileIpc.executeOperations).mock.calls[0][0].plan;
+    const secondPlan = vi.mocked(fileIpc.executeOperations).mock.calls[1][0].plan;
+    expect(firstPlan).toHaveLength(50);
+    expect(secondPlan).toHaveLength(5);
+    expect(firstPlan[0].operation).toBe('Move');
+    expect(firstPlan[0].new_path).toBe(items[0].target_path);
+    expect(fileIpc.updateFileCategory).toHaveBeenCalledTimes(55);
+    expect(fileIpc.updateFileCategory).toHaveBeenCalledWith('f0', '图片');
+
+    const state = useClassifyStore.getState();
+    expect(state.status).toBe(ClassifyStatus.Done);
+    expect(state.progress).toEqual({ done: 55, total: 55 });
+    expect(state.execSummary).toEqual({ success: 55, failed: 0, pending: 0, total: 55 });
+    expect(state.lastBatchId).toBe('b1');
+  });
+
+  it('excludes pending and conflict items from execution plan', async () => {
+    const items = [
+      makeItem('ok'),
+      makeItem('pend', { category_name: null, rule_source: 'pending' }),
+      makeItem('conf', { status: 'Conflict', conflict_type: 'SameName' }),
+    ];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['ok', 'pend', 'conf']);
+
+    vi.mocked(fileIpc.executeOperations).mockResolvedValue({
+      status: 'ok',
+      data: okExecute('b1', ['ok']),
+    });
+    await useClassifyStore.getState().execute();
+
+    const plan = vi.mocked(fileIpc.executeOperations).mock.calls[0][0].plan;
+    expect(plan.map((p) => p.file_id)).toEqual(['ok']);
+    expect(fileIpc.updateFileCategory).toHaveBeenCalledTimes(1);
+    expect(useClassifyStore.getState().execSummary?.pending).toBe(1);
+  });
+
+  it('pause and resume toggle status during an in-flight chunk', async () => {
+    const items = [makeItem('a')];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['a']);
+
+    const gate = deferred<{ status: 'ok'; data: ExecuteResponse }>();
+    vi.mocked(fileIpc.executeOperations).mockReturnValueOnce(gate.promise);
+
+    const execPromise = useClassifyStore.getState().execute();
+    await vi.waitFor(() => expect(fileIpc.executeOperations).toHaveBeenCalled());
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Running);
+
+    useClassifyStore.getState().pause();
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Paused);
+
+    useClassifyStore.getState().resume();
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Running);
+
+    gate.resolve({ status: 'ok', data: okExecute('b1', ['a']) });
+    await execPromise;
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Done);
+  });
+
+  it('cancel stops further chunks but keeps executed results', async () => {
+    const ids = Array.from({ length: 55 }, (_, n) => `f${n}`);
+    const items = ids.map((id) => makeItem(id));
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(ids);
+
+    const gate = deferred<{ status: 'ok'; data: ExecuteResponse }>();
+    vi.mocked(fileIpc.executeOperations).mockReturnValueOnce(gate.promise);
+
+    const execPromise = useClassifyStore.getState().execute();
+    await vi.waitFor(() => expect(fileIpc.executeOperations).toHaveBeenCalled());
+
+    useClassifyStore.getState().cancel();
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Cancelled);
+
+    gate.resolve({ status: 'ok', data: okExecute('b1', ids.slice(0, 50)) });
+    await execPromise;
+
+    expect(fileIpc.executeOperations).toHaveBeenCalledTimes(1);
+    const state = useClassifyStore.getState();
+    expect(state.status).toBe(ClassifyStatus.Cancelled);
+    expect(state.execSummary?.success).toBe(50);
+    expect(state.progress).toEqual({ done: 50, total: 55 });
+  });
+});
+
+describe('undoLastBatch', () => {
+  it('calls undoBatch with the last batch id and resets to Idle', async () => {
+    const items = [makeItem('a')];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['a']);
+    vi.mocked(fileIpc.executeOperations).mockResolvedValue({
+      status: 'ok',
+      data: okExecute('b1', ['a']),
+    });
+    await useClassifyStore.getState().execute();
+    expect(useClassifyStore.getState().lastBatchId).toBe('b1');
+
+    vi.mocked(fileIpc.undoBatch).mockResolvedValue({
+      status: 'ok',
+      data: { success: true, undone_count: 1, failed_count: 0, task_id: 't1' },
+    });
+    await useClassifyStore.getState().undoLastBatch();
+
+    expect(fileIpc.undoBatch).toHaveBeenCalledWith('b1');
+    expect(useClassifyStore.getState().status).toBe(ClassifyStatus.Idle);
+    expect(useClassifyStore.getState().lastBatchId).toBeNull();
+  });
+
+  it('sets error when no batch id exists', async () => {
+    await useClassifyStore.getState().undoLastBatch();
+    expect(fileIpc.undoBatch).not.toHaveBeenCalled();
+    expect(useClassifyStore.getState().error).toBe('无最近批次可撤销');
+  });
+});
+
+describe('reset', () => {
+  it('clears preview, progress and summary', async () => {
+    const items = [makeItem('a')];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['a']);
+
+    useClassifyStore.getState().reset();
+
+    const state = useClassifyStore.getState();
+    expect(state.status).toBe(ClassifyStatus.Idle);
+    expect(state.preview).toBeNull();
+    expect(state.pendingIds).toEqual([]);
+    expect(state.progress).toEqual({ done: 0, total: 0 });
+    expect(state.execSummary).toBeNull();
+    expect(state.error).toBeNull();
+  });
+});

@@ -22,6 +22,8 @@ export default [
         crypto: 'readonly',
         localStorage: 'readonly',
         sessionStorage: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         URL: 'readonly',
         Blob: 'readonly',
         File: 'readonly',

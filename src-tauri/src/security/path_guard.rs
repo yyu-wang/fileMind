@@ -60,6 +60,46 @@ pub fn validate_within_root(path: &str, root: &Path) -> AppResult<PathBuf> {
     Ok(canonical)
 }
 
+/// 校验相对子路径（如分类目标目录 `target_dir`）：只允许正常相对分段。
+///
+/// 拒绝：空串、绝对路径、Windows 盘符前缀、反斜杠、`.`/`..` 等特殊分段。
+/// 返回未规范化的 `PathBuf`（调用方负责与扫描根拼接）。
+///
+/// # Errors
+///
+/// 任一非法形式命中时返回 `UnsafePath`。
+pub fn validate_relative_subpath(relative: &str) -> AppResult<PathBuf> {
+    let trimmed = relative.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::UnsafePath("相对子路径为空".to_string()));
+    }
+    if Path::new(trimmed).is_absolute() {
+        return Err(AppError::UnsafePath(format!(
+            "相对子路径不能是绝对路径: {relative}"
+        )));
+    }
+    if trimmed.contains('\\') {
+        return Err(AppError::UnsafePath(format!(
+            "相对子路径不能包含反斜杠: {relative}"
+        )));
+    }
+    // Windows 盘符前缀（C: / C:/x）—— 防御跨平台路径注入
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(AppError::UnsafePath(format!(
+            "相对子路径不能包含盘符: {relative}"
+        )));
+    }
+    for component in Path::new(trimmed).components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(AppError::UnsafePath(format!(
+                "相对子路径含非法分段: {relative}"
+            )));
+        }
+    }
+    Ok(Path::new(trimmed).to_path_buf())
+}
+
 /// 校验写目标路径（移动/重命名）：目标本身可不存在。
 ///
 /// 逐级检查路径字符串黑名单，并校验已存在的父目录。
@@ -193,5 +233,43 @@ mod tests {
     fn test_validate_write_target_blocked_parent() {
         let result = validate_write_target("/usr/local/new_file.txt");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_valid() -> Result<(), Box<dyn std::error::Error>> {
+        let path = validate_relative_subpath("图片/报表")?;
+        assert_eq!(path.to_string_lossy(), "图片/报表");
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_empty_rejected() {
+        assert!(validate_relative_subpath("").is_err());
+        assert!(validate_relative_subpath("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_absolute_rejected() {
+        assert!(validate_relative_subpath("/etc").is_err());
+        assert!(validate_relative_subpath("C:/windows").is_err());
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_dot_segments_rejected() {
+        assert!(validate_relative_subpath("..").is_err());
+        assert!(validate_relative_subpath("../图片").is_err());
+        assert!(validate_relative_subpath("图片/../secret").is_err());
+        assert!(validate_relative_subpath("./图片").is_err());
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_backslash_rejected() {
+        assert!(validate_relative_subpath("图片\\报表").is_err());
+    }
+
+    #[test]
+    fn test_validate_relative_subpath_drive_prefix_rejected() {
+        assert!(validate_relative_subpath("C:").is_err());
+        assert!(validate_relative_subpath("D:/x").is_err());
     }
 }

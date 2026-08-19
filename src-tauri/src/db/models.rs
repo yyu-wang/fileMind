@@ -96,6 +96,9 @@ pub struct Category {
     pub sort_order: i64,
     /// 系统预置标记（1=内置不可删，0=用户自定义）。
     pub is_builtin: bool,
+    /// 目标子目录（相对扫描根的路径）。分类时把文件移动到 `scan_root/target_dir`；
+    /// 空字符串表示不移动（仅打分类标签）。
+    pub target_dir: String,
     /// 入库时间。
     pub created_at: String,
     /// 最后更新时间。

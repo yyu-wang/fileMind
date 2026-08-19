@@ -1,5 +1,6 @@
 //! Rust 端业务服务层：纯计算 + I/O，不依赖 Tauri IPC 类型。
 
+pub mod classifier;
 pub mod conflict_resolver;
 pub mod hash_service;
 pub mod log_chain;
@@ -12,6 +13,10 @@ pub mod undo_window;
 #[cfg(test)]
 #[path = "hash_service_tests.rs"]
 mod hash_service_tests;
+
+#[cfg(test)]
+#[path = "classifier_tests.rs"]
+mod classifier_tests;
 
 #[cfg(test)]
 #[path = "conflict_resolver_tests.rs"]

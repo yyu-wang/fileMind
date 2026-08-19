@@ -1284,6 +1284,7 @@ dependencies = [
  "mockall",
  "rand",
  "refinery",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

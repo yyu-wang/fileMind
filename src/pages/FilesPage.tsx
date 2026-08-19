@@ -3,6 +3,7 @@
 // 筛选/排序为页面级 state（不污染 store）；选中与文件数据走 fileStore。
 
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
@@ -14,6 +15,7 @@ import {
   type SortDir,
   type SortKey,
 } from '@/lib/fileTable';
+import { useClassifyStore } from '@/stores/classifyStore';
 import { useFileStore } from '@/stores/fileStore';
 import type { FileInfo } from '@/types/ipc';
 
@@ -34,6 +36,7 @@ export function FilesPage() {
   const setSelection = useFileStore((s) => s.setSelection);
   const clearSelection = useFileStore((s) => s.clearSelection);
   const clearError = useFileStore((s) => s.clearError);
+  const navigate = useNavigate();
 
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | FileStatus>('');
@@ -80,6 +83,11 @@ export function FilesPage() {
     }
   };
 
+  const handleClassifySelected = () => {
+    useClassifyStore.getState().reset();
+    navigate('/classify');
+  };
+
   return (
     <div className="files-page">
       <header className="files-page__header">
@@ -118,7 +126,12 @@ export function FilesPage() {
         <button type="button" className="btn btn--ghost" onClick={() => void loadAllFiles()}>
           刷新
         </button>
-        <button type="button" className="btn" disabled>
+        <button
+          type="button"
+          className="btn"
+          onClick={handleClassifySelected}
+          disabled={selectedIds.length === 0}
+        >
           整理选中 ({selectedIds.length})
         </button>
 

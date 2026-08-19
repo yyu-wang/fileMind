@@ -982,3 +982,359 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ========== T6.5 智能分类页 ========== */
+.classify-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 20px 24px;
+  min-height: 0;
+}
+
+.classify-page__header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.classify-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-page__path {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.classify-page__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.classify-page__error-dismiss {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.classify-page__loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.classify-page__intro {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  border: 1px dashed var(--rule);
+  border-radius: 10px;
+}
+
+.classify-page__intro-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-page__intro-sub {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+/* 预览树 */
+.classify-preview {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.classify-preview__stats {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.classify-preview__groups {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.classify-preview__group {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.classify-preview__group--pending {
+  border-color: var(--warn);
+}
+
+.classify-preview__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg3);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-preview__group--pending .classify-preview__group-head {
+  background: #fef3c7;
+  color: var(--warn);
+}
+
+@media (prefers-color-scheme: dark) {
+  .classify-preview__group--pending .classify-preview__group-head {
+    background: rgba(245, 158, 11, 0.15);
+  }
+}
+
+.classify-preview__group-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-preview__list {
+  list-style: none;
+}
+
+.classify-preview__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+
+.classify-preview__item:first-child {
+  border-top: none;
+}
+
+.classify-preview__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.classify-preview__conflict {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.classify-preview__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 分类来源标签 */
+.classify-rule-tag {
+  display: inline-block;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.classify-rule-tag--rule {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.classify-rule-tag--heuristic {
+  background: #e9d8fd;
+  color: #6b46c1;
+}
+
+.classify-rule-tag--pending {
+  background: #fef3c7;
+  color: var(--warn);
+}
+
+@media (prefers-color-scheme: dark) {
+  .classify-rule-tag--heuristic {
+    background: rgba(107, 70, 193, 0.25);
+    color: #b39ddb;
+  }
+
+  .classify-rule-tag--pending {
+    background: rgba(245, 158, 11, 0.15);
+  }
+}
+
+/* 执行进度遮罩 */
+.classify-progress {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.classify-progress__panel {
+  width: 320px;
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.classify-progress__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-progress__count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.classify-progress__bar {
+  height: 10px;
+  background: var(--bg3);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.classify-progress__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+  transition: width 0.2s ease;
+}
+
+.classify-progress__percent {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.classify-progress__controls {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 分类结果面板 */
+.classify-done {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+
+.classify-done__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-done__stats {
+  list-style: none;
+  display: flex;
+  gap: 32px;
+  padding: 0;
+}
+
+.classify-done__stats li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.classify-done__num {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.classify-done__num--success {
+  color: var(--success);
+}
+
+.classify-done__num--failed {
+  color: var(--danger);
+}
+
+.classify-done__num--pending {
+  color: var(--warn);
+}
+
+.classify-done__num--muted {
+  color: var(--muted);
+}
+
+.classify-done__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-done__actions {
+  display: flex;
+  gap: 8px;
+}

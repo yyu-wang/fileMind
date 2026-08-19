@@ -5,6 +5,8 @@ description = "Desktop file organizer with RAG Q&A"
 authors = ["FileMind"]
 edition = "2021"
 rust-version = "1.97"
+# 存在 src/bin/export-specta 工具二进制，默认跑主应用（tauri dev 的 cargo run 需要）
+default-run = "filemind"
 
 [lib]
 name = "filemind_lib"
@@ -38,6 +40,8 @@ base64 = "0.22"
 # T1.4 握手协议：HMAC-SHA256 签名与随机数生成
 hmac = "0.13"
 rand = "0.10"
+# T6.5 分类规则引擎：rule_type=regex 规则匹配（已是传递依赖，显式声明）
+regex = "1.13"
 chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"

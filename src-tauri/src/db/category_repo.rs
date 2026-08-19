@@ -8,8 +8,8 @@ use crate::db::models::{Category, CategoryNode};
 use crate::error::{AppError, AppResult};
 
 const UPSERT_CATEGORY_SQL: &str = "
-    INSERT INTO categories (id, name, parent_id, icon, color, sort_order, is_builtin)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    INSERT INTO categories (id, name, parent_id, icon, color, sort_order, is_builtin, target_dir)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         parent_id = excluded.parent_id,
@@ -17,19 +17,121 @@ const UPSERT_CATEGORY_SQL: &str = "
         color = excluded.color,
         sort_order = excluded.sort_order,
         is_builtin = excluded.is_builtin,
+        target_dir = excluded.target_dir,
         updated_at = datetime('now')
 ";
 
 const SELECT_ALL_SQL: &str = "
-    SELECT id, name, parent_id, icon, color, sort_order, is_builtin, created_at, updated_at
+    SELECT id, name, parent_id, icon, color, sort_order, is_builtin, target_dir, created_at, updated_at
     FROM categories
     ORDER BY sort_order ASC, name ASC
 ";
+
+/// 内置分类种子：`is_builtin=1` 的默认分类（启发式兜底的目标分类）。
+///
+/// `id` 用稳定 slug，便于幂等 `INSERT OR IGNORE`；`name` 与分类器启发式映射表
+/// `services/classifier.rs` 的 `HEURISTIC_EXT_MAP` 值保持一致。
+struct BuiltinCategorySeed {
+    id: &'static str,
+    name: &'static str,
+    target_dir: &'static str,
+    icon: &'static str,
+    color: &'static str,
+    sort_order: i64,
+}
+
+const BUILTIN_CATEGORIES: &[BuiltinCategorySeed] = &[
+    BuiltinCategorySeed {
+        id: "builtin-image",
+        name: "图片",
+        target_dir: "图片",
+        icon: "image",
+        color: "accent",
+        sort_order: 10,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-document",
+        name: "文档",
+        target_dir: "文档",
+        icon: "file-text",
+        color: "accent2",
+        sort_order: 20,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-video",
+        name: "视频",
+        target_dir: "视频",
+        icon: "video",
+        color: "accent3",
+        sort_order: 30,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-music",
+        name: "音乐",
+        target_dir: "音乐",
+        icon: "music",
+        color: "accent2",
+        sort_order: 40,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-archive",
+        name: "压缩包",
+        target_dir: "压缩包",
+        icon: "archive",
+        color: "warn",
+        sort_order: 50,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-office",
+        name: "办公文档",
+        target_dir: "办公文档",
+        icon: "briefcase",
+        color: "accent2",
+        sort_order: 60,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-code",
+        name: "代码",
+        target_dir: "代码",
+        icon: "code",
+        color: "accent",
+        sort_order: 70,
+    },
+];
 
 /// `categories` 表仓库。
 pub struct CategoryRepo;
 
 impl CategoryRepo {
+    /// 幂等写入内置分类（`INSERT OR IGNORE`，按稳定 id 去重）。
+    ///
+    /// 首次启动时保证启发式兜底有目标分类可用；已存在则跳过，不改动用户数据。
+    /// 返回实际新增条数。
+    ///
+    /// # Errors
+    ///
+    /// 写入失败时返回数据库错误。
+    pub fn seed_builtin_categories(conn: &Connection) -> AppResult<usize> {
+        let mut inserted = 0usize;
+        for seed in BUILTIN_CATEGORIES {
+            let affected = conn.execute(
+                "INSERT OR IGNORE INTO categories
+                 (id, name, parent_id, icon, color, sort_order, is_builtin, target_dir)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, 1, ?6)",
+                params![
+                    seed.id,
+                    seed.name,
+                    seed.icon,
+                    seed.color,
+                    seed.sort_order,
+                    seed.target_dir,
+                ],
+            )?;
+            inserted += affected;
+        }
+        Ok(inserted)
+    }
+
     /// 查询全部分类（扁平列表，按 `sort_order` 升序）。
     ///
     /// # Errors
@@ -103,6 +205,7 @@ impl CategoryRepo {
                 category.color,
                 category.sort_order,
                 category.is_builtin,
+                category.target_dir,
             ],
         )?;
         Ok(())
@@ -153,8 +256,9 @@ fn map_category(row: &rusqlite::Row<'_>) -> rusqlite::Result<Category> {
         color: row.get(4)?,
         sort_order: row.get(5)?,
         is_builtin: row.get::<_, i64>(6)? != 0,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        target_dir: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
@@ -179,9 +283,48 @@ mod tests {
             color: None,
             sort_order: 0,
             is_builtin: builtin,
+            target_dir: String::new(),
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-01 00:00:00".to_string(),
         }
+    }
+
+    #[test]
+    fn test_seed_builtin_categories_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+
+        let first = CategoryRepo::seed_builtin_categories(db.conn())?;
+        assert_eq!(first, BUILTIN_CATEGORIES.len(), "首次应全部新增");
+
+        // 二次调用幂等：不重复插入
+        let second = CategoryRepo::seed_builtin_categories(db.conn())?;
+        assert_eq!(second, 0, "二次调用不应新增");
+
+        let all = CategoryRepo::list_all(db.conn())?;
+        assert_eq!(all.len(), BUILTIN_CATEGORIES.len());
+
+        // target_dir 已填充（与 name 一致），供分类器启发式使用
+        let image = all
+            .iter()
+            .find(|c| c.id == "builtin-image")
+            .ok_or("内置图片分类应存在")?;
+        assert_eq!(image.name, "图片");
+        assert_eq!(image.target_dir, "图片");
+        assert!(image.is_builtin);
+        Ok(())
+    }
+
+    #[test]
+    fn test_upsert_persists_target_dir() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let mut c1 = mk_category("c1", "自定义", None, false);
+        c1.target_dir = "my/sub".to_string();
+        CategoryRepo::upsert(db.conn(), &c1)?;
+
+        let all = CategoryRepo::list_all(db.conn())?;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].target_dir, "my/sub");
+        Ok(())
     }
 
     #[test]
