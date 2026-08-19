@@ -285,6 +285,8 @@ fn main() {
             commands::inference::set_inference_mode,
             commands::config::get_config,
             commands::config::update_config,
+            commands::config::sign_cloud_consent,
+            commands::config::revoke_cloud_consent,
         ])
         .setup(move |app| {
             // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖

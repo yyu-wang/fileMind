@@ -10,7 +10,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fileIpc } from '../lib/ipc';
-import type { AppConfig, InferenceMode } from '../types/ipc';
+import type { AppConfig, CloudProvider, InferenceMode } from '../types/ipc';
 
 interface SettingsState {
   /** 当前推理模式（默认本地） */
@@ -25,6 +25,8 @@ interface SettingsState {
   maxFileSizeMb: number;
   /** 界面语言（BCP 47） */
   language: string;
+  /** 是否已完成首次启动引导 */
+  onboardingCompleted: boolean;
   /** 云端同意书是否已签（云端模式前置条件） */
   cloudConsentSigned: boolean;
   /** 配置加载中 */
@@ -38,10 +40,12 @@ interface SettingsState {
   setInferenceMode: (mode: InferenceMode) => Promise<void>;
   /** 更新配置（部分字段） */
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
-  /** 签署云端同意书（T6.7 实现） */
-  signCloudConsent: () => Promise<void>;
-  /** 撤销云端同意书（T6.7 实现） */
+  /** 签署云端同意书 */
+  signCloudConsent: (provider: CloudProvider) => Promise<void>;
+  /** 撤销云端同意书（自动切回 Local 模式） */
   revokeCloudConsent: () => Promise<void>;
+  /** 标记引导完成（写入 DB） */
+  completeOnboarding: (dataDirectory: string) => Promise<void>;
   /** 清除错误 */
   clearError: () => void;
 }
@@ -55,6 +59,7 @@ export const useSettingsStore = create<SettingsState>()(
       embeddingModel: 'bge-small-zh',
       maxFileSizeMb: 100,
       language: 'zh-CN',
+      onboardingCompleted: false,
       cloudConsentSigned: false,
       isLoading: true,
       error: null,
@@ -64,13 +69,16 @@ export const useSettingsStore = create<SettingsState>()(
         const result = await fileIpc.getConfig();
         if (result.status === 'ok') {
           const cfg = result.data;
+          const mode = normalizeInferenceMode(cfg.inference_mode);
           set({
             dataDirectory: cfg.data_directory,
-            inferenceMode: normalizeInferenceMode(cfg.inference_mode),
+            inferenceMode: mode,
             embeddingModel: cfg.embedding_model,
             maxFileSizeMb: cfg.max_file_size_mb,
             language: cfg.language,
-            llmModel: getLlmModelLabel(normalizeInferenceMode(cfg.inference_mode)),
+            onboardingCompleted: cfg.onboarding_completed,
+            cloudConsentSigned: cfg.cloud_consent_signed,
+            llmModel: getLlmModelLabel(mode),
             isLoading: false,
           });
         } else {
@@ -98,6 +106,11 @@ export const useSettingsStore = create<SettingsState>()(
           embedding_model: partial.embedding_model ?? current.embeddingModel,
           max_file_size_mb: partial.max_file_size_mb ?? current.maxFileSizeMb,
           language: partial.language ?? current.language,
+          onboarding_completed: partial.onboarding_completed ?? current.onboardingCompleted,
+          cloud_consent_signed: partial.cloud_consent_signed ?? current.cloudConsentSigned,
+          cloud_consent_version: partial.cloud_consent_version ?? null,
+          cloud_consent_provider: partial.cloud_consent_provider ?? null,
+          cloud_consent_signed_at: partial.cloud_consent_signed_at ?? null,
         };
         const result = await fileIpc.updateConfig(fullConfig);
         if (result.status !== 'ok') {
@@ -108,14 +121,35 @@ export const useSettingsStore = create<SettingsState>()(
         await get().loadConfig();
       },
 
-      signCloudConsent: async () => {
-        // T6.7 实现：调用 fileIpc.signCloudConsent 后 set
-        set({ cloudConsentSigned: true });
+      signCloudConsent: async (provider) => {
+        // 同意书版本号当前固定 v1.0（07 规范 §隐私合规），后续版本变更在 T11
+        const result = await fileIpc.signCloudConsent('v1.0', provider);
+        if (result.status === 'ok') {
+          set({ cloudConsentSigned: true, inferenceMode: 'Cloud' });
+        } else {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
       },
 
       revokeCloudConsent: async () => {
-        // T6.7 实现：调用 fileIpc.revokeCloudConsent 后 set
-        set({ cloudConsentSigned: false });
+        const result = await fileIpc.revokeCloudConsent();
+        if (result.status === 'ok') {
+          // 撤回后自动切回 Local（04 API §2-3d 联动，Rust 端已完成 DB 切换）
+          set({
+            cloudConsentSigned: false,
+            inferenceMode: 'Local',
+            llmModel: getLlmModelLabel('Local'),
+          });
+        } else {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
+      },
+
+      completeOnboarding: async (dataDirectory) => {
+        // 引导完成：更新 data_directory + onboarding_completed=true
+        await get().updateConfig({ data_directory: dataDirectory, onboarding_completed: true });
       },
 
       clearError: () => set({ error: null }),
@@ -126,6 +160,7 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         inferenceMode: state.inferenceMode,
         cloudConsentSigned: state.cloudConsentSigned,
+        onboardingCompleted: state.onboardingCompleted,
       }),
     },
   ),

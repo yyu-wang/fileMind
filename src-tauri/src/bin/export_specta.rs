@@ -34,6 +34,8 @@ fn main() {
             commands::inference::set_inference_mode,
             commands::config::get_config,
             commands::config::update_config,
+            commands::config::sign_cloud_consent,
+            commands::config::revoke_cloud_consent,
         ]);
 
     if let Err(e) = builder.export(specta_typescript::Typescript::default(), &output_path) {
