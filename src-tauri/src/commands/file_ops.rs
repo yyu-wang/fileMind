@@ -336,6 +336,8 @@ fn execute_operations_inner(
             status: if success { "done" } else { "failed" }.into(),
             prev_hash: prev_hash.clone().unwrap_or_default(),
             current_hash: current_hash.clone().unwrap_or_default(),
+            // 链式哈希由 OperationRepo::insert_batch 计算，这里占位空字符串
+            chain_hash: String::new(),
             created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         };
         logs_to_insert.push(log);

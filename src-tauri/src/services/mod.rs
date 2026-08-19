@@ -2,6 +2,7 @@
 
 pub mod conflict_resolver;
 pub mod hash_service;
+pub mod log_chain;
 pub mod operation_executor;
 pub mod undo_executor;
 

@@ -44,6 +44,8 @@ pub struct OperationLog {
     pub prev_hash: String,
     /// 操作后内容哈希。
     pub current_hash: String,
+    /// 链式哈希：SHA256(前一条链哈希 + 本记录规范化数据)，用于防篡改。
+    pub chain_hash: String,
     /// 记录时间。
     pub created_at: String,
 }

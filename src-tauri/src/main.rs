@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use filemind_lib::commands;
-use filemind_lib::db::Database;
+use filemind_lib::db::{Database, OperationRepo};
 use filemind_lib::error::AppError;
 use filemind_lib::sidecar::{
     resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
@@ -194,6 +194,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // T3.5：启动时校验操作日志链式哈希完整性，检测到篡改仅告警、不阻断启动
+    match OperationRepo::verify_chain(database.conn()) {
+        Ok(None) => log::info!("操作日志链式哈希校验通过"),
+        Ok(Some(break_id)) => {
+            log::error!("操作日志链式哈希校验失败，检测到篡改，断裂于记录 {break_id}");
+        }
+        Err(e) => log::error!("操作日志链式哈希校验出错: {e}"),
+    }
 
     // 启动 Sidecar 并完成 HMAC 握手：失败直接退出，避免在未验证身份时进入主循环
     //

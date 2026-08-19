@@ -4,27 +4,34 @@ use rusqlite::{params, Connection};
 
 use crate::db::models::{OperationBatchSummary, OperationLog};
 use crate::error::AppResult;
+use crate::services::log_chain;
 
 const INSERT_LOG_SQL: &str = "
     INSERT INTO operations_log
-        (id, batch_id, operation_type, source_path, target_path, status, prev_hash, current_hash)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        (id, batch_id, operation_type, source_path, target_path, status,
+         prev_hash, current_hash, chain_hash, created_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
 ";
 
 /// `operations_log` 表仓库：全部方法接收外部连接，便于事务组合。
 pub struct OperationRepo;
 
 impl OperationRepo {
-    /// 在单个事务中批量插入操作日志（一个批次的多条行）。
+    /// 在单个事务中批量插入操作日志，并逐条计算链式哈希。
+    ///
+    /// 链式哈希起点为本批之前最后一条记录的 `chain_hash`（空表时为创世值），
+    /// 事务内顺序计算，保证与 `verify_chain` 的 `rowid` 顺序一致。
     ///
     /// # Errors
     ///
     /// 事务开启、插入或提交失败时返回错误。
     pub fn insert_batch(conn: &Connection, logs: &[OperationLog]) -> AppResult<usize> {
         let tx = conn.unchecked_transaction()?;
+        let mut prev_chain = Self::last_chain_hash(&tx)?;
         let mut count = 0;
 
         for log in logs {
+            let chain_hash = log_chain::hash_record(&prev_chain, &log_chain::canonicalize(log));
             tx.execute(
                 INSERT_LOG_SQL,
                 params![
@@ -36,13 +43,35 @@ impl OperationRepo {
                     log.status,
                     log.prev_hash,
                     log.current_hash,
+                    chain_hash,
+                    log.created_at,
                 ],
             )?;
+            prev_chain = chain_hash;
             count += 1;
         }
 
         tx.commit()?;
         Ok(count)
+    }
+
+    /// 读取当前最后一条记录的链式哈希作为下一批插入的起点。
+    ///
+    /// # Errors
+    ///
+    /// 查询失败时返回数据库错误；空表返回创世值。
+    fn last_chain_hash(conn: &Connection) -> AppResult<String> {
+        let result = conn.query_row(
+            "SELECT chain_hash FROM operations_log ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        );
+
+        match result {
+            Ok(hash) => Ok(hash),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(log_chain::GENESIS.to_string()),
+            Err(e) => Err(crate::error::AppError::Database(e)),
+        }
     }
 
     /// 按批次 ID 查询该批次所有行（撤销时拉取反向操作链用）。
@@ -53,7 +82,7 @@ impl OperationRepo {
     pub fn list_by_batch(conn: &Connection, batch_id: &str) -> AppResult<Vec<OperationLog>> {
         let mut stmt = conn.prepare(
             "SELECT id, batch_id, operation_type, source_path, target_path,
-                    status, prev_hash, current_hash, created_at
+                    status, prev_hash, current_hash, chain_hash, created_at
              FROM operations_log
              WHERE batch_id = ?1
              ORDER BY created_at ASC",
@@ -84,6 +113,39 @@ impl OperationRepo {
             ));
         }
         Ok(())
+    }
+
+    /// 按插入顺序（`rowid`）读取全部操作日志，供链式哈希校验。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回错误。
+    pub fn list_all_ordered(conn: &Connection) -> AppResult<Vec<OperationLog>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, batch_id, operation_type, source_path, target_path,
+                    status, prev_hash, current_hash, chain_hash, created_at
+             FROM operations_log
+             ORDER BY rowid ASC",
+        )?;
+
+        let rows = stmt.query_map([], map_operation_log)?;
+        let mut logs = Vec::new();
+        for row in rows {
+            logs.push(row?);
+        }
+        Ok(logs)
+    }
+
+    /// 启动时校验操作日志链完整性。
+    ///
+    /// 返回第一条断裂记录的 `id`（`None` 表示链完整）。空表视为完整。
+    ///
+    /// # Errors
+    ///
+    /// 读取日志失败时返回错误。
+    pub fn verify_chain(conn: &Connection) -> AppResult<Option<String>> {
+        let logs = Self::list_all_ordered(conn)?;
+        Ok(log_chain::verify(&logs).map(|index| logs[index].id.clone()))
     }
 
     /// 按 `batch_id` 聚合历史记录，分页返回批次摘要。
@@ -164,12 +226,14 @@ fn map_operation_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationLog> 
         status: row.get(5)?,
         prev_hash: row.get(6)?,
         current_hash: row.get(7)?,
-        created_at: row.get(8)?,
+        chain_hash: row.get(8)?,
+        created_at: row.get(9)?,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::db::database::Database;
     use tempfile::NamedTempFile;
@@ -189,6 +253,7 @@ mod tests {
             status: status.to_string(),
             prev_hash: "h0".to_string(),
             current_hash: "h1".to_string(),
+            chain_hash: String::new(),
             created_at: "2026-01-01 00:00:00".to_string(),
         }
     }
@@ -333,6 +398,130 @@ mod tests {
         let db = setup_db()?;
         let summaries = OperationRepo::list_history(db.conn(), 1, 10)?;
         assert!(summaries.is_empty());
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // T3.5 链式哈希集成测试
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_insert_batch_computes_chain_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let logs = vec![
+            mk_log("l1", "b1", "move", "done"),
+            mk_log("l2", "b1", "move", "done"),
+        ];
+        OperationRepo::insert_batch(db.conn(), &logs)?;
+
+        // 读回：chain_hash 非空且校验通过
+        let stored = OperationRepo::list_by_batch(db.conn(), "b1")?;
+        assert_eq!(stored.len(), 2);
+        assert!(
+            stored.iter().all(|l| !l.chain_hash.is_empty()),
+            "chain_hash 不应为空"
+        );
+
+        // 全表校验通过（None）
+        let broken = OperationRepo::verify_chain(db.conn())?;
+        assert!(broken.is_none(), "链应完整，实际断裂于 {broken:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_verify_chain_detects_tamper() {
+        // V007 触发器禁止 UPDATE 不可变字段，这里改用「直接构造被篡改的日志列表」
+        // 调 log_chain::verify 验证检测逻辑（DB 层的篡改阻止由 test_trigger_* 覆盖）。
+        let logs = vec![
+            mk_log("l1", "b1", "move", "done"),
+            mk_log("l2", "b1", "move", "done"),
+        ];
+        // 手工构造合法链
+        let c0 = log_chain::hash_record(log_chain::GENESIS, &log_chain::canonicalize(&logs[0]));
+        let c1 = log_chain::hash_record(&c0, &log_chain::canonicalize(&logs[1]));
+        let mut logs = logs;
+        logs[0].chain_hash = c0;
+        logs[1].chain_hash = c1;
+
+        // 篡改第二条的 source_path，但保留原 chain_hash
+        logs[1].source_path = "/tampered.txt".to_string();
+
+        assert_eq!(log_chain::verify(&logs), Some(1), "应检测到 l2 处断裂");
+    }
+
+    #[test]
+    fn test_verify_chain_empty_table_ok() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let broken = OperationRepo::verify_chain(db.conn())?;
+        assert!(broken.is_none());
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // T3.5 V007 触发器行为测试（INSERT-only 强制）
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_trigger_blocks_update_non_status() -> Result<(), Box<dyn std::error::Error>> {
+        // 模拟攻击者绕过应用层，直接执行 UPDATE source_path → 应被触发器拒绝
+        let db = setup_db()?;
+        let logs = vec![mk_log("l1", "b1", "move", "done")];
+        OperationRepo::insert_batch(db.conn(), &logs)?;
+
+        let result = db.conn().execute(
+            "UPDATE operations_log SET source_path = ?1 WHERE id = ?2",
+            params!["/tampered.txt", "l1"],
+        );
+        assert!(result.is_err(), "UPDATE source_path 应被触发器拒绝");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("仅允许更新 status"),
+            "错误信息应说明原因: {err_msg}"
+        );
+
+        // 校验记录未被修改
+        let stored = OperationRepo::list_by_batch(db.conn(), "b1")?;
+        assert_eq!(stored[0].source_path, "/src/a.txt");
+        Ok(())
+    }
+
+    #[test]
+    fn test_trigger_allows_update_status() -> Result<(), Box<dyn std::error::Error>> {
+        // undo_batch 的 done→undone 状态变更应被允许（status 不在触发器保护列表）
+        let db = setup_db()?;
+        let logs = vec![mk_log("l1", "b1", "move", "done")];
+        OperationRepo::insert_batch(db.conn(), &logs)?;
+
+        OperationRepo::update_status(db.conn(), "l1", "undone")?;
+
+        // 校验状态已变 + 链仍完整（status 不参与 canonicalize）
+        let stored = OperationRepo::list_by_batch(db.conn(), "b1")?;
+        assert_eq!(stored[0].status, "undone");
+        let broken = OperationRepo::verify_chain(db.conn())?;
+        assert!(broken.is_none(), "状态变更不应破坏链");
+        Ok(())
+    }
+
+    #[test]
+    fn test_trigger_blocks_delete() -> Result<(), Box<dyn std::error::Error>> {
+        // 模拟攻击者绕过应用层，直接 DELETE → 应被触发器拒绝
+        let db = setup_db()?;
+        let logs = vec![mk_log("l1", "b1", "move", "done")];
+        OperationRepo::insert_batch(db.conn(), &logs)?;
+
+        let result = db
+            .conn()
+            .execute("DELETE FROM operations_log WHERE id = ?1", params!["l1"]);
+        assert!(result.is_err(), "DELETE 应被触发器拒绝");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("禁止删除"),
+            "错误信息应说明原因: {err_msg}"
+        );
+
+        // 校验记录仍存在
+        let stored = OperationRepo::list_by_batch(db.conn(), "b1")?;
+        assert_eq!(stored.len(), 1, "记录不应被删除");
         Ok(())
     }
 }
