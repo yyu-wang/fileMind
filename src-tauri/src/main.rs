@@ -258,6 +258,8 @@ fn main() {
             commands::file_query::search_by_filename,
             commands::file_query::get_file_stats,
             commands::file_query::update_file_category,
+            commands::file_query::get_operation_history,
+            commands::file_query::get_batch_detail,
             commands::inference::get_inference_mode,
             commands::inference::set_inference_mode,
             commands::config::get_config,

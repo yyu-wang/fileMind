@@ -12,6 +12,6 @@ pub use category_repo::CategoryRepo;
 pub use database::Database;
 pub use file_repo::{FileRepo, UpsertResult};
 pub use file_search::{FileSearch, SearchResult};
-pub use models::{CategoryNode, OperationBatchSummary};
+pub use models::{CategoryNode, OperationBatchSummary, OperationLog};
 pub use operation_repo::OperationRepo;
 pub use rule_repo::RuleRepo;

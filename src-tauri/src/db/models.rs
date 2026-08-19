@@ -67,7 +67,10 @@ pub struct OperationBatchSummary {
     pub status: String,
     /// 首条记录时间（批次创建时间近似）。
     pub created_at: String,
-    /// 是否可撤销：status='done' 即可撤销（窗口期由调用方判断）。
+    /// 批次内是否含 delete 操作（含则不可撤销，T3.4 已确认 delete 不可恢复）。
+    pub has_delete: bool,
+    /// 是否可撤销（DB 层）：`status='done' && !has_delete`。
+    /// IPC 命令层（`get_operation_history`）会再注入撤销窗口判断。
     pub can_undo: bool,
 }
 

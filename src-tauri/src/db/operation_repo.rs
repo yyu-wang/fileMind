@@ -154,9 +154,10 @@ impl OperationRepo {
     /// - `total_count = COUNT(*)`：批次内日志总条数
     /// - `success_count`/`failed_count`：按 status 分组计数
     /// - `op_type`：取批次内首条行的 `operation_type`（`MIN(created_at)` 对应行）
-    /// - `status`：批次状态聚合规则——任一 und 0= undone 即 undone；否则全部 done 即 done；
-    ///   任一 failed 即 failed；其余为 pending
-    /// - `can_undo`：status='done' 即可撤销（撤销窗口期由调用方再判断）
+    /// - `status`：批次状态聚合规则——任一 undone → undone；否则全部 done → done；
+    ///   任一 failed → failed；其余 pending
+    /// - `has_delete`：批次内是否含 `delete` 操作（含则不可撤销，T3.4 已确认 delete 不可恢复）
+    /// - `can_undo`（DB 层）：`status='done' && !has_delete`；撤销窗口期由 IPC 命令层再注入
     ///
     /// # Errors
     ///
@@ -169,6 +170,7 @@ impl OperationRepo {
         // 聚合 SQL：按 batch_id 分组，计算各类计数
         // 批次状态：用 CASE 表达式实现"任一 undone → undone；任一 failed → failed；
         //           全部 done → done；否则 pending"
+        // has_delete：批次内是否含 delete 操作
         let sql = "
             SELECT
                 batch_id,
@@ -184,6 +186,7 @@ impl OperationRepo {
                     WHEN SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) > 0 THEN 'pending'
                     ELSE 'done'
                 END AS batch_status,
+                SUM(CASE WHEN operation_type = 'delete' THEN 1 ELSE 0 END) AS delete_count,
                 MIN(created_at) AS created_at
             FROM operations_log o
             GROUP BY batch_id
@@ -195,15 +198,18 @@ impl OperationRepo {
         let offset = (page - 1).max(0) * page_size;
         let rows = stmt.query_map(params![page_size, offset], |row| {
             let status: String = row.get(5)?;
+            let delete_count: i64 = row.get(6)?;
+            let has_delete = delete_count > 0;
             Ok(OperationBatchSummary {
                 batch_id: row.get(0)?,
                 op_type: row.get(1)?,
                 total_count: row.get(2)?,
                 success_count: row.get(3)?,
                 failed_count: row.get(4)?,
-                can_undo: status == "done",
+                can_undo: status == "done" && !has_delete,
                 status,
-                created_at: row.get(6)?,
+                created_at: row.get(7)?,
+                has_delete,
             })
         })?;
 
@@ -299,7 +305,7 @@ mod tests {
     #[test]
     fn test_list_history_aggregation() -> Result<(), Box<dyn std::error::Error>> {
         let db = setup_db()?;
-        // 批次 b1：3 行 done → status='done'，can_undo=true
+        // 批次 b1：3 行 done move → status='done', has_delete=false, can_undo=true
         let logs = vec![
             mk_log("l1", "b1", "move", "done"),
             mk_log("l2", "b1", "move", "done"),
@@ -312,16 +318,22 @@ mod tests {
             mk_log("l5", "b2", "move", "failed"),
         ];
         OperationRepo::insert_batch(db.conn(), &logs2)?;
-        // 批次 b3：2 pending → status='pending'
+        // 批次 b3：2 pending delete → status='pending', has_delete=true, can_undo=false
         let logs3 = vec![
             mk_log("l6", "b3", "delete", "pending"),
             mk_log("l7", "b3", "delete", "pending"),
         ];
         OperationRepo::insert_batch(db.conn(), &logs3)?;
+        // 批次 b4：2 done delete → status='done' 但含 delete → can_undo=false（DB 层就否决）
+        let logs4 = vec![
+            mk_log("l8", "b4", "delete", "done"),
+            mk_log("l9", "b4", "delete", "done"),
+        ];
+        OperationRepo::insert_batch(db.conn(), &logs4)?;
 
         let summaries = OperationRepo::list_history(db.conn(), 1, 10)?;
-        // 按 created_at DESC：3 个批次都返回
-        assert_eq!(summaries.len(), 3);
+        // 4 个批次都返回
+        assert_eq!(summaries.len(), 4);
 
         let by_batch: std::collections::HashMap<String, OperationBatchSummary> = summaries
             .into_iter()
@@ -333,7 +345,8 @@ mod tests {
         assert_eq!(b1.success_count, 3);
         assert_eq!(b1.failed_count, 0);
         assert_eq!(b1.status, "done");
-        assert!(b1.can_undo);
+        assert!(!b1.has_delete);
+        assert!(b1.can_undo, "纯 move done 批次应可撤销");
         assert_eq!(b1.op_type, "move");
 
         let b2 = &by_batch["b2"];
@@ -341,12 +354,22 @@ mod tests {
         assert_eq!(b2.success_count, 1);
         assert_eq!(b2.failed_count, 1);
         assert_eq!(b2.status, "failed");
-        assert!(!b2.can_undo);
+        assert!(!b2.has_delete);
+        assert!(!b2.can_undo, "failed 批次不可撤销");
 
         let b3 = &by_batch["b3"];
         assert_eq!(b3.status, "pending");
-        assert!(!b3.can_undo);
+        assert!(b3.has_delete, "b3 含 delete 操作");
+        assert!(!b3.can_undo, "pending 批次不可撤销");
         assert_eq!(b3.op_type, "delete");
+
+        let b4 = &by_batch["b4"];
+        assert_eq!(b4.status, "done");
+        assert!(b4.has_delete, "b4 含 delete 操作");
+        assert!(
+            !b4.can_undo,
+            "b4 即使 status=done，含 delete 也不可撤销（DB 层否决）"
+        );
         Ok(())
     }
 

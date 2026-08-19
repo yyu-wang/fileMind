@@ -8,8 +8,11 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::{FileRepo, FileSearch, SearchResult};
+use crate::db::{
+    FileRepo, FileSearch, OperationBatchSummary, OperationLog, OperationRepo, SearchResult,
+};
 use crate::error::AppError;
+use crate::services::undo_window;
 use crate::{AppState, FileInfo};
 
 const MAX_PAGE_SIZE: i64 = 500;
@@ -219,4 +222,98 @@ pub struct FileStats {
     pub duplicate_groups: i64,
     /// 文件总大小（字节）。
     pub total_size_bytes: i64,
+}
+
+// ----------------------------------------------------------------------
+// T3.6 操作历史查询
+// ----------------------------------------------------------------------
+
+const HISTORY_DEFAULT_PAGE: i64 = 1;
+const HISTORY_DEFAULT_PAGE_SIZE: i64 = 20;
+const HISTORY_MAX_PAGE_SIZE: i64 = 100;
+
+/// 分页获取操作历史（API §2-2d）。
+///
+/// `page` 从 1 开始（与 `list_files` 的从 0 开始不同，对齐 API 规格书）。
+/// `can_undo` 三层条件：
+///   1. DB 层（`list_history`）：`status == "done" && !has_delete`
+///   2. IPC 层（本命令）：再注入 `is_within_window(created_at)`（24h 窗口）
+///   3. 最终值 = 两条件 AND
+///
+/// # Errors
+///
+/// 数据库锁中毒或查询失败返回 `DB-U-002`；时间解析失败返回 `DB-U-003`。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn get_operation_history(
+    state: State<'_, AppState>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<OperationHistoryResponse, String> {
+    let page = i64::from(page.unwrap_or(1)).max(HISTORY_DEFAULT_PAGE);
+    let page_size =
+        i64::from(page_size.unwrap_or(20)).clamp(HISTORY_DEFAULT_PAGE_SIZE, HISTORY_MAX_PAGE_SIZE);
+
+    let mut summaries = {
+        let db = lock_db(&state.db)?;
+        OperationRepo::list_history(db.conn(), page, page_size)
+            .map_err(|e| format!("DB-U-002:操作历史读取失败 ({e})"))?
+    };
+
+    // 注入撤销窗口判断（DB 层只算 status + has_delete，窗口由这里算）
+    for s in &mut summaries {
+        let within = undo_window::is_within_window(&s.created_at)
+            .map_err(|e| format!("DB-U-003:时间解析失败 ({e})"))?;
+        s.can_undo = s.can_undo && within;
+    }
+
+    Ok(OperationHistoryResponse {
+        batches: summaries,
+        page,
+        page_size,
+    })
+}
+
+/// 查询单个批次的详细日志（API §2-2d 的 `batch_id` 参数分支）。
+///
+/// # Errors
+///
+/// 数据库锁中毒或查询失败返回 `DB-U-002`；批次不存在返回 `DB-U-004`。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn get_batch_detail(
+    state: State<'_, AppState>,
+    batch_id: String,
+) -> Result<BatchDetailResponse, String> {
+    let logs = {
+        let db = lock_db(&state.db)?;
+        OperationRepo::list_by_batch(db.conn(), &batch_id)
+            .map_err(|e| format!("DB-U-002:批次详情读取失败 ({e})"))?
+    };
+
+    if logs.is_empty() {
+        return Err("DB-U-004:批次不存在".to_string());
+    }
+
+    Ok(BatchDetailResponse { batch_id, logs })
+}
+
+/// 操作历史响应（API §2-2d 返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct OperationHistoryResponse {
+    /// 批次摘要列表。
+    pub batches: Vec<OperationBatchSummary>,
+    /// 当前页码（从 1 开始）。
+    pub page: i64,
+    /// 每页条数（实际生效值）。
+    pub page_size: i64,
+}
+
+/// 批次详情响应（API §2-2d `batch_id` 分支返回值）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct BatchDetailResponse {
+    /// 批次 ID。
+    pub batch_id: String,
+    /// 批次内所有日志行（按 `created_at` 升序）。
+    pub logs: Vec<OperationLog>,
 }
