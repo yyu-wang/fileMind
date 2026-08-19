@@ -1,4 +1,4 @@
-"""T4.5 分类准确率评估 CLI。
+"""T4.5/T4.6 分类准确率评估 CLI。
 
 用法：
     python -m eval                       # 生成 500 样本集并评估（默认调 LLM 兜底）
@@ -7,6 +7,10 @@
     python -m eval --no-llm              # 跳过 LLM 层（只测规则 + 启发式）
     python -m eval --dataset <path>      # 指定测试集 JSONL 路径
     python -m eval --keep                # 评估后保留临时测试集文件
+    python -m eval --min-accuracy 0.9    # 调整准确率门禁（默认 0.85）
+
+达标门禁对齐 08-§8：总体准确率 ≥85%、规则层覆盖率 ≥70%、LLM 兜底准确率
+≥75%、JSON 解析成功率 ≥95%。任一指标未达标时退出码非 0。
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from eval.dataset import (  # noqa: E402
     load_jsonl,
     write_jsonl,
 )
-from eval.metrics import EvalReport, format_report  # noqa: E402
+from eval.metrics import EvalReport, check_targets, format_report  # noqa: E402
 from eval.runner import run_eval  # noqa: E402
 
 
@@ -44,6 +48,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--gen-only", action="store_true", help="仅生成测试集，不评估")
     parser.add_argument("--no-llm", action="store_true", help="跳过 LLM 兜底层")
     parser.add_argument("--keep", action="store_true", help="评估后保留临时测试集文件")
+    parser.add_argument(
+        "--min-accuracy", type=float, default=0.85, help="总体准确率门禁（默认 0.85）"
+    )
     return parser.parse_args(argv)
 
 
@@ -85,10 +92,20 @@ def main(argv: list[str] | None = None) -> int:
     report: EvalReport = asyncio.run(run_eval(records, use_llm=not args.no_llm))
     print(format_report(report))
 
+    failed = check_targets(report, min_accuracy=args.min_accuracy)
+    if failed:
+        print("=== 未达标（08-§8 门禁） ===")
+        for item in failed:
+            print(f"  ✗ {item}")
+        result = 1
+    else:
+        print("✓ 全部指标达标（08-§8 门禁）")
+        result = 0
+
     if generated and not args.keep:
         dataset.unlink(missing_ok=True)
         print(f"[eval] 已清理临时评估集: {dataset}")
-    return 0
+    return result
 
 
 if __name__ == "__main__":

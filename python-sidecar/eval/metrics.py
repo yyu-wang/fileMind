@@ -1,4 +1,4 @@
-"""T4.5 评估指标：分类归一化 + 混淆矩阵 + 准确率/覆盖率。
+"""T4.5/T4.6 评估指标：分类归一化 + 混淆矩阵 + 准确率/覆盖率 + 达标校验。
 
 对齐 08_Prompt工程设计 §8 评估指标：总体准确率 ≥85%、规则层覆盖率 ≥70%、
 LLM 兜底准确率 ≥75%、JSON 解析成功率 ≥95%。
@@ -9,6 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from eval.dataset import CATEGORY_NAMES, EvalRecord
+
+#: 08-§8 达标目标
+TARGET_ACCURACY = 0.85
+TARGET_RULE_COVERAGE = 0.70
+TARGET_LLM_ACCURACY = 0.75
+TARGET_JSON_PARSE_RATE = 0.95
 
 #: 漏斗输出分类 → 8 个评估分类（细粒度分类归并；未知分类兜底到「其他」）
 CATEGORY_NORMALIZE: dict[str, str] = {
@@ -155,6 +161,30 @@ def evaluate(items: list[dict[str, object]], records: list[EvalRecord]) -> EvalR
         confusion=cm,
         per_category=_per_category(cm, CATEGORY_NAMES),
     )
+
+
+def check_targets(report: EvalReport, min_accuracy: float = TARGET_ACCURACY) -> list[str]:
+    """返回未达标指标描述列表；全部达标返回空列表。
+
+    Args:
+        report: 评估报告。
+        min_accuracy: 总体准确率门禁（CLI ``--min-accuracy``，默认 0.85）。
+
+    Returns:
+        未达标项列表；LLM 未启用（``llm_count == 0``）时跳过 LLM 相关校验。
+    """
+    failed: list[str] = []
+    if report.accuracy < min_accuracy:
+        failed.append(f"总体准确率 {report.accuracy:.1%} < {min_accuracy:.0%}")
+    if report.rule_coverage < TARGET_RULE_COVERAGE:
+        failed.append(f"规则层覆盖率 {report.rule_coverage:.1%} < {TARGET_RULE_COVERAGE:.0%}")
+    if report.llm_count and report.llm_accuracy < TARGET_LLM_ACCURACY:
+        failed.append(f"LLM 兜底准确率 {report.llm_accuracy:.1%} < {TARGET_LLM_ACCURACY:.0%}")
+    if report.llm_count and report.json_parse_rate < TARGET_JSON_PARSE_RATE:
+        failed.append(
+            f"JSON 解析成功率 {report.json_parse_rate:.1%} < {TARGET_JSON_PARSE_RATE:.0%}"
+        )
+    return failed
 
 
 def format_report(report: EvalReport) -> str:

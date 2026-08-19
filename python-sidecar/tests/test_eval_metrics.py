@@ -1,7 +1,7 @@
-"""T4.5 — 评估指标计算单元测试。
+"""T4.5/T4.6 — 评估指标计算单元测试。
 
 覆盖：分类归一化（细粒度 → 评估分类）、准确率、混淆矩阵、
-按类别精确率/召回率/F1、端到端 evaluate 聚合。
+按类别精确率/召回率/F1、端到端 evaluate 聚合、08-§8 达标校验。
 """
 
 from __future__ import annotations
@@ -13,8 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from eval.dataset import generate_dataset  # noqa: E402
 from eval.metrics import (  # noqa: E402
+    EvalReport,
     _per_category,
     accuracy,
+    check_targets,
     confusion_matrix,
     evaluate,
     normalize_category,
@@ -122,3 +124,73 @@ def test_per_category_precision_recall_f1() -> None:
     assert b_metrics.precision == 1.0
     assert b_metrics.recall == 0.5
     assert b_metrics.f1 == 2 / 3
+
+
+def _report(
+    *,
+    accuracy: float = 0.9,
+    rule_coverage: float = 0.8,
+    llm_count: int = 10,
+    llm_accuracy: float = 0.9,
+    json_parse_rate: float = 1.0,
+) -> EvalReport:
+    """构造默认达标的评估报告。"""
+    return EvalReport(
+        total=100,
+        accuracy=accuracy,
+        rule_coverage=rule_coverage,
+        llm_count=llm_count,
+        llm_accuracy=llm_accuracy,
+        json_parse_rate=json_parse_rate,
+        confusion={},
+        per_category=[],
+    )
+
+
+def test_check_targets_all_meet() -> None:
+    """全部指标达标 → 空列表。"""
+    assert check_targets(_report()) == []
+
+
+def test_check_targets_low_accuracy() -> None:
+    """准确率 < 85% → 未达标项。"""
+    failed = check_targets(_report(accuracy=0.8))
+    assert any("总体准确率" in item for item in failed)
+
+
+def test_check_targets_low_rule_coverage() -> None:
+    """规则层覆盖率 < 70% → 未达标项。"""
+    failed = check_targets(_report(rule_coverage=0.5))
+    assert any("规则层覆盖率" in item for item in failed)
+
+
+def test_check_targets_low_llm_accuracy() -> None:
+    """LLM 兜底准确率 < 75% → 未达标项。"""
+    failed = check_targets(_report(llm_accuracy=0.6))
+    assert any("LLM 兜底准确率" in item for item in failed)
+
+
+def test_check_targets_low_json_parse_rate() -> None:
+    """JSON 解析成功率 < 95% → 未达标项。"""
+    failed = check_targets(_report(json_parse_rate=0.8))
+    assert any("JSON 解析成功率" in item for item in failed)
+
+
+def test_check_targets_skips_llm_when_disabled() -> None:
+    """LLM 未启用（llm_count=0）→ 跳过 LLM 相关校验，其余达标即通过。"""
+    failed = check_targets(_report(llm_count=0, llm_accuracy=0.0, json_parse_rate=0.0))
+    assert failed == []
+
+
+def test_check_targets_custom_min_accuracy() -> None:
+    """自定义准确率门禁生效。"""
+    assert check_targets(_report(accuracy=0.9), min_accuracy=0.95)
+    assert check_targets(_report(accuracy=0.9), min_accuracy=0.85) == []
+
+
+def test_check_targets_multiple_failures() -> None:
+    """多项不达标 → 全部列出。"""
+    failed = check_targets(
+        _report(accuracy=0.6, rule_coverage=0.5, llm_accuracy=0.5, json_parse_rate=0.5)
+    )
+    assert len(failed) == 4

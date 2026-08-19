@@ -123,6 +123,24 @@ def test_parse_new_category_flag_passthrough() -> None:
     assert result.is_new_category is True
 
 
+def test_parse_fenced_json_code_block() -> None:
+    """qwen3 等模型可能用 markdown 代码块包裹 JSON → 仍能解析。"""
+    result = parse_classify_response(
+        '```json\n{"category": "文档", "confidence": 0.9, "reason": "pdf", "is_new_category": false}\n```'
+    )
+    assert result.category == "文档"
+    assert result.confidence == 0.9
+
+
+def test_parse_json_with_surrounding_text() -> None:
+    """JSON 前后有说明文本 → 按首个/末个花括号截取解析。"""
+    result = parse_classify_response(
+        '根据分析，结果为：\n{"category": "代码", "confidence": 0.8, "reason": "py", "is_new_category": false}\n以上。'
+    )
+    assert result.category == "代码"
+    assert result.confidence == 0.8
+
+
 def test_build_prompt_system_has_categories() -> None:
     """SYSTEM 包含预定义分类列表（顿号分隔）。"""
     system, _ = build_classify_prompt(make_item(), ["财务", "文档"])

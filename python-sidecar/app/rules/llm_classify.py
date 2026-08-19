@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import httpx
@@ -33,8 +32,8 @@ OLLAMA_TIMEOUT = float(os.environ.get("FILEMIND_OLLAMA_TIMEOUT", "30"))
 #: 内容摘要截断长度（对齐 P-01 输入变量 content_summary 前 500 字符）
 CONTENT_SUMMARY_MAX = 500
 
-#: 生成式模型名（env 可覆盖）
-LLM_MODEL = os.environ.get("FILEMIND_LLM_MODEL", "qwen2.5")
+#: 生成式模型名（env 可覆盖；本机默认已装 qwen3.8-27b）
+LLM_MODEL = os.environ.get("FILEMIND_LLM_MODEL", "qwen3.8-27b")
 #: Ollama 服务地址（env 可覆盖）
 OLLAMA_HOST = os.environ.get("FILEMIND_OLLAMA_URL", "http://127.0.0.1:11434")
 
@@ -111,6 +110,23 @@ _USER_TEMPLATE = """请对以下文件进行分类：
 内容摘要：{content_summary}"""
 
 
+def _extract_json_text(raw: str) -> str:
+    """从 LLM 输出中提取 JSON 文本。
+
+    容忍两种常见包裹：markdown 代码块（`````json ... `````，qwen3 系常见）与
+    前后缀文本（按首个 ``{`` 到末个 ``}`` 截取）。无法识别时原样返回，由
+    调用方 json 解析兜底。
+    """
+    text = raw.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.splitlines()[1:]).rstrip("`").strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
 def parse_classify_response(raw: str) -> ClassifyResult:
     """解析 LLM 返回的分类结果，任何异常都降级为"未分类"，不抛给调用方。
 
@@ -119,13 +135,13 @@ def parse_classify_response(raw: str) -> ClassifyResult:
     - 置信度 < ``CONFIDENCE_THRESHOLD`` → reason 前缀 ``[需人工确认] ``
 
     Args:
-        raw: LLM 返回的原始文本。
+        raw: LLM 返回的原始文本（容忍 markdown 代码块包裹）。
 
     Returns:
         解析后的分类结果。
     """
     try:
-        data = json.loads(raw)
+        data = json.loads(_extract_json_text(raw))
         if not isinstance(data, dict):
             raise ValueError("LLM 输出不是 JSON 对象")
         result = ClassifyResult(**data)
@@ -187,7 +203,11 @@ def build_classify_prompt(item: ClassifyItem, categories: list[str]) -> tuple[st
 
 
 async def _call_ollama(system: str, user: str) -> str:
-    """调用 Ollama 生成分类 JSON；连接/HTTP 失败抛 :class:`LLMUnavailableError`。"""
+    """调用 Ollama 生成分类 JSON；连接/HTTP 失败抛 :class:`LLMUnavailableError`。
+
+    ``think=False`` 关闭 Qwen3 系列模型的思维链：思考 token 计入
+    ``num_predict`` 预算，未关闭时 JSON 会被截断/报 502（非思维模型忽略此参数）。
+    """
     client = AsyncClient(host=OLLAMA_HOST)
     try:
         resp = await client.chat(
@@ -197,14 +217,16 @@ async def _call_ollama(system: str, user: str) -> str:
                 Message(role="user", content=user),
             ],
             format="json",
-            options=Options(num_predict=128, temperature=0.0),
+            think=False,
+            options=Options(num_predict=256, temperature=0.0),
         )
     except (httpx.HTTPError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc
-    if not isinstance(resp, Mapping):
-        return ""
+    # 注意：ollama SDK 的 ChatResponse/Message 运行时并非 Mapping ABC（无
+    # isinstance(resp, Mapping) 判定），但均继承 SubscriptableBaseModel.get()，
+    # 故用鸭子类型的 .get() 取值，仅对 content 做类型校验。
     message = resp.get("message")
-    if not isinstance(message, Mapping):
+    if message is None:
         return ""
     content = message.get("content")
     if not isinstance(content, str):
