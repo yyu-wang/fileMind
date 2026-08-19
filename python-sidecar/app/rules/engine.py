@@ -12,23 +12,13 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.rules.models import Condition, PresetRule, PresetRules
+from app.rules.models import Condition, FileMeta, PresetRule, PresetRules
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
 _FieldValue = str | int
-
-
-@dataclass(frozen=True)
-class FileMeta:
-    """待匹配文件元数据。``extension`` 约定为小写、不含点。"""
-
-    name: str
-    extension: str
-    path: Path
-    size: int
 
 
 @dataclass(frozen=True)

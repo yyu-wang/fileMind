@@ -14,7 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
-from app.rules.engine import FileMeta, RuleEngine, RuleMatch  # noqa: E402
+from app.rules.engine import RuleEngine, RuleMatch  # noqa: E402
+from app.rules.models import FileMeta  # noqa: E402
 
 PRESET_RULES_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "rules" / "presets" / "preset_rules.json"
