@@ -24,11 +24,34 @@ class SidecarLogger(Protocol):
     def warning(self, msg: str, **kwargs: object) -> None: ...
 
 
+def _format_kv(msg: str, kwargs: dict[str, object]) -> str:
+    """把结构化 kv 参数格式化为消息后缀（stdlib 无 structlog 时的降级）。
+
+    标准库 logging 不接受 ``logger.warning(msg, error=...)`` 这类任意 kwargs，
+    此处把字段拼进消息，保证 SidecarLogger Protocol 的行为一致。
+    """
+    if not kwargs:
+        return msg
+    pairs = " ".join(f"{key}={value!r}" for key, value in kwargs.items())
+    return f"{msg} ({pairs})"
+
+
+class _StdlibLogger:
+    """标准库 logging 适配器：接受 SidecarLogger Protocol 的 ``**kwargs`` 调用。"""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def info(self, msg: str, **kwargs: object) -> None:
+        self._logger.info(_format_kv(msg, kwargs))
+
+    def warning(self, msg: str, **kwargs: object) -> None:
+        self._logger.warning(_format_kv(msg, kwargs))
+
+
 def getLogger(name: str = "filemind.sidecar") -> SidecarLogger:  # noqa: N802 - 复刻 logging.getLogger 命名
-    """返回 structlog 绑定 logger（有依赖）或标准 logging.Logger。"""
+    """返回 structlog 绑定 logger（有依赖）或标准 logging 适配器。"""
     if _HAS_STRUCTLOG:
         # structlog.get_logger 返回 BoundLogger，与 SidecarLogger Protocol 鸭子兼容
         return structlog.get_logger(name)  # type: ignore[return-value]
-    # 标准 logging.Logger 与 Protocol 的方法签名存在参数变长差异（*args vs **kwargs），
-    # 但运行时鸭子类型兼容；用 ignore 静音静态检查
-    return logging.getLogger(name)  # type: ignore[return-value]
+    return _StdlibLogger(logging.getLogger(name))

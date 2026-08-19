@@ -17,6 +17,32 @@ class ClassifyResponse(BaseModel):
     confidence: float
 
 
+class ClassifyItem(BaseModel):
+    """单个待分类文件（对齐 04_API详细规格书 §3.2 files 元素 + P-01 输入变量）。
+
+    ``content_summary`` / ``modified_time`` 由调用方（Rust 层扫描后）提供，
+    Sidecar 不做文件 I/O。``path`` 为文件绝对路径，用于目录信号与 LLM 上下文。
+    """
+
+    name: str
+    extension: str = ""
+    path: str
+    size: int = 0
+    content_summary: str = ""
+    modified_time: str = ""
+
+
+class ClassifyRequest(BaseModel):
+    """POST /classify 请求体。
+
+    ``categories`` 为 SQLite categories 表预定义分类列表（P-01 输入变量
+    ``predefined_categories``），由 Rust 层传入；所有 DB 操作在 Rust 侧。
+    """
+
+    files: list[ClassifyItem]
+    categories: list[str] = []
+
+
 class IndexBuildResponse(BaseModel):
     indexed_count: int
     skipped_count: int
