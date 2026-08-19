@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "description": "FileMind 内置分类规则预置集，来源：08_Prompt工程设计 §7。用户自定义规则优先级 1-50，预置规则 60-100（可禁用、不改优先级）。",
+  "rules": [
+    {
+      "id": "preset_doc_001",
+      "name": "文档文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["pdf", "doc", "docx", "txt", "md", "rtf", "odt"]
+      },
+      "action": {
+        "category": "文档"
+      }
+    },
+    {
+      "id": "preset_sheet_001",
+      "name": "表格文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["xls", "xlsx", "csv", "ods"]
+      },
+      "action": {
+        "category": "表格"
+      }
+    },
+    {
+      "id": "preset_img_001",
+      "name": "图片文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "heic", "heif", "tiff"]
+      },
+      "action": {
+        "category": "图片"
+      }
+    },
+    {
+      "id": "preset_video_001",
+      "name": "视频文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm"]
+      },
+      "action": {
+        "category": "视频"
+      }
+    },
+    {
+      "id": "preset_audio_001",
+      "name": "音频文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["mp3", "wav", "flac", "aac", "ogg", "m4a"]
+      },
+      "action": {
+        "category": "音频"
+      }
+    },
+    {
+      "id": "preset_code_001",
+      "name": "代码文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["py", "js", "ts", "rs", "go", "java", "cpp", "c", "h", "rb", "php", "swift", "kt"]
+      },
+      "action": {
+        "category": "代码"
+      }
+    },
+    {
+      "id": "preset_archive_001",
+      "name": "压缩包分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"]
+      },
+      "action": {
+        "category": "压缩包"
+      }
+    },
+    {
+      "id": "preset_design_001",
+      "name": "设计文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["psd", "ai", "skp", "fig", "xd", "sketch"]
+      },
+      "action": {
+        "category": "设计文件"
+      }
+    },
+    {
+      "id": "preset_data_001",
+      "name": "数据文件分类",
+      "priority": 90,
+      "enabled": true,
+      "condition": {
+        "field": "file_type",
+        "operator": "in",
+        "value": ["json", "xml", "yaml", "yml", "sql", "db", "sqlite"]
+      },
+      "action": {
+        "category": "数据文件"
+      }
+    },
+    {
+      "id": "preset_name_date_001",
+      "name": "日期命名文件",
+      "priority": 70,
+      "enabled": true,
+      "condition": {
+        "field": "file_name",
+        "operator": "regex",
+        "value": "^(20\\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\\d|3[01])"
+      },
+      "action": {
+        "category": "按日期归档",
+        "sub_category": "{{year}}年{{month}}月"
+      }
+    },
+    {
+      "id": "preset_name_screenshot_001",
+      "name": "截图文件",
+      "priority": 70,
+      "enabled": true,
+      "condition": {
+        "field": "file_name",
+        "operator": "regex",
+        "value": "^(截图|Screenshot|Screen Shot|屏幕截图)[\\s\\-_\\d]"
+      },
+      "action": {
+        "category": "截图"
+      }
+    },
+    {
+      "id": "preset_name_version_001",
+      "name": "版本号文件",
+      "priority": 65,
+      "enabled": true,
+      "condition": {
+        "field": "file_name",
+        "operator": "regex",
+        "value": "(v\\d+[\\.\\d]*|版本\\d+|第\\d+版|最终版|修改\\d+)"
+      },
+      "action": {
+        "category": "版本文件"
+      }
+    },
+    {
+      "id": "preset_dir_project_001",
+      "name": "项目目录文件",
+      "priority": 60,
+      "enabled": true,
+      "condition": {
+        "field": "directory",
+        "operator": "regex",
+        "value": "/(projects|项目|workspace|工作空间)/[^/]+"
+      },
+      "action": {
+        "category": "项目文件"
+      }
+    }
+  ]
+}
