@@ -14,10 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["protocol-asset"] }
+tauri = { version = "2.11", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-shell = "2.3"
 tauri-plugin-dialog = "2.7"
 tauri-plugin-fs = "2.5"
+# T6.1：单实例插件，防止二次启动产生孤儿 sidecar（第二个进程会抢端口）
+tauri-plugin-single-instance = "2.3"
 specta = "=2.0.0-rc.25"
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["javascript", "typescript"] }

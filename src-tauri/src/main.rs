@@ -1,18 +1,23 @@
 //! `FileMind` 桌面应用入口：初始化数据库、启动 Sidecar 与握手、注册 IPC 命令并启动 Tauri。
 //!
-//! 生命周期（含 Sidecar，T1.5）：
+//! 生命周期（含 Sidecar，T1.5 + T6.1 窗口/托盘管理）：
 //! 1. 启动阶段：建 `SidecarManager` → `start_with_handshake` 成功 → 把 manager / PSK
 //!    / seq / 重启计数放进 `AppState`
-//! 2. 运行期：`setup` 中 spawn 后台 `watchdog`（独立 current-thread `tokio` runtime），
-//!    每秒 tick：连续健康失败或 `Child::try_wait` 已退出 → 指数退避后 `restart()`，
-//!    并同步更新 `AppState` 里的 PSK + `reset` seq；1 分钟内 10 次重启 → `CrashLoop`
-//!    暂停，打 `error` 日志后 watchdog 自动退为「仅告警，不再自动恢复」
-//! 3. 退出：`run()` 返回后立即同步 `stop_graceful(seq)`，≤5s 优雅关 Sidecar；
-//!    `Drop` 兜底：若 run 内部 panic 导致正常退出路径跳过，`Drop` 会用 `stopped` 标志位
+//! 2. 运行期：`setup` 中构建系统托盘 + spawn 后台 `watchdog`（独立 current-thread
+//!    `tokio` runtime），每秒 tick：连续健康失败或 `Child::try_wait` 已退出 → 指数退避后
+//!    `restart()`，并同步更新 `AppState` 里的 PSK + `reset` seq；1 分钟内 10 次重启 →
+//!    `CrashLoop` 暂停，打 `error` 日志后 watchdog 自动退为「仅告警，不再自动恢复」
+//! 3. 窗口关闭：`CloseRequested` 时检查 `IS_QUITTING` 标志：
+//!    - false（默认）→ 阻止关闭 + `hide()` 最小化到托盘
+//!    - true（托盘「退出」菜单置位）→ 走 `stop_graceful` sidecar 流程，再退出
+//! 4. `Drop` 兜底：若 run 内部 panic 导致正常退出路径跳过，`Drop` 会用 `stopped` 标志位
 //!    保证仅一次 hard kill，不重复杀进程
+//!
+//! 单实例：`tauri-plugin-single-instance` 防止二次启动产生孤儿 sidecar，第二次启动
+//! 时回调里把已有主窗口显示出来并聚焦，新进程随后退出。
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -23,12 +28,21 @@ use filemind_lib::sidecar::{
     resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
 };
 use filemind_lib::AppState;
-use tauri::Manager;
+use tauri::{
+    menu::{Menu, MenuItem},
+    Manager,
+};
 
 /// 健康看门狗基础轮询间隔（毫秒）。
 ///
 /// 与 manager 内部 `HEALTH_POLL_INTERVAL_MS` 同值；集中到 main.rs 便于未来调优。
 const WATCHDOG_TICK_MS: u64 = 1000;
+
+/// 全局退出标志位：用于区分「X 关闭=最小化到托盘」与「托盘菜单退出=真退出」。
+///
+/// 默认 false → `CloseRequested` 走 hide 路径；托盘「退出」菜单先置 true 再触发关闭，
+/// 此时 `CloseRequested` 走 `stop_graceful` 真退出路径。
+static IS_QUITTING: AtomicBool = AtomicBool::new(false);
 
 fn get_db_path() -> PathBuf {
     let home = std::env::var("HOME")
@@ -237,6 +251,13 @@ fn main() {
     // 为了让 run() 返回后还能访问 manager/PSK/seq 做优雅关闭，这里 clone AppHandle：
     // 通过 AppHandle 就能从 managed state 再取出。
     let builder = tauri::Builder::default()
+        // T6.1 单实例：第二个进程启动时回调里把已有窗口显示出来并聚焦，新进程随后退出
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -334,6 +355,49 @@ fn main() {
                 }
             }
             spawn_watchdog(app.handle().clone());
+
+            // T6.1 系统托盘：菜单「显示主窗口 / 退出」+ 左键点击显示窗口
+            let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or("default window icon not found")?;
+            let _tray = tauri::tray::TrayIconBuilder::with_id("main-tray")
+                .icon(tray_icon)
+                .tooltip("FileMind")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        // 置真退出标志 → 触发主窗口关闭 → CloseRequested 走 stop_graceful 路径
+                        IS_QUITTING.store(true, Ordering::SeqCst);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.close();
+                        } else {
+                            // 无主窗口（极少）：直接退出 app
+                            app.exit(0);
+                        }
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, _event| {
+                    // 点击托盘图标时显示主窗口（macOS 上 on_menu_event 的 show 已覆盖左键点击；
+                    // 这里兜底 Windows/Linux 行为）
+                    let app = tray.app_handle();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                })
+                .build(app)?;
             Ok(())
         });
 
@@ -356,27 +420,35 @@ fn main() {
     // 注：Tauri v2 提供 `on_window_event` 链式 API。
 
     let builder = builder.on_window_event(|window, event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            let app = window.app_handle();
-            let state = app.state::<AppState>();
-            let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
-            let Ok(mut manager) = state.sidecar_manager.lock() else {
-                log::error!("sidecar_manager Mutex 中毒，无法优雅关 Sidecar");
-                return;
-            };
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    log::error!("CloseRequested tokio runtime 初始化失败: {e}");
-                    let _ = manager.stop_hard();
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            // T6.1：根据 IS_QUITTING 区分「最小化到托盘」与「真退出」
+            if IS_QUITTING.load(Ordering::SeqCst) {
+                // 真退出路径：原 stop_graceful sidecar 流程
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
+                let Ok(mut manager) = state.sidecar_manager.lock() else {
+                    log::error!("sidecar_manager Mutex 中毒，无法优雅关 Sidecar");
                     return;
+                };
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        log::error!("CloseRequested tokio runtime 初始化失败: {e}");
+                        let _ = manager.stop_hard();
+                        return;
+                    }
+                };
+                if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
+                    log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
                 }
-            };
-            if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
-                log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
+            } else {
+                // 最小化到托盘：阻止默认关闭，仅隐藏窗口
+                api.prevent_close();
+                let _ = window.hide();
             }
         }
     });
