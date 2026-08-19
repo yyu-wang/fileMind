@@ -12,6 +12,8 @@ pub struct AppConfig {
     /// 本地 Embedding 模型名称。
     pub embedding_model: String,
     /// 参与扫描的最大单文件大小（MB）。
+    // specta-typescript 默认禁止 u64 导出；MB 单位下 u32 已足够，但保留 u64 语义
+    #[specta(type = specta_typescript::Number)]
     pub max_file_size_mb: u64,
     /// 界面语言（BCP 47）。
     pub language: String,

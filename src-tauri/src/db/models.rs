@@ -12,6 +12,7 @@ pub struct FileRecord {
     /// 文件名。
     pub file_name: String,
     /// 文件大小（字节）。
+    #[specta(type = specta_typescript::Number)]
     pub file_size: i64,
     /// 内容哈希（SHA-256，未计算时为 `None`）。
     pub content_hash: Option<String>,
@@ -58,10 +59,13 @@ pub struct OperationBatchSummary {
     /// 操作类型（取批次内首条行，move/rename/delete）。
     pub op_type: String,
     /// 批次总条数。
+    #[specta(type = specta_typescript::Number)]
     pub total_count: i64,
     /// 成功条数（status='done'）。
+    #[specta(type = specta_typescript::Number)]
     pub success_count: i64,
     /// 失败条数（status='failed'）。
+    #[specta(type = specta_typescript::Number)]
     pub failed_count: i64,
     /// 批次状态（pending/done/failed/undone）。
     pub status: String,
@@ -88,6 +92,7 @@ pub struct Category {
     /// 颜色标识（前端映射）。
     pub color: Option<String>,
     /// 排序权重（升序）。
+    #[specta(type = specta_typescript::Number)]
     pub sort_order: i64,
     /// 系统预置标记（1=内置不可删，0=用户自定义）。
     pub is_builtin: bool,
@@ -122,6 +127,7 @@ pub struct Rule {
     /// 匹配后归入的分类 ID。
     pub target_category: Option<String>,
     /// 优先级（数字越大越先匹配）。
+    #[specta(type = specta_typescript::Number)]
     pub priority: i64,
     /// 是否启用。
     pub is_enabled: bool,

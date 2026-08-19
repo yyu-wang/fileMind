@@ -202,10 +202,13 @@ pub struct FileListResponse {
     /// 当前页文件。
     pub files: Vec<FileInfo>,
     /// 满足条件的总条数。
+    #[specta(type = specta_typescript::Number)]
     pub total: i64,
     /// 当前页码（从 0 开始）。
+    #[specta(type = specta_typescript::Number)]
     pub page: i64,
     /// 每页条数（实际生效值）。
+    #[specta(type = specta_typescript::Number)]
     pub page_size: i64,
 }
 
@@ -213,14 +216,19 @@ pub struct FileListResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct FileStats {
     /// 文件总数。
+    #[specta(type = specta_typescript::Number)]
     pub total_files: i64,
     /// 已分类文件数。
+    #[specta(type = specta_typescript::Number)]
     pub categorized_files: i64,
     /// 未分类文件数。
+    #[specta(type = specta_typescript::Number)]
     pub uncategorized_files: i64,
     /// 疑似重复文件组数。
+    #[specta(type = specta_typescript::Number)]
     pub duplicate_groups: i64,
     /// 文件总大小（字节）。
+    #[specta(type = specta_typescript::Number)]
     pub total_size_bytes: i64,
 }
 
@@ -304,8 +312,10 @@ pub struct OperationHistoryResponse {
     /// 批次摘要列表。
     pub batches: Vec<OperationBatchSummary>,
     /// 当前页码（从 1 开始）。
+    #[specta(type = specta_typescript::Number)]
     pub page: i64,
     /// 每页条数（实际生效值）。
+    #[specta(type = specta_typescript::Number)]
     pub page_size: i64,
 }
 

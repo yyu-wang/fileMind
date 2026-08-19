@@ -28,6 +28,9 @@ pub struct FileInfo {
     /// 文件名。
     pub file_name: String,
     /// 文件大小（字节）。
+    // specta-typescript 默认禁止 u64 导出（避免精度损失），实际场景下文件大小不会超出
+    // JS Number 精度（2^53-1 ≈ 9 PB），标注为 Number 即可
+    #[specta(type = specta_typescript::Number)]
     pub file_size: u64,
     /// 内容哈希（SHA-256，未计算时为 `None`）。
     pub content_hash: Option<String>,
