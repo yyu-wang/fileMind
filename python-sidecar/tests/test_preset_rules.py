@@ -1,73 +1,25 @@
 """T4.1 — 分类规则预置集 JSON 校验测试。
 
 规则格式与内容来源：08_Prompt工程设计 §7（field/operator/value + action + priority）。
-本测试用 Pydantic 模型做结构校验，不引入 jsonschema 依赖。
+本测试复用 app.rules.models 的 Pydantic 模型做结构校验。
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
-from typing import Literal, Self
 
 import pytest
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import ValidationError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
+
+from app.rules.models import PresetRule, PresetRules  # noqa: E402
 
 PRESET_RULES_PATH = (
     Path(__file__).resolve().parents[1] / "app" / "rules" / "presets" / "preset_rules.json"
 )
-
-FIELD_VALUES = Literal["file_type", "file_name", "directory", "file_size"]
-OPERATOR_VALUES = Literal[
-    "equals", "contains", "regex", "starts_with", "ends_with", "in", "gt", "lt"
-]
-STR_OPERATORS = ("equals", "contains", "starts_with", "ends_with", "regex")
-NUMERIC_OPERATORS = ("gt", "lt")
-
-
-class Condition(BaseModel):
-    """§7 condition：field + operator + value。"""
-
-    field: FIELD_VALUES
-    operator: OPERATOR_VALUES
-    value: str | list[str] | int | float
-
-    @model_validator(mode="after")
-    def check_value_matches_operator(self) -> Self:
-        """operator 与 value 类型必须匹配（in→非空数组 / 文本→str / 数值→gt,lt）。"""
-        if self.operator == "in" and (not isinstance(self.value, list) or not self.value):
-            raise ValueError("operator=in 时 value 必须为非空数组")
-        if self.operator in STR_OPERATORS and not isinstance(self.value, str):
-            raise ValueError(f"operator={self.operator} 时 value 必须为字符串")
-        if self.operator in NUMERIC_OPERATORS and not isinstance(self.value, (int, float)):
-            raise ValueError(f"operator={self.operator} 时 value 必须为数值")
-        return self
-
-
-class Action(BaseModel):
-    """§7 action：分类 + 可选子分类（支持 {{year}} 等变量模板）。"""
-
-    category: str = Field(min_length=1)
-    sub_category: str | None = None
-
-
-class PresetRule(BaseModel):
-    """§7 单条规则。"""
-
-    id: str
-    name: str
-    priority: int
-    enabled: bool
-    condition: Condition
-    action: Action
-
-
-class PresetRules(BaseModel):
-    """预置规则集顶层结构。"""
-
-    version: int
-    description: str
-    rules: list[PresetRule]
 
 
 def load_preset_rules() -> PresetRules:
@@ -121,6 +73,7 @@ def test_file_type_rules_use_in_operator() -> None:
     for rule in rules.rules:
         if rule.condition.field == "file_type":
             assert rule.condition.operator == "in"
+            assert isinstance(rule.condition.value, list)
             assert len(rule.condition.value) > 0
 
 
