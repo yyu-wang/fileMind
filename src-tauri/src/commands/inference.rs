@@ -67,6 +67,12 @@ fn set_inference_mode_inner(
     let target = format!("{mode:?}").to_lowercase();
     let mut config = ConfigRepo::get(conn)?;
     let current = config.inference_mode.clone();
+    // 幂等：目标模式与当前一致时直接返回成功。否则引导流程默认选中 Local 时，
+    // 因 app_config 默认值就是 local，会被 validate_mode_switch 的「同模式拒绝」
+    // 拦截，导致「下一步」永远进不去。
+    if current == target {
+        return Ok(mode);
+    }
     validate_mode_switch(&current, &target, source)?;
     config.inference_mode.clone_from(&target);
     ConfigRepo::upsert(conn, &config)?;
@@ -119,13 +125,13 @@ mod tests {
         assert_eq!(ConfigRepo::get(db.conn()).unwrap().inference_mode, "local");
     }
 
-    /// 同模式切换：被安全阀拒绝（不产生冗余写）。
+    /// 同模式切换：幂等返回成功（引导流程重复选择同一模式不应报错）。
     #[test]
-    fn switch_to_same_mode_rejected() {
+    fn switch_to_same_mode_idempotent() {
         set_consent(false);
         let db = open_test_db();
         let result = set_inference_mode_inner(db.conn(), InferenceMode::Local, "ui");
-        assert!(result.is_err());
+        assert!(result.is_ok());
         assert_eq!(ConfigRepo::get(db.conn()).unwrap().inference_mode, "local");
     }
 }
