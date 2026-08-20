@@ -48,6 +48,17 @@ class DocumentChunk(BaseModel):
     page: int = Field(default=0, ge=0, description="PDF/Word 页码（可选，默认 0）")
 
 
+@dataclass(frozen=True)
+class VectorHit:
+    """一次向量检索的命中行（DocumentChunk 字段 + 检索距离）。"""
+
+    chunk_id: str
+    file_path: str
+    chunk_text: str
+    page: int
+    distance: float  # LanceDB _distance（默认 L2，越小越近）
+
+
 @dataclass
 class LanceDBManager:
     """LanceDB 生命周期管理器（FastAPI lifespan 里单例初始化）。"""
@@ -211,3 +222,39 @@ class LanceDBManager:
         if not self.is_table_exists(table_name):
             raise KeyError(f"LanceDB 表不存在: {table_name}")
         return self._db.open_table(table_name)
+
+    def search_vectors(
+        self,
+        table_name: str,
+        query_vector: list[float],
+        top_k: int = 20,
+    ) -> list[VectorHit]:
+        """对向量表执行 ANN 检索，返回按距离升序的命中列表。
+
+        表不存在（尚未建索引）→ 返回空列表，混合检索退化为纯 FTS 排序。
+        检索行包含 DocumentChunk 字段 + ``_distance``（默认 L2 距离，越小越近）。
+
+        Args:
+            table_name: 向量表名（``documents_{model}_v{version}``）。
+            query_vector: 查询向量（维度须与表 schema 一致）。
+            top_k: 截断候选数（默认 20，对齐 RAG 流水线「向量 Top-20」）。
+
+        Returns:
+            按 ``_distance`` 升序的命中列表；表不存在时返回空列表。
+        """
+        if self._db is None:
+            raise RuntimeError("LanceDBManager.connect() 尚未调用")
+        if not self.is_table_exists(table_name):
+            return []
+        tbl = self.open_table(table_name)
+        rows = tbl.search(query_vector).limit(top_k).to_list()
+        return [
+            VectorHit(
+                chunk_id=str(row["chunk_id"]),
+                file_path=str(row["file_path"]),
+                chunk_text=str(row["chunk_text"]),
+                page=int(row["page"]),
+                distance=float(row["_distance"]),
+            )
+            for row in rows
+        ]

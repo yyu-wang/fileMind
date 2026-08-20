@@ -28,10 +28,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-from app.services.embedding_service import EMBEDDING_MODEL, embed_text, embed_texts
-
-#: bge 检索短查询指令前缀（BAAI bge-large-zh-v1.5 模型卡；文档不需要）
-QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
+from app.services.embedding_service import (
+    EMBEDDING_MODEL,
+    QUERY_INSTRUCTION,
+    embed_text,
+    embed_texts,
+)
 
 #: 主题：(键, 中文标题, 句子池)。每主题 5 篇文档 + 1 条查询。
 _TOPICS: tuple[tuple[str, str, tuple[str, ...]], ...] = (

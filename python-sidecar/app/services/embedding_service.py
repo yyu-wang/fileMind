@@ -27,6 +27,8 @@ from ollama import AsyncClient, ResponseError
 OLLAMA_HOST = os.environ.get("FILEMIND_OLLAMA_URL", "http://127.0.0.1:11434")
 #: 默认 Embedding 模型（注册表标识；env 可覆盖为任意 Ollama 模型名）
 EMBEDDING_MODEL = os.environ.get("FILEMIND_EMBEDDING_MODEL", "bge-large-zh-v1.5")
+#: bge 检索短查询指令前缀（BAAI bge-large-zh-v1.5 模型卡：检索查询需加该指令，文档不加）
+QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 #: 单次 Embedding 调用超时（秒），批量输入时给足预算
 EMBED_TIMEOUT = float(os.environ.get("FILEMIND_EMBED_TIMEOUT", "60"))
 
