@@ -7,3 +7,4 @@ httpx==0.28.1
 jieba==0.42.1
 numpy==2.5.2
 psutil>=5.9
+sentence-transformers==6.0.0
