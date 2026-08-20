@@ -1,203 +1,203 @@
 # FileMind
 
-**Desktop file organizer with RAG Q&A** — powered by Tauri 2 + React 19 + Python FastAPI Sidecar.
+**桌面文件整理器 + RAG 知识问答** — 基于 Tauri 2 + React 19 + Python FastAPI Sidecar。
 
-FileMind is a local-first desktop app that helps you organize files with rule-based/heuristic classification, and ask natural-language questions over your documents via Retrieval-Augmented Generation (RAG). All AI processing runs locally by default (Ollama); cloud inference is opt-in behind an explicit consent flow.
-
----
-
-## Features
-
-- **Guided onboarding** — 3-step first-run wizard (inference mode → cloud consent → scan directory)
-- **File management** — directory scanning, virtualized list, category/status filters, sort, and a slide-out preview drawer (text / image / PDF)
-- **Smart classification** — rule engine + heuristic fallback → preview plan → execute with progress overlay → 24-hour undo
-- **RAG Q&A** — streaming answers via SSE, citation chips that jump to source files, multi-turn context
-- **Rule editor** — create/edit/delete/enable rules, drag-to-reorder priority
-- **Settings** — inference mode switching, Ollama environment probe, embedding model management, light/dark/system theme
-- **System tray & single instance** — close-to-tray, ⌘⇧F to show window (planned), ⌘1–⌘4 / ⌘, navigation shortcuts
-- **Global error boundary** — uncaught render errors show a recovery UI instead of a blank window
+FileMind 是一款本地优先的桌面应用：通过规则引擎与启发式算法帮你自动整理文件，并基于检索增强生成（RAG）对文档进行自然语言问答。默认所有 AI 处理均在本地完成（Ollama）；云端推理需经过显式的知情同意流程后手动开启。
 
 ---
 
-## Architecture
+## 功能特性
+
+- **首次启动引导** — 三步向导（推理模式 → 云端同意书 → 选择目录）
+- **文件管理** — 目录扫描、虚拟滚动列表、分类/状态筛选、排序、右侧滑出预览抽屉（文本 / 图片 / PDF）
+- **智能分类** — 规则引擎 + 启发式兜底 → 分类预览 → 带进度遮罩执行 → 24 小时撤销
+- **RAG 知识问答** — SSE 流式回答、引用标签跳转源文件、多轮上下文
+- **规则编辑** — 新建/编辑/删除/启用规则、拖拽排序优先级
+- **设置** — 推理模式切换、Ollama 环境探测、Embedding 模型管理、亮色/暗色/跟随系统主题
+- **系统托盘与单实例** — 关闭最小化到托盘、⌘1–⌘4 / ⌘, 页面导航快捷键（⌘⇧F 全局唤起窗口规划中）
+- **全局错误边界** — 未捕获的渲染错误显示恢复界面，而非白屏
+
+---
+
+## 架构
 
 ```mermaid
 flowchart LR
-    subgraph Desktop["Tauri 2 App"]
-        FE["React 19 Frontend"]
-        RS["Rust Backend<br/>(IPC commands, SQLite)"]
+    subgraph Desktop["Tauri 2 应用"]
+        FE["React 19 前端"]
+        RS["Rust 后端<br/>(IPC 命令、SQLite)"]
     end
-    FE <-->|"tauri-specta typed IPC"| RS
-    RS <-->|"HMAC-PSK signed HTTP<br/>(localhost:8765)"| PY["Python FastAPI Sidecar"]
+    FE <-->|"tauri-specta 类型化 IPC"| RS
+    RS <-->|"HMAC-PSK 签名 HTTP<br/>(localhost:8765)"| PY["Python FastAPI Sidecar"]
     RS --> DB[("SQLite<br/>(rusqlite + refinery)")]
-    PY --> LD[("LanceDB<br/>(vector store)")]
-    PY --> OL["Ollama<br/>(local LLM / embeddings)"]
-    PY -.->|"opt-in"| CL["Cloud APIs<br/>(OpenAI / DeepSeek)"]
+    PY --> LD[("LanceDB<br/>(向量存储)")]
+    PY --> OL["Ollama<br/>(本地 LLM / Embedding)"]
+    PY -.->|"可选开启"| CL["云端 API<br/>(OpenAI / DeepSeek)"]
 ```
 
-- **Frontend** (`src/`): React 19 + TypeScript + Zustand + React Router + Vite
-- **Backend** (`src-tauri/`): Rust + Tauri 2, all data access via native SQL (rusqlite), schema managed by refinery migrations
-- **AI sidecar** (`python-sidecar/`): FastAPI service for RAG, classification, embeddings, and inference probing. The Rust layer is the **only** client — the frontend never talks to the sidecar directly.
+- **前端**（`src/`）：React 19 + TypeScript + Zustand + React Router + Vite
+- **后端**（`src-tauri/`）：Rust + Tauri 2，所有数据访问走原生 SQL（rusqlite），表结构由 refinery 迁移管理
+- **AI Sidecar**（`python-sidecar/`）：FastAPI 服务，负责 RAG、分类、Embedding 与推理环境探测。Rust 层是**唯一**客户端——前端永远不直连 Sidecar。
 
 ---
 
-## Tech Stack
+## 技术栈
 
-| Layer         | Technology                                                    |
-| ------------- | ------------------------------------------------------------- |
-| Desktop shell | Tauri 2, Rust (≥ 1.97)                                        |
-| Frontend      | React 19, TypeScript, Zustand, React Router 7, Vite 8         |
-| Database      | SQLite (rusqlite), FTS5 full-text search, refinery migrations |
-| AI service    | Python FastAPI, LanceDB, Ollama, httpx                        |
-| Type sync     | tauri-specta (Rust → TypeScript, auto-generated)              |
-| Testing       | Vitest, cargo test, pytest                                    |
+| 层       | 技术                                                  |
+| -------- | ----------------------------------------------------- |
+| 桌面外壳 | Tauri 2、Rust（≥ 1.97）                               |
+| 前端     | React 19、TypeScript、Zustand、React Router 7、Vite 8 |
+| 数据库   | SQLite（rusqlite）、FTS5 全文检索、refinery 迁移      |
+| AI 服务  | Python FastAPI、LanceDB、Ollama、httpx                |
+| 类型同步 | tauri-specta（Rust → TypeScript 自动生成）            |
+| 测试     | Vitest、cargo test、pytest                            |
 
 ---
 
-## Prerequisites
+## 前置依赖
 
-- **Node.js ≥ 24** and npm
-- **Rust ≥ 1.97** (via [rustup](https://rustup.rs))
+- **Node.js ≥ 24** 与 npm
+- **Rust ≥ 1.97**（通过 [rustup](https://rustup.rs) 安装）
 - **Python ≥ 3.x**
-- **Ollama** (optional, required for local inference) — [install](https://ollama.com/download)
-- **Tauri CLI** (`cargo install tauri-cli@^2 --locked`)
+- **Ollama**（可选，本地推理所需）—— [安装](https://ollama.com/download)
+- **Tauri CLI**（`cargo install tauri-cli@^2 --locked`）
 
 ---
 
-## Getting Started
+## 快速开始
 
 ```bash
-# 1. Initialize the dev environment (installs deps, venv, Tauri CLI)
+# 1. 初始化开发环境（安装依赖、venv、Tauri CLI）
 bash scripts/bootstrap.sh
 
-# 2. Start the full app (frontend + Tauri + sidecar)
+# 2. 启动完整应用（前端 + Tauri + Sidecar）
 make dev
 ```
 
-The app launches hidden and shows once the frontend is ready. On first run you'll go through the onboarding wizard.
+应用启动时先隐藏，前端就绪后自动显示。首次运行会进入引导向导。
 
 ---
 
-## Development Commands
+## 开发命令
 
-| Command            | Description                                                |
-| ------------------ | ---------------------------------------------------------- |
-| `make dev`         | Full app (`npm run dev:tauri`)                             |
-| `make dev:web`     | Frontend only (Vite)                                       |
-| `make dev:sidecar` | Python sidecar only (uvicorn :8765)                        |
-| `make test`        | Frontend + Rust + Python tests                             |
-| `make build`       | Production bundle (`tauri build`)                          |
-| `make lint`        | ESLint + Clippy + Ruff + mypy                              |
-| `make format`      | Prettier + rustfmt + ruff format                           |
-| `make gen:ipc`     | Regenerate TypeScript types from Rust (`src/types/ipc.ts`) |
-| `make install`     | Install all dependencies                                   |
-| `make testdata`    | Seed demo data (init DB + generate files)                  |
-| `make clean`       | Clean build artifacts                                      |
+| 命令               | 说明                                                   |
+| ------------------ | ------------------------------------------------------ |
+| `make dev`         | 启动完整应用（`npm run dev:tauri`）                    |
+| `make dev:web`     | 仅前端（Vite）                                         |
+| `make dev:sidecar` | 仅 Python Sidecar（uvicorn :8765）                     |
+| `make test`        | 前端 + Rust + Python 三层测试                          |
+| `make build`       | 生产打包（`tauri build`）                              |
+| `make lint`        | ESLint + Clippy + Ruff + mypy                          |
+| `make format`      | Prettier + rustfmt + ruff format                       |
+| `make gen:ipc`     | 从 Rust 重新生成 TypeScript 类型（`src/types/ipc.ts`） |
+| `make install`     | 安装全部依赖                                           |
+| `make testdata`    | 生成演示数据（初始化 DB + 生成文件）                   |
+| `make clean`       | 清理构建产物                                           |
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 filemind/
-├── src/                    # React 19 + TypeScript frontend
+├── src/                    # React 19 + TypeScript 前端
 │   ├── components/         #   layout / file / classify / chat / rules / settings / common
 │   ├── pages/              #   FilesPage / ClassifyPage / ChatPage / RulesPage / SettingsPage
-│   ├── stores/             #   Zustand stores (file / classify / chat / rule / settings)
-│   ├── lib/                #   IPC clients, table logic, theme, formatting
+│   ├── stores/             #   Zustand stores（file / classify / chat / rule / settings）
+│   ├── lib/                #   IPC 客户端、表格逻辑、主题、格式化
 │   ├── hooks/              #   useHotkeys
-│   ├── types/              #   ipc.ts (generated) + models.ts
-│   └── styles/             #   globals.css (CSS variables, light/dark themes)
-├── src-tauri/              # Rust + Tauri 2 backend
+│   ├── types/              #   ipc.ts（自动生成）+ models.ts
+│   └── styles/             #   globals.css（CSS 变量、亮/暗主题）
+├── src-tauri/              # Rust + Tauri 2 后端
 │   └── src/
-│       ├── commands/       #   IPC commands (file / classify / chat / rules / config / inference)
-│       ├── db/             #   repositories + migrations/ (refinery SQL, V001–V010)
-│       ├── services/       #   classifier, log chain, undo, conflict resolution
-│       ├── sidecar/        #   process manager, proxy, SSE parser
-│       └── security/       #   handshake, keychain, path guard, mode switch
-├── python-sidecar/         # FastAPI AI service
+│       ├── commands/       #   IPC 命令（file / classify / chat / rules / config / inference）
+│       ├── db/             #   数据仓库 + migrations/（refinery SQL，V001–V010）
+│       ├── services/       #   分类器、日志链、撤销、冲突解决
+│       ├── sidecar/        #   进程管理、代理、SSE 解析
+│       └── security/       #   握手、钥匙串、路径守卫、模式切换
+├── python-sidecar/         # FastAPI AI 服务
 │   ├── app/
-│   │   ├── api/            #   routes (chat / classify / index / search / inference / handshake)
-│   │   ├── services/       #   RAG, rerank, rewrite, self-correct, embedding
-│   │   ├── rules/          #   rule engine + presets
-│   │   └── db/             #   LanceDB repository
-│   └── tests/              #   pytest suite
-├── scripts/                #   bootstrap / build / CI scripts
-├── .github/                #   GitHub Actions workflows
-└── tests/                  #   frontend integration test setup
+│   │   ├── api/            #   路由（chat / classify / index / search / inference / handshake）
+│   │   ├── services/       #   RAG、重排、改写、自我纠正、Embedding
+│   │   ├── rules/          #   规则引擎 + 预置规则
+│   │   └── db/             #   LanceDB 数据仓库
+│   └── tests/              #   pytest 测试套件
+├── scripts/                #   bootstrap / build / CI 脚本
+├── .github/                #   GitHub Actions 工作流
+└── tests/                  #   前端集成测试配置
 ```
 
 ---
 
-## Database
+## 数据库
 
-SQLite is the single source of truth for the desktop app. The **Python sidecar never touches the database** — all data operations go through the Rust layer.
+SQLite 是桌面端的唯一数据源。**Python Sidecar 永不访问数据库**——所有数据操作都走 Rust 层。
 
-- Schema changes only via [refinery](https://github.com/rust-db/refinery) migrations (`src-tauri/src/db/migrations/`)
-- Booleans stored as `INTEGER 0/1`, timestamps as ISO 8601 `TEXT`
-- `operations_log` uses a SHA-256 **chain hash** for tamper-evidence: `chain_hash[i] = SHA256(chain_hash[i-1] || canonicalize(log[i]))`
-- `operations_log` is insert-only (UPDATE restricted to `status`, DELETE forbidden via triggers)
+- 表结构变更仅通过 [refinery](https://github.com/rust-db/refinery) 迁移（`src-tauri/src/db/migrations/`）
+- 布尔值存为 `INTEGER 0/1`，时间戳存为 ISO 8601 `TEXT`
+- `operations_log` 使用 SHA-256 **链式哈希**保证防篡改：`chain_hash[i] = SHA256(chain_hash[i-1] || canonicalize(log[i]))`
+- `operations_log` 仅允许插入（UPDATE 仅限 `status` 列，DELETE 由触发器禁止）
 
 ---
 
-## Type Safety
+## 类型安全
 
-IPC types are generated automatically from Rust with [tauri-specta](https://github.com/specy-build/tauri-specta):
+IPC 类型通过 [tauri-specta](https://github.com/specy-build/tauri-specta) 从 Rust 自动生成：
 
 ```bash
-make gen:ipc   # → src/types/ipc.ts (do not edit by hand)
+make gen:ipc   # → src/types/ipc.ts（禁止手改）
 ```
 
-Every command is annotated with `#[specta::specta]` and returns `Result<T, String>`. The frontend consumes a thin typed wrapper (`src/lib/ipc/`).
+每个命令都标注 `#[specta::specta]` 并返回 `Result<T, String>`。前端通过薄类型封装（`src/lib/ipc/`）调用。
 
 ---
 
-## Security
+## 安全设计
 
-- **Sidecar handshake** — HMAC-SHA256 signed requests with per-request sequence numbers; the PSK lives in the OS Keychain (Rust only), never in the frontend or Python code
-- **Path validation** — all file paths pass `security::path_guard::validate()` (blacklist + traversal checks)
-- **Inference mode switch gate** — cloud mode requires a signed consent; revoking consent auto-switches back to local
-- **Operation log integrity** — chain-hashed, insert-only audit trail
-- **Consent flow** — cloud inference is opt-in with an explicit privacy notice
+- **Sidecar 握手** — 请求带 HMAC-SHA256 签名与逐请求序号；PSK 存放在操作系统钥匙串（仅 Rust 层），永不落在前端或 Python 代码中
+- **路径校验** — 所有文件路径都经过 `security::path_guard::validate()`（黑名单 + 路径穿越检查）
+- **推理模式切换门** — 云端模式需先签署同意书；撤回同意自动切回本地
+- **操作日志完整性** — 链式哈希、仅插入的审计轨迹
+- **知情同意流程** — 云端推理需显式同意并展示隐私说明
 
 ---
 
-## Testing
+## 测试
 
 ```bash
-make test        # runs all three suites
-npm run test:unit   # Vitest (frontend)
-cargo test          # Rust unit tests
-pytest              # Python sidecar tests
+make test           # 运行全部三套测试
+npm run test:unit   # Vitest（前端）
+cargo test          # Rust 单元测试
+pytest              # Python Sidecar 测试
 ```
 
 ---
 
-## Development Rules
+## 开发规范
 
-See [AGENTS.md](./AGENTS.md) for the AI development workflow (small-task planning → approval → implementation) and code-comment conventions.
+AI 开发工作流（小任务计划 → 审批 → 实现）与代码注释规范见 [AGENTS.md](./AGENTS.md)。
 
-### Pre-commit Hooks
+### Pre-commit 钩子
 
-Husky + lint-staged + a self-check script run on every commit:
+Husky + lint-staged + 自检脚本在每次提交时运行：
 
-- ESLint + Prettier (TypeScript)
-- Clippy (`-D warnings`) + rustfmt (Rust)
-- Ruff + mypy (Python)
-- Conventional Commits message validation
+- ESLint + Prettier（TypeScript）
+- Clippy（`-D warnings`）+ rustfmt（Rust）
+- Ruff + mypy（Python）
+- Conventional Commits 提交信息校验
 
 ### CI/CD
 
-- **PR Check**: lint + type-check + unit tests + build-check (3 platforms)
-- **Merge Build**: full build on 4 targets (macOS arm64/x64, Windows x64, Linux x64)
+- **PR 检查**：lint + type-check + 单元测试 + 构建检查（3 平台）
+- **合并构建**：4 个目标平台的完整构建（macOS arm64/x64、Windows x64、Linux x64）
 
 ---
 
-## Key Constraints
+## 关键约束
 
-- No `unwrap()` / `expect()` / `panic!()` in Rust (deny by default)
-- No `any` type in TypeScript or Python
-- All IPC commands use `#[specta::specta]` and return `Result<T, String>`
-- All file paths must pass `path_guard::validate()`
-- API keys / PSK stored in OS Keychain, never in the Python sidecar
-- Database access only via Rust (rusqlite); the sidecar uses LanceDB only
+- Rust 中禁止 `unwrap()` / `expect()` / `panic!()`（默认 deny）
+- TypeScript / Python 中禁止 `any` 类型
+- 所有 IPC 命令使用 `#[specta::specta]` 并返回 `Result<T, String>`
+- 所有文件路径必须经过 `path_guard::validate()`
+- API 密钥 / PSK 存放在操作系统钥匙串，永不进入 Python Sidecar
+- 数据库仅通过 Rust（rusqlite）访问；Sidecar 仅使用 LanceDB
