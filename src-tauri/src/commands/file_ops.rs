@@ -966,7 +966,7 @@ mod tests {
         assert!(names.contains(&"keep.txt"));
         assert!(names.contains(&"keep2.txt"));
         assert!(
-            !names.iter().any(|n| *n == "ignored.js"),
+            !names.contains(&"ignored.js"),
             "黑名单目录内文件不应被扫描: {names:?}"
         );
         assert!(!names.contains(&"deep.js"), "嵌套黑名单目录应跳过");

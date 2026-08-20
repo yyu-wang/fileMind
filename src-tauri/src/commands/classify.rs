@@ -278,9 +278,10 @@ mod tests {
         let state = make_test_app_state(tmp_db.path());
 
         // 内置分类种子：启发式「图片」目标可用
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        CategoryRepo::seed_builtin_categories(db.conn()).map_err(|e| e.to_string())?;
-        drop(db);
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            CategoryRepo::seed_builtin_categories(db.conn()).map_err(|e| e.to_string())?;
+        }
 
         let id = seed_file(&state, root.path(), "photo.png");
         let preview =
@@ -304,9 +305,10 @@ mod tests {
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
 
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        CategoryRepo::seed_builtin_categories(db.conn()).map_err(|e| e.to_string())?;
-        drop(db);
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            CategoryRepo::seed_builtin_categories(db.conn()).map_err(|e| e.to_string())?;
+        }
 
         // .xyz 无启发式映射、无规则 → 待确认；PSK=None → LLM 兜底降级
         let id = seed_file(&state, root.path(), "mystery.xyz");
