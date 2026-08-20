@@ -10,6 +10,7 @@ import { FileListTable } from '@/components/file/FileListTable';
 import { FilePreviewDrawer } from '@/components/file/FilePreviewDrawer';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import {
+  filterByName,
   filterFiles,
   sortFiles,
   type FileStatus,
@@ -41,6 +42,9 @@ export function FilesPage() {
 
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | FileStatus>('');
+  const [searchQuery, setSearchQuery] = useState('');
+  // 筛选面板展开态（对齐交互原型「筛选」按钮）
+  const [filterOpen, setFilterOpen] = useState(false);
   const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
 
@@ -70,8 +74,9 @@ export function FilesPage() {
       category: categoryFilter || null,
       status: statusFilter || null,
     });
-    return sortFiles(filtered, sort.key, sort.dir);
-  }, [files, categoryFilter, statusFilter, sort]);
+    // 客户端搜索（对齐交互原型搜索框，数据全量在内存）
+    return sortFiles(filterByName(filtered, searchQuery), sort.key, sort.dir);
+  }, [files, categoryFilter, statusFilter, searchQuery, sort]);
 
   const handleScan = async () => {
     const selected = await open({ directory: true, multiple: false, title: '选择要管理的目录' });
@@ -103,13 +108,27 @@ export function FilesPage() {
   return (
     <div className="files-page">
       <header className="files-page__header">
-        <h1 className="files-page__title">文件管理</h1>
-        <span className="files-page__count">{files.length} 个文件</span>
-        {scanPath && (
-          <span className="files-page__path" title={scanPath}>
-            {scanPath}
-          </span>
-        )}
+        <div className="files-page__heading">
+          <h1 className="files-page__title">文件管理</h1>
+          {scanPath && (
+            <span className="files-page__path" title={scanPath}>
+              {scanPath}
+            </span>
+          )}
+        </div>
+        <div className="files-page__actions">
+          <button type="button" className="btn btn--ghost" onClick={() => void loadAllFiles()}>
+            刷新
+          </button>
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void handleScan()}
+            disabled={isScanning}
+          >
+            {isScanning ? '扫描中…' : '扫描目录'}
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -129,17 +148,6 @@ export function FilesPage() {
       <div className="files-toolbar">
         <button
           type="button"
-          className="btn btn--primary"
-          onClick={() => void handleScan()}
-          disabled={isScanning}
-        >
-          {isScanning ? '扫描中…' : '扫描目录'}
-        </button>
-        <button type="button" className="btn btn--ghost" onClick={() => void loadAllFiles()}>
-          刷新
-        </button>
-        <button
-          type="button"
           className="btn"
           onClick={handleClassifySelected}
           disabled={selectedIds.length === 0}
@@ -147,32 +155,67 @@ export function FilesPage() {
           整理选中 ({selectedIds.length})
         </button>
 
+        {/* 搜索框（对齐交互原型） */}
+        <div className="search-box">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          <input
+            type="text"
+            placeholder="搜索文件名..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
+
         <span className="files-toolbar__spacer" />
 
-        <select
-          className="files-toolbar__select"
-          aria-label="按分类筛选"
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-        >
-          <option value="">全部分类</option>
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-
-        <select
-          className="files-toolbar__select"
-          aria-label="按状态筛选"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
-        >
-          <option value="">全部状态</option>
-          <option value="categorized">已分类</option>
-          <option value="uncategorized">未分类</option>
-        </select>
+        {/* 筛选按钮 + 展开面板（对齐交互原型） */}
+        <button type="button" className="btn btn--ghost" onClick={() => setFilterOpen((v) => !v)}>
+          筛选 {filterOpen ? '▴' : '▾'}
+        </button>
+        {filterOpen && (
+          <div className="filter-panel">
+            <label className="filter-panel__field">
+              <span>分类</span>
+              <select
+                className="files-toolbar__select"
+                aria-label="按分类筛选"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+              >
+                <option value="">全部分类</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="filter-panel__field">
+              <span>状态</span>
+              <select
+                className="files-toolbar__select"
+                aria-label="按状态筛选"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
+              >
+                <option value="">全部状态</option>
+                <option value="categorized">已分类</option>
+                <option value="uncategorized">未分类</option>
+              </select>
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="files-page__body">

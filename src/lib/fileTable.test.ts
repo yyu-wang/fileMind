@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { FileInfo } from '@/types/ipc';
-import { deriveFileStatus, filterFiles, sortFiles } from './fileTable';
+import {
+  categoryTagClass,
+  deriveFileStatus,
+  filterByName,
+  filterFiles,
+  sortFiles,
+} from './fileTable';
 
 function makeFile(overrides: Partial<FileInfo>): FileInfo {
   return {
@@ -94,5 +100,42 @@ describe('sortFiles', () => {
     const before = files.map((f) => f.file_name);
     sortFiles(files, 'name', 'asc');
     expect(files.map((f) => f.file_name)).toEqual(before);
+  });
+});
+
+describe('filterByName', () => {
+  const files = [
+    makeFile({ id: '1', file_name: 'Q2_营收报告.pdf' }),
+    makeFile({ id: '2', file_name: 'meeting_notes.md' }),
+    makeFile({ id: '3', file_name: '预算表_2026.xlsx' }),
+  ];
+
+  it('filters by keyword (case-insensitive)', () => {
+    expect(filterByName(files, 'Q2').map((f) => f.id)).toEqual(['1']);
+    expect(filterByName(files, 'q2').map((f) => f.id)).toEqual(['1']);
+  });
+
+  it('matches partial filename', () => {
+    expect(filterByName(files, '2026').map((f) => f.id)).toEqual(['3']);
+  });
+
+  it('returns all when query is blank', () => {
+    expect(filterByName(files, '')).toHaveLength(3);
+    expect(filterByName(files, '   ')).toHaveLength(3);
+  });
+
+  it('returns empty when no match', () => {
+    expect(filterByName(files, '不存在')).toHaveLength(0);
+  });
+});
+
+describe('categoryTagClass', () => {
+  it('returns a stable tag color for the same category name', () => {
+    expect(categoryTagClass('财务')).toBe(categoryTagClass('财务'));
+  });
+
+  it('returns tag--{color} class names', () => {
+    const cls = categoryTagClass('市场');
+    expect(cls.startsWith('tag tag--')).toBe(true);
   });
 });

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { formatFileSize, formatDateTime, getFileKind, getImageMime } from './format';
+import {
+  formatFileSize,
+  formatDateTime,
+  getFileKind,
+  getFileTypeMeta,
+  getImageMime,
+} from './format';
 
 describe('formatFileSize', () => {
   it('formats bytes as integer', () => {
@@ -60,5 +66,27 @@ describe('getImageMime', () => {
 
   it('falls back to octet-stream', () => {
     expect(getImageMime('xyz')).toBe('application/octet-stream');
+  });
+});
+
+describe('getFileTypeMeta', () => {
+  it('maps common office/code/image types', () => {
+    expect(getFileTypeMeta('report.pdf')).toEqual({ label: 'PDF', kind: 'pdf' });
+    expect(getFileTypeMeta('doc.docx')).toEqual({ label: 'DOC', kind: 'doc' });
+    expect(getFileTypeMeta('data.csv')).toEqual({ label: 'XLS', kind: 'xls' });
+    expect(getFileTypeMeta('slide.pptx')).toEqual({ label: 'PPT', kind: 'ppt' });
+    expect(getFileTypeMeta('photo.png')).toEqual({ label: 'IMG', kind: 'img' });
+    expect(getFileTypeMeta('README.md')).toEqual({ label: 'MD', kind: 'md' });
+    expect(getFileTypeMeta('main.ts')).toEqual({ label: '{ }', kind: 'code' });
+    expect(getFileTypeMeta('a.zip')).toEqual({ label: 'ZIP', kind: 'zip' });
+  });
+
+  it('is case-insensitive on extension', () => {
+    expect(getFileTypeMeta('REPORT.PDF')).toEqual({ label: 'PDF', kind: 'pdf' });
+  });
+
+  it('falls back to generic file for unknown extension', () => {
+    expect(getFileTypeMeta('mystery.xyz')).toEqual({ label: 'XYZ', kind: 'file' });
+    expect(getFileTypeMeta('noext')).toEqual({ label: 'FILE', kind: 'file' });
   });
 });

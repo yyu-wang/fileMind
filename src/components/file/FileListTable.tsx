@@ -6,8 +6,8 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
-import { formatDateTime, formatFileSize } from '@/lib/format';
-import { deriveFileStatus, type SortDir, type SortKey } from '@/lib/fileTable';
+import { formatDateTime, formatFileSize, getFileTypeMeta } from '@/lib/format';
+import { categoryTagClass, deriveFileStatus, type SortDir, type SortKey } from '@/lib/fileTable';
 import type { FileInfo } from '@/types/ipc';
 
 import { StatusBadge } from './StatusBadge';
@@ -92,6 +92,8 @@ export function FileListTable({
             onChange={handleSelectAll}
           />
         </div>
+        {/* 类型图标列（对齐交互原型，无表头文字） */}
+        <div className="files-table__cell files-table__cell--type" role="columnheader" />
         {SORTABLE_HEADERS.map(({ key, label }) => (
           <div
             key={key}
@@ -109,10 +111,10 @@ export function FileListTable({
             </button>
           </div>
         ))}
-        <div className="files-table__cell" role="columnheader">
+        <div className="files-table__cell files-table__cell--cat" role="columnheader">
           分类
         </div>
-        <div className="files-table__cell" role="columnheader">
+        <div className="files-table__cell files-table__cell--status" role="columnheader">
           状态
         </div>
       </div>
@@ -148,6 +150,7 @@ interface FileRowProps {
 
 function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileRowProps) {
   const status = deriveFileStatus(file);
+  const typeMeta = getFileTypeMeta(file.file_name);
   const rowClass = selected ? 'files-table__row files-table__row--selected' : 'files-table__row';
 
   return (
@@ -161,6 +164,12 @@ function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileR
           onClick={(e) => e.stopPropagation()}
         />
       </div>
+      {/* 类型图标（对齐交互原型彩色块） */}
+      <div className="files-table__cell files-table__cell--type" role="cell">
+        <span className={`file-type-icon file-type-icon--${typeMeta.kind}`} title={file.file_name}>
+          {typeMeta.label}
+        </span>
+      </div>
       <div className="files-table__cell files-table__cell--name" role="cell" title={file.path}>
         {file.file_name}
       </div>
@@ -171,7 +180,11 @@ function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileR
         {formatDateTime(file.updated_at)}
       </div>
       <div className="files-table__cell files-table__cell--cat" role="cell">
-        {file.category ?? '—'}
+        {file.category ? (
+          <span className={categoryTagClass(file.category)}>{file.category}</span>
+        ) : (
+          <span className="tag tag--gray">未分类</span>
+        )}
       </div>
       <div className="files-table__cell files-table__cell--status" role="cell">
         <StatusBadge status={status} />

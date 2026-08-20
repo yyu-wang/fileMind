@@ -1,6 +1,6 @@
-// ClassifyPreviewTree 单元测试：分组渲染、待确认高亮、冲突标记、按钮回调。
+// ClassifyPreviewTree 单元测试：树形分组、待确认高亮、冲突标记、按钮回调。
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -32,19 +32,17 @@ function makePreview(items: ClassifyPlanItem[]): ClassifyPreview {
       categorized,
       pending: items.length - categorized,
       by_rule: 1,
-      by_heuristic: categorized - 1,
+      by_heuristic: Math.max(categorized - 1, 0),
     },
   };
 }
 
 function renderTree(preview: ClassifyPreview) {
-  const props = { preview, onExecute: vi.fn(), onReset: vi.fn() };
-  render(<ClassifyPreviewTree {...props} />);
-  return props;
+  render(<ClassifyPreviewTree preview={preview} />);
 }
 
 describe('ClassifyPreviewTree', () => {
-  it('groups items by category and shows stats', () => {
+  it('groups items into tree panels by category and shows header count', () => {
     renderTree(
       makePreview([
         makeItem('a'),
@@ -55,18 +53,19 @@ describe('ClassifyPreviewTree', () => {
 
     expect(screen.getByText('财务')).toBeInTheDocument();
     expect(screen.getByText('图片')).toBeInTheDocument();
-    // 待确认文案同时出现在分组头与文件项标签上
-    expect(screen.getAllByText(PENDING_NAME).length).toBeGreaterThan(0);
+    // 待确认组头「❓ 待确认」
+    expect(screen.getByText(`❓ ${PENDING_NAME}`)).toBeInTheDocument();
     expect(screen.getByText('a.pdf')).toBeInTheDocument();
-    expect(screen.getByText('共 3 个文件')).toBeInTheDocument();
+    expect(screen.getByText('2 个已分类 · 1 个待确认')).toBeInTheDocument();
   });
 
-  it('marks pending group with amber class and shows pending tag', () => {
+  it('marks pending group with confirm panel class and pending tag', () => {
     renderTree(makePreview([makeItem('p', { category_name: null, rule_source: 'pending' })]));
 
-    const group = document.querySelector('.classify-preview__group--pending');
+    const group = document.querySelector('.tree-panel.confirm');
     expect(group).not.toBeNull();
-    expect(screen.getAllByText(PENDING_NAME).length).toBe(2);
+    // 文件项来源 tag 显示「待确认」
+    expect(screen.getByText(PENDING_NAME)).toBeInTheDocument();
   });
 
   it('renders rule source tags with correct labels', () => {
@@ -79,26 +78,27 @@ describe('ClassifyPreviewTree', () => {
     );
 
     expect(screen.getByText('年度报表')).toBeInTheDocument();
-    expect(screen.getByText('启发式')).toBeInTheDocument();
-    expect(screen.getAllByText(PENDING_NAME).length).toBeGreaterThan(0);
+    expect(screen.getByText('按类型')).toBeInTheDocument();
+    expect(screen.getByText(PENDING_NAME)).toBeInTheDocument();
   });
 
-  it('shows conflict label for conflict items', () => {
+  it('shows conflict label for conflict items in dedicated conflict panel', () => {
     renderTree(makePreview([makeItem('c', { status: 'Conflict', conflict_type: 'SameName' })]));
+
+    expect(screen.getByText('⚠️ 冲突')).toBeInTheDocument();
     expect(screen.getByText('目标已存在（跳过）')).toBeInTheDocument();
   });
 
-  it('calls onExecute when 开始执行 is clicked', async () => {
+  it('collapses and expands a tree panel on parent click', async () => {
     const user = userEvent.setup();
-    const props = renderTree(makePreview([makeItem('a')]));
-    await user.click(screen.getByRole('button', { name: '开始执行' }));
-    expect(props.onExecute).toHaveBeenCalledTimes(1);
-  });
+    renderTree(makePreview([makeItem('a')]));
 
-  it('calls onReset when 重新选择 is clicked', async () => {
-    const user = userEvent.setup();
-    const props = renderTree(makePreview([makeItem('a')]));
-    await user.click(screen.getByRole('button', { name: '重新选择' }));
-    expect(props.onReset).toHaveBeenCalledTimes(1);
+    // 默认展开：文件可见
+    expect(screen.getByText('a.pdf')).toBeInTheDocument();
+    await user.click(screen.getByText('财务'));
+    // 折叠后文件隐藏
+    expect(screen.queryByText('a.pdf')).not.toBeInTheDocument();
+    await user.click(screen.getByText('财务'));
+    expect(screen.getByText('a.pdf')).toBeInTheDocument();
   });
 });

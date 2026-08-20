@@ -31,6 +31,28 @@ export function filterFiles(files: FileInfo[], options: FilterOptions): FileInfo
   });
 }
 
+/** 按文件名关键字搜索（大小写不敏感，空串返回全部），返回新数组。 */
+export function filterByName(files: FileInfo[], query: string): FileInfo[] {
+  const keyword = query.trim().toLowerCase();
+  if (!keyword) {
+    return files;
+  }
+  return files.filter((file) => file.file_name.toLowerCase().includes(keyword));
+}
+
+/** 分类 tag 配色板（对齐交互原型 tag-blue/green 多色区分）。 */
+const CATEGORY_TAG_COLORS = ['blue', 'green', 'amber', 'purple'] as const;
+
+/** 分类名 → 稳定分配的 tag 配色类名（`tag--{color}`），同名分类恒同色。 */
+export function categoryTagClass(category: string): string {
+  let hash = 0;
+  for (let i = 0; i < category.length; i += 1) {
+    hash = (hash * 31 + category.charCodeAt(i)) >>> 0;
+  }
+  const color = CATEGORY_TAG_COLORS[hash % CATEGORY_TAG_COLORS.length];
+  return `tag tag--${color}`;
+}
+
 const NAME_COLLATOR = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' });
 
 /** 客户端排序，返回新数组（不改动入参）。时间列用固定格式字符串直接比较。 */

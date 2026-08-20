@@ -102,3 +102,79 @@ export function getFileKind(fileName: string): FileKind {
 export function getImageMime(ext: string): string {
   return IMAGE_MIMES[ext.toLowerCase()] ?? 'application/octet-stream';
 }
+
+/**
+ * 文件类型图标（对齐交互原型 §文件管理 表格的彩色类型块）。
+ *
+ * 按扩展名分组映射到图标标签与视觉类别，类别决定 CSS 配色（.file-type-icon--{kind}）。
+ */
+export type FileTypeKind =
+  | 'pdf'
+  | 'doc'
+  | 'xls'
+  | 'ppt'
+  | 'img'
+  | 'md'
+  | 'txt'
+  | 'code'
+  | 'zip'
+  | 'music'
+  | 'video'
+  | 'file';
+
+export interface FileTypeMeta {
+  /** 图标块内文本（对齐原型 PDF/DOC/IMG/{ }/MD/XLS） */
+  label: string;
+  /** 视觉类别（CSS 配色用） */
+  kind: FileTypeKind;
+}
+
+const CODE_EXTENSIONS = new Set([
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'py',
+  'rs',
+  'java',
+  'c',
+  'h',
+  'cpp',
+  'css',
+  'html',
+  'sh',
+  'sql',
+  'go',
+  'json',
+  'yaml',
+  'yml',
+  'toml',
+  'xml',
+  'log',
+]);
+
+const ZIP_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz']);
+const MUSIC_EXTENSIONS = new Set(['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mkv', 'mov', 'avi', 'wmv', 'flv', 'webm', 'm4v']);
+
+/** 按文件名判定类型图标；无扩展名/未知扩展名回退 generic 文件块。 */
+export function getFileTypeMeta(fileName: string): FileTypeMeta {
+  const dot = fileName.lastIndexOf('.');
+  const ext = dot >= 0 ? fileName.slice(dot + 1).toLowerCase() : '';
+  if (!ext) return { label: 'FILE', kind: 'file' };
+  if (ext === 'pdf') return { label: 'PDF', kind: 'pdf' };
+  if (ext === 'doc' || ext === 'docx') return { label: 'DOC', kind: 'doc' };
+  if (ext === 'xls' || ext === 'xlsx' || ext === 'csv' || ext === 'tsv') {
+    return { label: 'XLS', kind: 'xls' };
+  }
+  if (ext === 'ppt' || ext === 'pptx' || ext === 'odp') return { label: 'PPT', kind: 'ppt' };
+  if (IMAGE_MIMES[ext] || ext === 'heic' || ext === 'avif') return { label: 'IMG', kind: 'img' };
+  if (ext === 'md') return { label: 'MD', kind: 'md' };
+  if (ext === 'txt') return { label: 'TXT', kind: 'txt' };
+  if (CODE_EXTENSIONS.has(ext)) return { label: '{ }', kind: 'code' };
+  if (ZIP_EXTENSIONS.has(ext)) return { label: 'ZIP', kind: 'zip' };
+  if (MUSIC_EXTENSIONS.has(ext)) return { label: 'AUD', kind: 'music' };
+  if (VIDEO_EXTENSIONS.has(ext)) return { label: 'VID', kind: 'video' };
+  // 未知扩展名：回退 generic 文件块（显示扩展名前 3 位大写）
+  return { label: ext.slice(0, 3).toUpperCase(), kind: 'file' };
+}

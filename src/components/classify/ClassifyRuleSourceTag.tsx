@@ -23,10 +23,10 @@ export function ClassifyRuleSourceTag({ source }: ClassifyRuleSourceTagProps) {
     );
   }
   if (source === 'heuristic') {
-    return <span className="classify-rule-tag classify-rule-tag--heuristic">启发式</span>;
+    return <span className="classify-rule-tag classify-rule-tag--heuristic">按类型</span>;
   }
   if (source === 'llm') {
-    return <span className="classify-rule-tag classify-rule-tag--llm">LLM 兜底</span>;
+    return <span className="classify-rule-tag classify-rule-tag--llm">AI 判断</span>;
   }
   if (source === 'manual') {
     return <span className="classify-rule-tag classify-rule-tag--manual">手动指定</span>;

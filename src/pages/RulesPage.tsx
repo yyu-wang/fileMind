@@ -100,7 +100,7 @@ export function RulesPage() {
         ) : rules.length === 0 ? (
           <EmptyState
             title="暂无自定义规则"
-            description="内置启发式仍会自动分类；新建规则可覆盖默认行为。"
+            description="内置类型识别仍会自动分类；新建规则可覆盖默认行为。"
             action={
               <button type="button" className="btn btn--primary" onClick={handleNew}>
                 + 新建规则
