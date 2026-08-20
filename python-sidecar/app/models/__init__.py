@@ -81,8 +81,49 @@ class ChatQueryResponse(BaseModel):
     tokens: int
 
 
-class ChatStreamResponse(BaseModel):
-    status: str
+class ChatTurn(BaseModel):
+    """一轮对话历史（P-02 查询改写输入变量 conversation_history）。"""
+
+    user: str
+    assistant: str
+
+
+class ChatChunkInput(BaseModel):
+    """FTS5 命中（Rust 层从 SQLite 提供，含原文文本）。
+
+    Sidecar 永不碰 SQLite（硬约束），FTS 结果由 Rust 执行后随请求传入；
+    ``text`` 用于 FTS-only 命中补全 P-03 生成上下文（向量命中文本在 LanceDB）。
+    """
+
+    chunk_id: str
+    text: str
+    file_path: str = ""
+    page: int = 0
+
+
+class ChatStreamRequest(BaseModel):
+    """POST /chat/stream 请求体（04_API详细规格书 §3.4 + 分层演进扩展）。
+
+    扩展说明（sidecar/Rust 分层下 API 规格书请求体的必然演进）：
+      - ``history``：P-02 查询改写需要对话历史（API 规格书仅有 session_id，
+        Rust 维护会话状态并回传最近 3 轮）
+      - ``fts_chunks``：FTS5 由 Rust 执行（SQLite），命中含文本随请求传入
+      - ``llm_model`` / ``embedding_model``：生成/向量化模型名（逐请求可覆盖）
+      - ``max_retries``：T5.7 自我纠正用，本任务（T5.6）忽略
+      - ``inference_mode``：local|cloud|hybrid；本任务仅 local（云端代理 T6.x）
+    """
+
+    query: str
+    history: list[ChatTurn] = Field(default_factory=list)
+    table_name: str
+    embedding_model: str = "bge-large-zh-v1.5"
+    inference_mode: str = "local"
+    llm_model: str = "qwen3.8-27b"
+    top_k: int = 20
+    rerank_top_k: int = 5
+    max_retries: int = 2
+    fts_chunks: list[ChatChunkInput] = Field(default_factory=list)
+    session_id: str | None = None
 
 
 class HandshakeChallenge(BaseModel):
