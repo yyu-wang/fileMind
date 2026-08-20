@@ -50,9 +50,14 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
 
 /// 转发 JSON POST 请求到 Sidecar 并返回响应文本。
 ///
+/// Sidecar 返回非 2xx（如 503 Embedding 不可用）时，错误体为
+/// `{"detail": "..."}`，与成功响应形状不同。此处直接以
+/// [`AppError::SidecarUnavailable`] 返回提取后的真实错误信息，
+/// 避免调用方把错误体当成功响应反序列化（报误导性的 missing field）。
+///
 /// # Errors
 ///
-/// 签名计算、请求发送或响应读取失败时返回 `SidecarUnavailable`。
+/// 签名计算、请求发送、响应读取失败，或 Sidecar 返回非 2xx 时返回 `SidecarUnavailable`。
 pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppResult<String> {
     let url = format!("{SIDECAR_BASE_URL}{path}");
     let canonical = handshake::build_request_canonical("POST", path, body, seq);
@@ -68,11 +73,34 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
         .send()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar POST 失败: {e}")))?;
+    let status = resp.status();
     let text = resp
         .text()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("读取响应失败: {e}")))?;
+    if !status.is_success() {
+        return Err(sidecar_error_detail(status, &text));
+    }
     Ok(text)
+}
+
+/// 把 Sidecar 非 2xx 响应转换为可读错误。
+///
+/// `FastAPI` 错误体统一为 `{"detail": "..."}`，优先提取 `detail` 字段；
+/// `detail` 缺失或响应体不是 JSON 时，截取响应体前 200 字符兜底（空体给占位提示）。
+fn sidecar_error_detail(status: reqwest::StatusCode, body: &str) -> AppError {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                "(空响应体)".to_string()
+            } else {
+                trimmed.chars().take(200).collect()
+            }
+        });
+    AppError::SidecarUnavailable(format!("Sidecar 错误 ({status}): {detail}"))
 }
 
 /// 转发 JSON POST 请求到 Sidecar 并返回流式响应（供 SSE 逐块读取）。
@@ -132,4 +160,44 @@ pub async fn forward_shutdown(psk: &[u8], seq: u64) -> AppResult<String> {
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("读取 shutdown 响应失败: {e}")))?;
     Ok(body)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// FastAPI 标准错误体含 `detail` → 提取 `detail` 作为真实错误原因。
+    #[test]
+    fn sidecar_error_detail_extracts_detail_field() {
+        let err = sidecar_error_detail(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"detail":"建立索引失败: Embedding 模型未拉取"}"#,
+        );
+        assert!(
+            err.to_string()
+                .contains("建立索引失败: Embedding 模型未拉取"),
+            "错误信息应包含 detail 原文，实际: {err}"
+        );
+    }
+
+    /// 响应体不是 JSON 且缺少 detail → 截取原文兜底。
+    #[test]
+    fn sidecar_error_detail_falls_back_to_raw_body() {
+        let err = sidecar_error_detail(reqwest::StatusCode::BAD_GATEWAY, "Bad Gateway");
+        assert!(
+            err.to_string().contains("Bad Gateway"),
+            "非 JSON 错误体应原样呈现，实际: {err}"
+        );
+    }
+
+    /// 空响应体 → 占位提示，不 panic。
+    #[test]
+    fn sidecar_error_detail_handles_empty_body() {
+        let err = sidecar_error_detail(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "");
+        assert!(
+            err.to_string().contains("空响应体"),
+            "空响应体应给出占位提示，实际: {err}"
+        );
+    }
 }
