@@ -22,6 +22,12 @@ fn main() {
             commands::chat::chat_stream,
             // T6.5 智能分类预览（规则引擎 + 启发式）
             commands::classify::classify_preview,
+            // T6.8 规则编辑（CRUD + 拖拽排序）
+            commands::rules::list_rules,
+            commands::rules::upsert_rule,
+            commands::rules::delete_rule,
+            commands::rules::reorder_rules,
+            commands::rules::list_categories,
             commands::file_ops::scan_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,

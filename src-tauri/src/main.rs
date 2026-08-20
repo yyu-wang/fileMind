@@ -45,10 +45,15 @@ const WATCHDOG_TICK_MS: u64 = 1000;
 static IS_QUITTING: AtomicBool = AtomicBool::new(false);
 
 fn get_db_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".filemind").join("filemind.db")
+    // 数据目录优先读 FILEMIND_DATA_HOME（与 Python Sidecar 共用同一目录，保证
+    // SQLite 与 LanceDB 落在同一根下）；未设置时回退到 ~/.filemind（生产默认位置）。
+    let data_home = std::env::var("FILEMIND_DATA_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/tmp".to_string());
+        format!("{home}/.filemind")
+    });
+    PathBuf::from(data_home).join("filemind.db")
 }
 
 /// 启动 Sidecar 并完成 HMAC 握手，返回 PSK。
@@ -281,6 +286,12 @@ fn main() {
             commands::chat::chat_stream,
             // T6.5 智能分类预览（规则引擎 + 启发式）
             commands::classify::classify_preview,
+            // T6.8 规则编辑（CRUD + 拖拽排序）
+            commands::rules::list_rules,
+            commands::rules::upsert_rule,
+            commands::rules::delete_rule,
+            commands::rules::reorder_rules,
+            commands::rules::list_categories,
             commands::file_ops::scan_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,

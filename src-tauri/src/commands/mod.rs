@@ -16,3 +16,5 @@ pub mod file_query;
 pub mod inference;
 /// Ollama 推理环境探测命令（Sidecar `/inference/test` 代理）。
 pub mod ollama;
+/// 规则编辑命令（规则 CRUD + 优先级拖拽排序）。
+pub mod rules;

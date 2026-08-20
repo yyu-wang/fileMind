@@ -1799,3 +1799,357 @@ body {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ========== T6.8 规则编辑页 ========== */
+.rules-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 20px 24px;
+  min-height: 0;
+}
+
+.rules-page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rules-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rules-page__desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.rules-page__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.rules-page__error-dismiss {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.rules-page__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.rules-page__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.rules-page__empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--rule);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.rules-page__empty-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.rules-page__empty-sub {
+  font-size: 13px;
+}
+
+/* 规则列表 */
+.rules-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rules-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  cursor: grab;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.rules-item:active {
+  cursor: grabbing;
+}
+
+.rules-item:hover {
+  border-color: var(--accent2);
+}
+
+.rules-item--dragging {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
+.rules-item__handle {
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.rules-item__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rules-item__name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rules-item__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rules-item__type {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rules-item__disabled-tag {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rules-item__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.rules-item__pattern {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
+.rules-item__sep {
+  flex-shrink: 0;
+}
+
+.rules-item__category {
+  color: var(--accent2);
+  flex-shrink: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rules-item__priority {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+/* 启用/禁用开关 */
+.rules-item__switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.rules-item__switch-input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.rules-item__switch-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg3);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+
+.rules-item__switch-slider::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+}
+
+.rules-item__switch-input:checked + .rules-item__switch-slider {
+  background: var(--accent2);
+}
+
+.rules-item__switch-input:checked + .rules-item__switch-slider::before {
+  transform: translateX(16px);
+}
+
+.rules-item__btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.rules-item__btn--danger {
+  color: var(--danger);
+  border-color: var(--rule);
+}
+
+.rules-item__btn--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* 规则表单弹窗 */
+.rules-form {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.rules-form__panel {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rules-form__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rules-form__error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.rules-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rules-form__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rules-form__input,
+.rules-form__select {
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.rules-form__input:focus,
+.rules-form__select:focus {
+  outline: none;
+  border-color: var(--accent2);
+}
+
+.rules-form__input--number {
+  max-width: 120px;
+}
+
+.rules-form__hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rules-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
