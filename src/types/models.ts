@@ -114,3 +114,15 @@ export interface ChatMessage {
   retries?: number;
   createdAt: string;
 }
+
+/**
+ * 主题模式（T6.9 暗色模式）。
+ *
+ * 三态：System（跟随系统，纯 CSS 响应）/ Light（强制亮色）/ Dark（强制暗色）。
+ * 持久化于 settingsStore，启动时经 applyTheme 应用到 `<html data-theme>`。
+ */
+export enum ThemeMode {
+  System = 'system',
+  Light = 'light',
+  Dark = 'dark',
+}

@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f5f7fa;
   --bg2: #ffffff;
   --bg3: #eef1f6;
@@ -13,8 +14,27 @@
   --danger: #b91c1c;
 }
 
+/* T6.9 手动暗色：data-theme='dark' 强制暗色，覆盖系统偏好 */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --bg2: #1e293b;
+  --bg3: #334155;
+  --ink: #f1f5f9;
+  --muted: #94a3b8;
+  --rule: #334155;
+  --accent: #3b82f6;
+  --accent2: #60a5fa;
+  --accent-light: #1e3a5f;
+  --success: #10b981;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+}
+
+/* T6.9 跟随系统：系统暗色时（排除手动 light/dark）应用暗色变量 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']):not([data-theme='dark']) {
+    color-scheme: dark;
     --bg: #0f172a;
     --bg2: #1e293b;
     --bg3: #334155;
@@ -2152,4 +2172,45 @@ body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* ========== T6.9 主题切换 ========== */
+.theme-segmented {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg3);
+  border-radius: 10px;
+  width: fit-content;
+}
+
+.theme-segmented__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.theme-segmented__item:hover {
+  color: var(--ink);
+}
+
+.theme-segmented__item.selected {
+  background: var(--bg2);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.theme-segmented__icon {
+  font-size: 14px;
 }

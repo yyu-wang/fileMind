@@ -10,6 +10,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fileIpc } from '../lib/ipc';
+import { applyTheme } from '../lib/theme';
 import type {
   AppConfig,
   CloudProvider,
@@ -18,6 +19,7 @@ import type {
   OllamaModelInfo,
   OllamaStatus,
 } from '../types/ipc';
+import { ThemeMode } from '../types/models';
 
 interface SettingsState {
   /** 当前推理模式（默认本地） */
@@ -48,6 +50,8 @@ interface SettingsState {
   llmModelOptions: OllamaModelInfo[];
   /** Embedding 模型可用性列表（来自 Ollama 探测） */
   embeddingModelOptions: EmbeddingModelAvailability[];
+  /** 主题模式（跟随系统 / 亮色 / 暗色） */
+  theme: ThemeMode;
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
@@ -65,6 +69,8 @@ interface SettingsState {
   revokeCloudConsent: () => Promise<void>;
   /** 标记引导完成（写入 DB） */
   completeOnboarding: (dataDirectory: string) => Promise<void>;
+  /** 切换主题模式（持久化 + 应用到 html data-theme） */
+  setTheme: (mode: ThemeMode) => void;
   /** 清除错误 */
   clearError: () => void;
 }
@@ -86,6 +92,7 @@ export const useSettingsStore = create<SettingsState>()(
       ollamaProbing: false,
       llmModelOptions: [],
       embeddingModelOptions: [],
+      theme: ThemeMode.System,
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
@@ -200,6 +207,11 @@ export const useSettingsStore = create<SettingsState>()(
         await get().updateConfig({ data_directory: dataDirectory, onboarding_completed: true });
       },
 
+      setTheme: (mode) => {
+        set({ theme: mode });
+        applyTheme(mode);
+      },
+
       clearError: () => set({ error: null }),
     }),
     {
@@ -209,6 +221,7 @@ export const useSettingsStore = create<SettingsState>()(
         inferenceMode: state.inferenceMode,
         cloudConsentSigned: state.cloudConsentSigned,
         onboardingCompleted: state.onboardingCompleted,
+        theme: state.theme,
       }),
     },
   ),

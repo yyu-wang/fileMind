@@ -2,10 +2,15 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { App } from './App';
+import { applyTheme } from './lib/theme';
 import { useChatStore } from './stores/chatStore';
 import { useFileStore } from './stores/fileStore';
 import { useSettingsStore } from './stores/settingsStore';
 import './styles/globals.css';
+
+// T6.9：渲染前应用持久化的主题偏好（避免首帧闪烁）
+// zustand persist 对 localStorage 同步 rehydrate，getState().theme 已是持久化值
+applyTheme(useSettingsStore.getState().theme);
 
 const rootElement = document.getElementById('root');
 if (rootElement) {

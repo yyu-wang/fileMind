@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import { EmbeddingModelSection } from '../components/settings/EmbeddingModelSection';
 import { InferenceModeSection } from '../components/settings/InferenceModeSection';
 import { OllamaStatusCard } from '../components/settings/OllamaStatusCard';
+import { ThemeSection } from '../components/settings/ThemeSection';
 import { useSettingsStore } from '../stores/settingsStore';
 
 export function SettingsPage() {
@@ -26,6 +27,7 @@ export function SettingsPage() {
         <InferenceModeSection />
         <OllamaStatusCard />
         <EmbeddingModelSection />
+        <ThemeSection />
       </div>
     </div>
   );
