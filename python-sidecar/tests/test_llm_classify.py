@@ -20,9 +20,9 @@ from app.rules.llm_classify import (  # noqa: E402
     CONFIDENCE_THRESHOLD,
     ClassifyResult,
     LLMUnavailableError,
-    _call_ollama,
     _human_size,
     build_classify_prompt,
+    call_ollama_json,
     classify_file_with_llm,
     parse_classify_response,
 )
@@ -183,7 +183,7 @@ def test_human_size() -> None:
     assert _human_size(2_400_000_000) == "2.2 GB"
 
 
-async def test_call_ollama_returns_content() -> None:
+async def testcall_ollama_json_returns_content() -> None:
     """正常响应 → 返回 message.content。"""
 
     async def fake_chat(**kwargs: object) -> dict[str, object]:
@@ -192,10 +192,10 @@ async def test_call_ollama_returns_content() -> None:
     fake_client = mock.MagicMock()
     fake_client.chat = fake_chat
     with mock.patch("app.rules.llm_classify.AsyncClient", return_value=fake_client):
-        assert await _call_ollama("sys", "user") == '{"category":"文档"}'
+        assert await call_ollama_json("sys", "user") == '{"category":"文档"}'
 
 
-async def test_call_ollama_conn_error_raises_unavailable() -> None:
+async def testcall_ollama_json_conn_error_raises_unavailable() -> None:
     """连接失败（httpx.HTTPError）→ LLMUnavailableError。"""
 
     async def raise_conn(**kwargs: object) -> dict[str, object]:
@@ -207,7 +207,7 @@ async def test_call_ollama_conn_error_raises_unavailable() -> None:
         mock.patch("app.rules.llm_classify.AsyncClient", return_value=fake_client),
         pytest.raises(LLMUnavailableError),
     ):
-        await _call_ollama("sys", "user")
+        await call_ollama_json("sys", "user")
 
 
 async def test_classify_file_with_llm_success() -> None:
@@ -216,7 +216,7 @@ async def test_classify_file_with_llm_success() -> None:
     async def fake_call(system: str, user: str) -> str:
         return '{"category": "财务", "confidence": 0.9, "reason": "xlsx报表", "is_new_category": false}'
 
-    with mock.patch("app.rules.llm_classify._call_ollama", fake_call):
+    with mock.patch("app.rules.llm_classify.call_ollama_json", fake_call):
         result = await classify_file_with_llm(make_item(), ["财务"])
     assert isinstance(result, ClassifyResult)
     assert result.category == "财务"
@@ -229,7 +229,7 @@ async def test_classify_file_with_llm_timeout_returns_unclassified() -> None:
     async def fake_call(system: str, user: str) -> str:
         raise TimeoutError
 
-    with mock.patch("app.rules.llm_classify._call_ollama", fake_call):
+    with mock.patch("app.rules.llm_classify.call_ollama_json", fake_call):
         result = await classify_file_with_llm(make_item(), [])
     assert result.category == "未分类"
     assert result.confidence == 0.0
@@ -243,7 +243,7 @@ async def test_classify_file_with_llm_unavailable_propagates() -> None:
         raise LLMUnavailableError("Ollama down")
 
     with (
-        mock.patch("app.rules.llm_classify._call_ollama", fake_call),
+        mock.patch("app.rules.llm_classify.call_ollama_json", fake_call),
         pytest.raises(LLMUnavailableError),
     ):
         await classify_file_with_llm(make_item(), [])

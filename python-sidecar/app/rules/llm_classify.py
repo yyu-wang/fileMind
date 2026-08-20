@@ -110,8 +110,8 @@ _USER_TEMPLATE = """请对以下文件进行分类：
 内容摘要：{content_summary}"""
 
 
-def _extract_json_text(raw: str) -> str:
-    """从 LLM 输出中提取 JSON 文本。
+def extract_json_text(raw: str) -> str:
+    """从 LLM 输出中提取 JSON 文本（P-01/P-02 共用）。
 
     容忍两种常见包裹：markdown 代码块（`````json ... `````，qwen3 系常见）与
     前后缀文本（按首个 ``{`` 到末个 ``}`` 截取）。无法识别时原样返回，由
@@ -141,7 +141,7 @@ def parse_classify_response(raw: str) -> ClassifyResult:
         解析后的分类结果。
     """
     try:
-        data = json.loads(_extract_json_text(raw))
+        data = json.loads(extract_json_text(raw))
         if not isinstance(data, dict):
             raise ValueError("LLM 输出不是 JSON 对象")
         result = ClassifyResult(**data)
@@ -202,9 +202,10 @@ def build_classify_prompt(item: ClassifyItem, categories: list[str]) -> tuple[st
     return system, user
 
 
-async def _call_ollama(system: str, user: str) -> str:
-    """调用 Ollama 生成分类 JSON；连接/HTTP 失败抛 :class:`LLMUnavailableError`。
+async def call_ollama_json(system: str, user: str) -> str:
+    """调用 Ollama 生成严格 JSON 结果（P-01 分类 / P-02 查询改写共用）。
 
+    连接/HTTP 失败抛 :class:`LLMUnavailableError`。``format="json"`` 约束输出，
     ``think=False`` 关闭 Qwen3 系列模型的思维链：思考 token 计入
     ``num_predict`` 预算，未关闭时 JSON 会被截断/报 502（非思维模型忽略此参数）。
     """
@@ -251,7 +252,7 @@ async def classify_file_with_llm(item: ClassifyItem, categories: list[str]) -> C
     """
     system, user = build_classify_prompt(item, categories)
     try:
-        raw = await asyncio.wait_for(_call_ollama(system, user), timeout=OLLAMA_TIMEOUT)
+        raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
     except TimeoutError:
         return ClassifyResult(
             category="未分类",
