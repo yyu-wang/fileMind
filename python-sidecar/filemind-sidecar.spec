@@ -87,14 +87,15 @@ _hidden: list[str] = [
 ]
 
 # --- datas ------------------------------------------------------------------
-# 非代码资源文件。jieba 先在 exclude 里，所以 datas 先留空；T4.3 后再补。
+# 非代码资源文件。打包态侧车经 PyInstaller 解压到 _MEI 临时目录，__file__ 相对
+# 路径不再指向源码树，必须显式收集数据文件；否则 /classify（规则引擎）在打包态
+# 会 FileNotFoundError: preset_rules.json。
 _datas: list[tuple[str, str]] = [
-    # TBD（T4.3 分类层启用 jieba 后加回）:
+    *collect_data_files("app.rules.presets", include_py_files=False),
+    # TBD（后续启用 jieba 分词后加回）:
     #   *collect_data_files("jieba", include_py_files=False,
     #                        excludes=["*.pyc", "__pycache__"]),
 ]
-# 保留 collect_data_files import 防止 ruff 清理（T4.3 复用）
-_ = collect_data_files
 
 # --- excludes ---------------------------------------------------------------
 # 删除这些模块，是 <80MB 的关键。说明见文件头。

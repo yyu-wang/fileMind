@@ -3,10 +3,10 @@
 // 分组规则：`category_name` 非空 → 归入该分类组；为空 → 「待确认」组（黄标）。
 // 冲突项（status=Conflict）单独标记，执行时由 Rust 跳过。
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
-import { PENDING_NAME } from '@/stores/classifyStore';
-import type { ClassifyPlanItem, ClassifyPreview } from '@/types/ipc';
+import { useClassifyStore, PENDING_NAME } from '@/stores/classifyStore';
+import type { Category, ClassifyPlanItem, ClassifyPreview } from '@/types/ipc';
 import { ClassifyRuleSourceTag } from './ClassifyRuleSourceTag';
 
 interface ClassifyPreviewTreeProps {
@@ -52,6 +52,44 @@ function conflictLabel(item: ClassifyPlanItem): string {
 
 export function ClassifyPreviewTree({ preview, onExecute, onReset }: ClassifyPreviewTreeProps) {
   const groups = useMemo(() => groupByCategory(preview.items), [preview.items]);
+  // T6.12：手动分类数据源 + 动作（待确认/待人工确认文件用）
+  const categories = useClassifyStore((s) => s.categories);
+  const assignCategory = useClassifyStore((s) => s.assignCategory);
+  const assignCategories = useClassifyStore((s) => s.assignCategories);
+  // 批量勾选态（仅待确认组内未分类项可勾选，纯 UI 状态）
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const pendingGroup = groups.find((g) => g.name === PENDING_NAME);
+  const pendingItems = pendingGroup?.items ?? [];
+  // 全选判断：当前勾选集是否覆盖该组全部未分类项
+  const pendingFileIds = pendingItems.map((i) => i.file_id);
+  const allSelected =
+    pendingFileIds.length > 0 && pendingFileIds.every((id) => selectedIds.includes(id));
+
+  const toggleSelect = (fileId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(fileId) ? prev.filter((id) => id !== fileId) : [...prev, fileId],
+    );
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds(allSelected ? [] : pendingFileIds);
+  };
+
+  const handleAssign = (fileId: string, categoryName: string) => {
+    const category = categories.find((c) => c.name === categoryName);
+    if (category) {
+      assignCategory(fileId, category);
+    }
+  };
+
+  const handleBatchAssign = (categoryName: string) => {
+    const category = categories.find((c) => c.name === categoryName);
+    if (category && selectedIds.length > 0) {
+      assignCategories(selectedIds, category);
+      setSelectedIds([]);
+    }
+  };
 
   return (
     <div className="classify-preview">
@@ -63,34 +101,105 @@ export function ClassifyPreviewTree({ preview, onExecute, onReset }: ClassifyPre
       </div>
 
       <div className="classify-preview__groups">
-        {groups.map((group) => (
-          <section
-            key={group.name}
-            className={
-              group.name === PENDING_NAME
-                ? 'classify-preview__group classify-preview__group--pending'
-                : 'classify-preview__group'
-            }
-          >
-            <h3 className="classify-preview__group-head">
-              <span>{group.name}</span>
-              <span className="classify-preview__group-count">{group.items.length}</span>
-            </h3>
-            <ul className="classify-preview__list">
-              {group.items.map((item) => (
-                <li key={item.file_id} className="classify-preview__item">
-                  <span className="classify-preview__name" title={item.original_path}>
-                    {item.file_name}
-                  </span>
-                  <ClassifyRuleSourceTag source={item.rule_source} />
-                  {conflictLabel(item) && (
-                    <span className="classify-preview__conflict">{conflictLabel(item)}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
+        {groups.map((group) => {
+          const isPendingGroup = group.name === PENDING_NAME;
+          return (
+            <section
+              key={group.name}
+              className={
+                isPendingGroup
+                  ? 'classify-preview__group classify-preview__group--pending'
+                  : 'classify-preview__group'
+              }
+            >
+              <h3 className="classify-preview__group-head">
+                {isPendingGroup && (
+                  <label className="classify-preview__select-all" title="全选/取消全选">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleSelectAll}
+                      aria-label="全选待确认文件"
+                    />
+                  </label>
+                )}
+                <span>{group.name}</span>
+                <span className="classify-preview__group-count">{group.items.length}</span>
+              </h3>
+
+              {/* T6.12：批量指定分类横幅（勾选 ≥1 时显示） */}
+              {isPendingGroup && selectedIds.length > 0 && (
+                <div className="classify-preview__batch">
+                  <span>已选 {selectedIds.length} 个文件</span>
+                  <select
+                    className="classify-preview__assign"
+                    aria-label="为选中的文件批量指定分类"
+                    value=""
+                    onChange={(e) => handleBatchAssign(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      指定分类…
+                    </option>
+                    {categories.map((c: Category) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="classify-preview__batch-cancel"
+                    onClick={() => setSelectedIds([])}
+                  >
+                    取消
+                  </button>
+                </div>
+              )}
+
+              <ul className="classify-preview__list">
+                {group.items.map((item) => (
+                  <li key={item.file_id} className="classify-preview__item">
+                    {/* T6.12：待确认/待人工确认文件可勾选（批量分类） */}
+                    {isPendingGroup && (
+                      <input
+                        type="checkbox"
+                        className="classify-preview__check"
+                        checked={selectedIds.includes(item.file_id)}
+                        onChange={() => toggleSelect(item.file_id)}
+                        aria-label={`选择 ${item.file_name}`}
+                      />
+                    )}
+                    <span className="classify-preview__name" title={item.original_path}>
+                      {item.file_name}
+                    </span>
+                    <ClassifyRuleSourceTag source={item.rule_source} />
+                    {conflictLabel(item) && (
+                      <span className="classify-preview__conflict">{conflictLabel(item)}</span>
+                    )}
+                    {/* T6.12：单个文件手动指定分类 */}
+                    {isPendingGroup && categories.length > 0 && (
+                      <select
+                        className="classify-preview__assign"
+                        aria-label={`为 ${item.file_name} 指定分类`}
+                        value=""
+                        onChange={(e) => handleAssign(item.file_id, e.target.value)}
+                      >
+                        <option value="" disabled>
+                          指定分类…
+                        </option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.name}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })}
       </div>
 
       <div className="classify-preview__actions">

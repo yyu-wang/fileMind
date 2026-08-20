@@ -11,16 +11,40 @@ vi.mock('../lib/ipc', () => ({
     listAllFiles: vi.fn(),
     getFileStats: vi.fn(),
     scanDirectory: vi.fn(),
+    listCategories: vi.fn(),
   },
 }));
 
 import { fileIpc } from '../lib/ipc';
 import { ClassifyStatus } from '../types/models';
-import type { ClassifyPlanItem, ClassifyPreview, ExecuteResponse } from '../types/ipc';
+import type { Category, ClassifyPlanItem, ClassifyPreview, ExecuteResponse } from '../types/ipc';
 import { useClassifyStore } from './classifyStore';
 import { useFileStore } from './fileStore';
 
 const SCAN_ROOT = '/tmp/root';
+
+/** T6.12 测试用分类构造器。 */
+function makeCategory(id: string, name: string, targetDir: string): Category {
+  return {
+    id,
+    name,
+    parent_id: null,
+    icon: null,
+    color: null,
+    sort_order: 0,
+    is_builtin: false,
+    target_dir: targetDir,
+    created_at: '2026-01-01 00:00:00',
+    updated_at: '2026-01-01 00:00:00',
+  };
+}
+
+/** 从 store 缓存按名取分类，取不到直接抛错（测试前置断言）。 */
+function getCategory(name: string): Category {
+  const cat = useClassifyStore.getState().categories.find((c) => c.name === name);
+  if (!cat) throw new Error(`测试前置：分类「${name}」不存在`);
+  return cat;
+}
 
 function makeItem(id: string, overrides: Partial<ClassifyPlanItem> = {}): ClassifyPlanItem {
   return {
@@ -81,6 +105,7 @@ beforeEach(() => {
     status: ClassifyStatus.Idle,
     preview: null,
     pendingIds: [],
+    categories: [],
     progress: { done: 0, total: 0 },
     execSummary: null,
     lastBatchId: null,
@@ -89,6 +114,10 @@ beforeEach(() => {
   useFileStore.setState({ scanPath: SCAN_ROOT, files: [], selectedIds: [] });
   vi.clearAllMocks();
   vi.mocked(fileIpc.listAllFiles).mockResolvedValue({ status: 'ok', data: [] });
+  vi.mocked(fileIpc.listCategories).mockResolvedValue({
+    status: 'ok',
+    data: [makeCategory('c1', '图片', '图片'), makeCategory('c2', '财务', '财务')],
+  });
   vi.mocked(fileIpc.getFileStats).mockResolvedValue({
     status: 'ok',
     data: {
@@ -297,5 +326,140 @@ describe('reset', () => {
     expect(state.progress).toEqual({ done: 0, total: 0 });
     expect(state.execSummary).toBeNull();
     expect(state.error).toBeNull();
+  });
+});
+
+describe('loadCategories', () => {
+  it('loads categories once and caches (idempotent)', async () => {
+    await useClassifyStore.getState().loadCategories();
+    expect(fileIpc.listCategories).toHaveBeenCalledTimes(1);
+    expect(useClassifyStore.getState().categories).toHaveLength(2);
+
+    await useClassifyStore.getState().loadCategories();
+    expect(fileIpc.listCategories).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('assignCategory', () => {
+  async function setupWithPending() {
+    const preview = makePreview([
+      makeItem('ok'),
+      makeItem('pend', {
+        category_name: null,
+        rule_source: 'needs_review',
+        target_path: `${SCAN_ROOT}/pend.png`,
+      }),
+    ]);
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({ status: 'ok', data: preview });
+    await useClassifyStore.getState().generatePreview(['ok', 'pend']);
+    // 直接注入分类缓存（不依赖 loadCategories 异步时序）
+    useClassifyStore.setState({
+      categories: [makeCategory('c1', '图片', '图片'), makeCategory('c2', '财务', '财务')],
+    });
+    return preview;
+  }
+
+  it('assigns category: updates item, stats and pendingIds', async () => {
+    const before = await setupWithPending();
+
+    useClassifyStore.getState().assignCategory('pend', getCategory('财务'));
+
+    const state = useClassifyStore.getState();
+    expect(state.pendingIds).toEqual([]);
+    expect(state.error).toBeNull();
+    expect(state.preview?.stats.categorized).toBe(before.stats.categorized + 1);
+    expect(state.preview?.stats.pending).toBe(0);
+
+    const item = state.preview?.items.find((i) => i.file_id === 'pend');
+    expect(item?.category_name).toBe('财务');
+    expect(item?.rule_source).toBe('manual');
+    expect(item?.target_path).toBe(`${SCAN_ROOT}/财务/pend.png`);
+  });
+
+  it('rejects unsafe target_dir', async () => {
+    await setupWithPending();
+    // 用 target_dir 含路径穿越的分类
+    vi.mocked(fileIpc.listCategories).mockResolvedValueOnce({
+      status: 'ok',
+      data: [makeCategory('bad', '越权', '../secret')],
+    });
+    await useClassifyStore.getState().loadCategories();
+    useClassifyStore.setState({ categories: [makeCategory('bad', '越权', '../secret')] });
+
+    useClassifyStore.getState().assignCategory('pend', getCategory('越权'));
+
+    const state = useClassifyStore.getState();
+    expect(state.pendingIds).toEqual(['pend']);
+    expect(state.error).toContain('目标目录');
+    expect(state.preview?.items.find((i) => i.file_id === 'pend')?.category_name).toBeNull();
+  });
+
+  it('is no-op when preview is missing', () => {
+    useClassifyStore.setState({ preview: null });
+    useClassifyStore.getState().assignCategory('pend', makeCategory('c1', '财务', '财务'));
+    expect(useClassifyStore.getState().preview).toBeNull();
+  });
+});
+
+describe('assignCategories', () => {
+  async function setupWithMultiPending() {
+    const preview = makePreview([
+      makeItem('ok'),
+      makeItem('p1', { category_name: null, rule_source: 'needs_review' }),
+      makeItem('p2', { category_name: null, rule_source: 'pending' }),
+      makeItem('p3', { category_name: null, rule_source: 'pending' }),
+    ]);
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({ status: 'ok', data: preview });
+    await useClassifyStore.getState().generatePreview(['ok', 'p1', 'p2', 'p3']);
+    // 直接注入分类缓存（不依赖 loadCategories 异步时序）
+    useClassifyStore.setState({
+      categories: [makeCategory('c1', '图片', '图片'), makeCategory('c2', '财务', '财务')],
+    });
+    return preview;
+  }
+
+  it('assigns a category to multiple files in one call', async () => {
+    const before = await setupWithMultiPending();
+
+    useClassifyStore.getState().assignCategories(['p1', 'p2'], getCategory('财务'));
+
+    const state = useClassifyStore.getState();
+    // 勾选 2 个：categorized +2、pending -2、pendingIds 移除这两个
+    expect(state.preview?.stats.categorized).toBe(before.stats.categorized + 2);
+    expect(state.preview?.stats.pending).toBe(1);
+    expect(state.pendingIds).toEqual(['p3']);
+    expect(state.error).toBeNull();
+
+    const p1 = state.preview?.items.find((i) => i.file_id === 'p1');
+    expect(p1?.category_name).toBe('财务');
+    expect(p1?.rule_source).toBe('manual');
+    expect(p1?.target_path).toBe(`${SCAN_ROOT}/财务/p1.png`);
+  });
+
+  it('skips already-categorized ids and is no-op when none assigned', async () => {
+    await setupWithMultiPending();
+    const before = useClassifyStore.getState().preview?.stats.categorized;
+
+    // ok 已分类 → 批量时跳过；无有效项时不应产生状态变化
+    useClassifyStore.getState().assignCategories(['ok'], getCategory('财务'));
+
+    const state = useClassifyStore.getState();
+    expect(state.preview?.stats.categorized).toBe(before);
+    expect(state.pendingIds).toHaveLength(3);
+  });
+
+  it('rejects unsafe target_dir without touching preview', async () => {
+    await setupWithMultiPending();
+    useClassifyStore.setState({
+      categories: [makeCategory('bad', '越权', '../secret')],
+    });
+    const before = useClassifyStore.getState().preview;
+
+    useClassifyStore.getState().assignCategories(['p1', 'p2'], getCategory('越权'));
+
+    const state = useClassifyStore.getState();
+    expect(state.error).toContain('目标目录');
+    expect(state.preview).toEqual(before);
+    expect(state.pendingIds).toHaveLength(3);
   });
 });

@@ -97,6 +97,38 @@ const BUILTIN_CATEGORIES: &[BuiltinCategorySeed] = &[
         color: "accent",
         sort_order: 70,
     },
+    BuiltinCategorySeed {
+        id: "builtin-data",
+        name: "数据文件",
+        target_dir: "数据文件",
+        icon: "database",
+        color: "accent2",
+        sort_order: 80,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-installer",
+        name: "安装包",
+        target_dir: "安装包",
+        icon: "package",
+        color: "warn",
+        sort_order: 90,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-font",
+        name: "字体",
+        target_dir: "字体",
+        icon: "type",
+        color: "accent",
+        sort_order: 100,
+    },
+    BuiltinCategorySeed {
+        id: "builtin-ebook",
+        name: "电子书",
+        target_dir: "电子书",
+        icon: "book",
+        color: "accent3",
+        sort_order: 110,
+    },
 ];
 
 /// `categories` 表仓库。

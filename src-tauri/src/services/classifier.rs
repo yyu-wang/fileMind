@@ -10,6 +10,7 @@
 //! 校验后才与扫描根拼接；目标路径冲突用 `ConflictStrategy::Skip` 提前标记，
 //! 冲突项由执行层跳过（不覆盖、不改名）。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -26,6 +27,10 @@ pub(crate) const RULE_SOURCE_PREFIX: &str = "rule:";
 pub(crate) const HEURISTIC_SOURCE: &str = "heuristic";
 /// 待确认来源标签。
 pub(crate) const PENDING_SOURCE: &str = "pending";
+/// LLM 兜底命中来源标签（T6.11：sidecar /classify 补全）。
+pub(crate) const LLM_SOURCE: &str = "llm";
+/// 待人工确认来源标签（T6.11：LLM 兜底命中但置信度低于阈值）。
+pub(crate) const NEEDS_REVIEW_SOURCE: &str = "needs_review";
 
 /// 内置启发式映射：扩展名分组 → 内置分类名。
 ///
@@ -58,6 +63,10 @@ const HEURISTIC_EXT_MAP: &[(&str, &[&str])] = &[
             "html", "sh", "sql", "go", "json", "yaml", "yml", "toml", "xml", "log",
         ],
     ),
+    ("数据文件", &["csv", "tsv"]),
+    ("安装包", &["dmg", "pkg", "exe", "msi", "deb", "rpm", "apk"]),
+    ("字体", &["ttf", "otf", "woff", "woff2"]),
+    ("电子书", &["epub", "mobi", "azw3"]),
 ];
 
 /// 单个文件的分类计划项。
@@ -298,7 +307,7 @@ pub fn aggregate_stats(items: &[ClassifyPlanItem]) -> ClassifyStats {
     };
     for item in items {
         match item.rule_source.as_str() {
-            PENDING_SOURCE => stats.pending += 1,
+            PENDING_SOURCE | NEEDS_REVIEW_SOURCE => stats.pending += 1,
             HEURISTIC_SOURCE => {
                 stats.by_heuristic += 1;
                 stats.categorized += 1;
@@ -310,4 +319,58 @@ pub fn aggregate_stats(items: &[ClassifyPlanItem]) -> ClassifyStats {
         }
     }
     stats
+}
+
+/// 把 LLM 兜底结果合并进 plan（T6.11，纯函数便于单测）。
+///
+/// `llm_map`：`file_name → (category, status)`，来自 sidecar `/classify` 响应
+/// （该响应只回显 `file_name`，不携带 `file_id`，故按文件名反查）。
+/// status 语义对齐 sidecar：`classified` / `needs_review` / `unclassified`。
+///
+/// 合并规则（只处理当前为 `pending` 的项）：
+///   - `classified`：分类存在于 `categories` → 归入该分类（`rule_source="llm"`），
+///     重新计算目标路径与冲突标记；分类不存在 → 保持待确认（不移动）。
+///   - `needs_review`：保持未分类，但标记 `rule_source="needs_review"`（待人工确认）。
+///   - `unclassified` / 未命中 / 未知状态：保持原 `pending`。
+///
+/// # Errors
+///
+/// 目标子路径校验失败时返回 `UnsafePath`（与 `generate_plan` 一致）。
+pub(crate) fn apply_llm_fallback(
+    items: &mut [ClassifyPlanItem],
+    llm_map: &HashMap<String, (String, String)>,
+    scan_root: &Path,
+    categories: &[Category],
+) -> AppResult<()> {
+    for item in items.iter_mut() {
+        // 只对「规则 + 启发式均未命中」的项做 LLM 兜底合并
+        if item.rule_source != PENDING_SOURCE {
+            continue;
+        }
+        let Some((category, status)) = llm_map.get(&item.file_name) else {
+            continue;
+        };
+        match status.as_str() {
+            "classified" => {
+                // LLM 返回的分类必须真实存在于 categories，否则不移动（防幻影分类）
+                if let Some(cat) = categories.iter().find(|c| c.name == *category) {
+                    let target = build_target_path(scan_root, cat, &item.file_name)?;
+                    let (_, plan_status, conflict_type) =
+                        resolve_conflict(&target, &item.file_name, Path::new(&item.original_path));
+                    item.category_name = Some(cat.name.clone());
+                    item.rule_source = LLM_SOURCE.to_string();
+                    item.target_path = target.to_string_lossy().to_string();
+                    item.status = plan_status;
+                    item.conflict_type = conflict_type;
+                }
+            }
+            "needs_review" => {
+                // LLM 低置信度 → 标记待人工确认（仍不移动，留给 T6.12 手动处理）
+                item.rule_source = NEEDS_REVIEW_SOURCE.to_string();
+            }
+            // "unclassified" 或未知状态：保持原 pending，不处理
+            _ => {}
+        }
+    }
+    Ok(())
 }

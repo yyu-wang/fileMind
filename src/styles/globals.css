@@ -1011,6 +1011,8 @@ body {
   height: 100%;
   padding: 20px 24px;
   min-height: 0;
+  /* 外层不滚动，内容由内部 .classify-preview__groups 独立滚动，避免双重滚动挤压 */
+  overflow: hidden;
 }
 
 .classify-page__header {
@@ -1170,6 +1172,64 @@ body {
   font-size: 13px;
 }
 
+/* T6.12 手动分类下拉（待确认文件行内） */
+.classify-preview__assign {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 140px;
+}
+
+/* T6.12 批量勾选与批量指定 */
+.classify-preview__check {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.classify-preview__select-all {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  margin-right: 4px;
+}
+
+.classify-preview__select-all input {
+  cursor: pointer;
+}
+
+.classify-preview__batch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--accent-light);
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.classify-preview__batch .classify-preview__assign {
+  margin-left: 0;
+}
+
+.classify-preview__batch-cancel {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.classify-preview__batch-cancel:hover {
+  color: var(--ink);
+}
+
 .classify-preview__item:first-child {
   border-top: none;
 }
@@ -1219,6 +1279,23 @@ body {
   color: var(--warn);
 }
 
+/* T6.11 LLM 兜底命中 / 待人工确认 标签 */
+.classify-rule-tag--llm {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.classify-rule-tag--needs-review {
+  background: #fde8e8;
+  color: #c0392b;
+}
+
+/* T6.12 手动指定分类标签 */
+.classify-rule-tag--manual {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 @media (prefers-color-scheme: dark) {
   .classify-rule-tag--heuristic {
     background: rgba(107, 70, 193, 0.25);
@@ -1227,6 +1304,21 @@ body {
 
   .classify-rule-tag--pending {
     background: rgba(245, 158, 11, 0.15);
+  }
+
+  .classify-rule-tag--llm {
+    background: rgba(21, 128, 61, 0.2);
+    color: #86efac;
+  }
+
+  .classify-rule-tag--needs-review {
+    background: rgba(192, 57, 43, 0.2);
+    color: #fca5a5;
+  }
+
+  .classify-rule-tag--manual {
+    background: rgba(29, 78, 216, 0.2);
+    color: #93c5fd;
   }
 }
 

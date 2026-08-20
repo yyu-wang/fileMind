@@ -9,7 +9,7 @@
 
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
-import type { ClassifyPlanItem, ClassifyPreview, PlanItem } from '../types/ipc';
+import type { Category, ClassifyPlanItem, ClassifyPreview, PlanItem } from '../types/ipc';
 import { ClassifyStatus } from '../types/models';
 import { useFileStore } from './fileStore';
 
@@ -55,6 +55,8 @@ interface ClassifyState {
   preview: ClassifyPreview | null;
   /** 待确认文件的 id 列表（执行时排除） */
   pendingIds: string[];
+  /** 全部分类（T6.12 手动分类下拉数据源，进入预览时加载缓存） */
+  categories: Category[];
   /** 执行进度 */
   progress: ProgressState;
   /** 执行结果汇总 */
@@ -66,6 +68,12 @@ interface ClassifyState {
 
   /** 生成分类预览（scanPath 从 fileStore 读） */
   generatePreview: (fileIds: string[]) => Promise<void>;
+  /** 加载分类列表（幂等，供手动分类下拉使用） */
+  loadCategories: () => Promise<void>;
+  /** 手动指定待确认文件的分类（T6.12：更新 preview，执行时随主批量移动+打标） */
+  assignCategory: (fileId: string, category: Category) => void;
+  /** 批量手动指定分类（T6.12 增强：一次 set 更新多个文件，避免逐点过慢） */
+  assignCategories: (fileIds: string[], category: Category) => void;
   /** 分块执行已确认分类（不含待确认/冲突项） */
   execute: () => Promise<void>;
   /** 暂停执行 */
@@ -117,10 +125,30 @@ function buildSummary(
   };
 }
 
+/**
+ * 拼接目标路径：`scanPath/targetDir/fileName`（合并重复斜杠）。
+ *
+ * T6.12 手动分类用：分类的 `target_dir` 是相对扫描根的子目录，
+ * 与 Rust `build_target_path` 的拼接语义一致。
+ */
+function joinPath(...parts: string[]): string {
+  return parts
+    .filter((p) => p && p.trim() !== '')
+    .join('/')
+    .replace(/\/{2,}/g, '/');
+}
+
+/** 校验分类目标目录：拒绝绝对路径 / 路径穿越（与 Rust validate_relative_subpath 语义对齐）。 */
+function isSafeTargetDir(targetDir: string): boolean {
+  if (!targetDir || targetDir.trim() === '') return false;
+  return !targetDir.includes('..') && !targetDir.startsWith('/') && !/^[A-Za-z]:/.test(targetDir);
+}
+
 export const useClassifyStore = create<ClassifyState>()((set, get) => ({
   status: ClassifyStatus.Idle,
   preview: null,
   pendingIds: [],
+  categories: [],
   progress: INITIAL_PROGRESS,
   execSummary: null,
   lastBatchId: null,
@@ -139,9 +167,107 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         .filter((item) => item.category_name == null)
         .map((item) => item.file_id);
       set({ status: ClassifyStatus.Idle, preview: result.data, pendingIds });
+      // T6.12：加载分类列表供手动分类下拉使用（幂等，失败不影响预览）
+      void get().loadCategories();
     } else {
       set({ status: ClassifyStatus.Idle, error: result.error });
     }
+  },
+
+  loadCategories: async () => {
+    // 幂等：已有缓存不重复拉取（进入预览时调用一次即可）
+    if (get().categories.length > 0) return;
+    const result = await fileIpc.listCategories();
+    if (result.status === 'ok') {
+      set({ categories: result.data });
+    } else {
+      set({ error: result.error });
+    }
+  },
+
+  assignCategory: (fileId, category) => {
+    const { preview, pendingIds } = get();
+    if (!preview) return;
+    const item = preview.items.find((i) => i.file_id === fileId);
+    if (!item) return;
+
+    // 目标目录合法性校验（相对路径、无穿越），非法拒绝并提示
+    const targetDir = category.target_dir.trim();
+    if (!isSafeTargetDir(targetDir)) {
+      set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
+      return;
+    }
+    const scanPath = useFileStore.getState().scanPath;
+    if (!scanPath) {
+      set({ error: '请先在文件页选择要整理的目录' });
+      return;
+    }
+
+    // 计算目标路径（与 Rust build_target_path 拼接语义一致），更新 preview 项
+    const targetPath = joinPath(scanPath, targetDir, item.file_name);
+    const updatedItems = preview.items.map((i) =>
+      i.file_id === fileId
+        ? { ...i, category_name: category.name, rule_source: 'manual', target_path: targetPath }
+        : i,
+    );
+    const stats = {
+      ...preview.stats,
+      categorized: preview.stats.categorized + 1,
+      pending: Math.max(preview.stats.pending - 1, 0),
+    };
+    set({
+      preview: { ...preview, items: updatedItems, stats },
+      pendingIds: pendingIds.filter((id) => id !== fileId),
+      error: null,
+    });
+  },
+
+  assignCategories: (fileIds, category) => {
+    const { preview, pendingIds } = get();
+    if (!preview || fileIds.length === 0) return;
+
+    // 批量共用同一分类：一次校验 target_dir（相对路径、无穿越）
+    const targetDir = category.target_dir.trim();
+    if (!isSafeTargetDir(targetDir)) {
+      set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
+      return;
+    }
+    const scanPath = useFileStore.getState().scanPath;
+    if (!scanPath) {
+      set({ error: '请先在文件页选择要整理的目录' });
+      return;
+    }
+
+    const idSet = new Set(fileIds);
+    let assigned = 0;
+    const updatedItems = preview.items.map((i) => {
+      if (!idSet.has(i.file_id)) return i;
+      // 只处理未分类项；已分类的跳过（避免重复计数/覆盖）
+      if (i.category_name != null) return i;
+      assigned += 1;
+      const targetPath = joinPath(scanPath, targetDir, i.file_name);
+      return {
+        ...i,
+        category_name: category.name,
+        rule_source: 'manual',
+        target_path: targetPath,
+      };
+    });
+
+    if (assigned === 0) return;
+    set({
+      preview: {
+        ...preview,
+        items: updatedItems,
+        stats: {
+          ...preview.stats,
+          categorized: preview.stats.categorized + assigned,
+          pending: Math.max(preview.stats.pending - assigned, 0),
+        },
+      },
+      pendingIds: pendingIds.filter((id) => !idSet.has(id)),
+      error: null,
+    });
   },
 
   execute: async () => {
