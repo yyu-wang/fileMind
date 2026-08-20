@@ -59,6 +59,9 @@ disable_error_code = ["unused-ignore", "return-value"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--strict-markers --cov=app --cov-report=term-missing --cov-report=xml"
+markers = [
+    "e2e: 需真实 Ollama/LanceDB 的端到端测试（RUN_E2E=1 运行）",
+]
 
 [tool.coverage.run]
 source = ["app"]
