@@ -2,6 +2,7 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::db::models::FileRecord;
@@ -239,17 +240,45 @@ impl FileRepo {
         let mut result = UpsertResult::default();
 
         for file in files {
+            // 按 path 反查已存在记录（含软删除行）：
+            // INSERT_FILE_SQL 的 ON CONFLICT(path) 只会更新元数据、保留旧 id，
+            // 若扫描生成的 id 不等于旧 id，后续按 id 反查（classify/preview/execute）会落空，
+            // 必须把「传入 id → 入库 id」记入 id_map 供 scan_directory 回写。
             let existing = tx.query_row(
-                "SELECT content_hash FROM files WHERE path = ?1 AND is_deleted = 0",
+                "SELECT id, is_deleted, content_hash FROM files WHERE path = ?1",
                 params![file.path],
-                |row| row.get::<_, Option<String>>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             );
 
             match existing {
-                Ok(Some(hash)) if file.content_hash.as_ref() == Some(&hash) => {
-                    result.skipped += 1;
+                Ok((existing_id, is_deleted, existing_hash)) => {
+                    result.id_map.insert(file.id.clone(), existing_id);
+                    if is_deleted == 0 && file.content_hash.as_ref() == existing_hash.as_ref() {
+                        result.skipped += 1;
+                    } else {
+                        // 路径已存在但内容/软删状态变化：复用 INSERT_FILE_SQL 的
+                        // ON CONFLICT(path) DO UPDATE 刷新元数据并复活记录（保留旧 id）
+                        tx.execute(
+                            INSERT_FILE_SQL,
+                            params![
+                                file.id,
+                                file.path,
+                                file.file_name,
+                                file.file_size,
+                                file.content_hash,
+                                file.category,
+                            ],
+                        )?;
+                        result.updated += 1;
+                    }
                 }
-                _ => {
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
                     tx.execute(
                         INSERT_FILE_SQL,
                         params![
@@ -261,12 +290,10 @@ impl FileRepo {
                             file.category,
                         ],
                     )?;
-                    if matches!(existing, Ok(Some(_))) {
-                        result.updated += 1;
-                    } else {
-                        result.added += 1;
-                    }
+                    result.id_map.insert(file.id.clone(), file.id.clone());
+                    result.added += 1;
                 }
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -320,6 +347,11 @@ pub struct UpsertResult {
     pub updated: u32,
     /// 内容未变化跳过的条数。
     pub skipped: u32,
+    /// 传入 id → 入库真实 id 映射（`scan_directory` 回写用；避免同一路径重复扫描时
+    /// 扫描生成的新 uuid 与库内旧 id 不一致导致按 id 反查落空）。
+    #[serde(skip)]
+    #[specta(skip)]
+    pub id_map: HashMap<String, String>,
 }
 
 /// 将查询行映射为 [`FileRecord`]。

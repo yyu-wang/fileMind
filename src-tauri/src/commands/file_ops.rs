@@ -38,14 +38,13 @@ pub fn scan_directory(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<FileInfo>, String> {
     let safe_path = security::validate(&path).map_err(|e| e.to_string())?;
-    let files = scan_files_on_disk(&safe_path).map_err(|e| e.to_string())?;
+    let mut files = scan_files_on_disk(&safe_path).map_err(|e| e.to_string())?;
 
     // —— SQLite 写入：非关键路径，失败只记 warn —— //
     // （扫描是高频 UI 操作，不能因 DB 短暂不可用而阻塞返回）
     match state.db.lock() {
         Ok(conn_guard) => {
-            let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
-            if let Err(e) = FileRepo::upsert_batch(conn_guard.conn(), &records) {
+            if let Err(e) = persist_scan_files(conn_guard.conn(), &mut files) {
                 log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}");
             }
         }
@@ -55,6 +54,26 @@ pub fn scan_directory(
     }
 
     Ok(files)
+}
+
+/// 把扫描结果写入 SQLite，并把 `files` 中的 id 覆盖为入库后的真实 id。
+///
+/// 扫描生成的 id 是全新 uuid，而同一路径再次扫描时 INSERT 的 `ON CONFLICT(path)`
+/// 会保留库内旧 id——若不回写，前端拿到的是库中不存在的 id，后续按 id 反查
+/// （`classify_preview` / `preview_operations` / `execute_operations`）会报"文件不存在"。
+///
+/// # Errors
+///
+/// 落库失败时返回 `AppError`。
+fn persist_scan_files(conn: &rusqlite::Connection, files: &mut [FileInfo]) -> AppResult<()> {
+    let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
+    let result = FileRepo::upsert_batch(conn, &records)?;
+    for f in files {
+        if let Some(real_id) = result.id_map.get(&f.id) {
+            f.id.clone_from(real_id);
+        }
+    }
+    Ok(())
 }
 
 /// 把 IPC 视图 `FileInfo` → 持久化视图 `FileRecord`。
@@ -1057,6 +1076,80 @@ mod tests {
         )?;
         assert_eq!(null_hash_count, 0, "有未计算 hash 的文件记录落库");
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_rescan_keeps_stable_ids() -> Result<(), Box<dyn std::error::Error>> {
+        // 同一目录重复扫描：返回 id 必须稳定且可被 get_by_ids 反查（修复前新 uuid 未入库）
+        let scan_root = tempfile::tempdir()?;
+        create_temp_file(scan_root.path(), "a.txt", "aaa")?;
+        create_temp_file(scan_root.path(), "b.txt", "bbb")?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let mut first = scan_files_on_disk(scan_root.path())?;
+        assert_eq!(first.len(), 2);
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut first)?;
+        }
+
+        let mut second = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut second)?;
+
+            // 第二次扫描的临时 id 应回写为第一次入库的 id（同路径同 hash → skip）
+            let first_ids: HashSet<&str> = first.iter().map(|f| f.id.as_str()).collect();
+            let second_ids: HashSet<&str> = second.iter().map(|f| f.id.as_str()).collect();
+            assert_eq!(first_ids, second_ids, "同一目录重复扫描 id 应保持一致");
+
+            // 扫描返回的 id 必须全部可被反查（修复前会落空触发"文件不存在"）
+            let ids: Vec<String> = second.iter().map(|f| f.id.clone()).collect();
+            let records = FileRepo::get_by_ids(conn_guard.conn(), &ids)?;
+            assert_eq!(records.len(), 2, "按扫描返回的 id 反查应全部命中");
+
+            // 库中不应因重复扫描产生重复行
+            let count: i64 = conn_guard.conn().query_row(
+                "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 2, "重复扫描不应新增记录");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_upsert_id_map_keeps_id_on_content_change() -> Result<(), Box<dyn std::error::Error>> {
+        // 文件内容变化：应 UPDATE 既有行而非新增，且 id 保持不变
+        let scan_root = tempfile::tempdir()?;
+        create_temp_file(scan_root.path(), "a.txt", "v1")?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let mut first = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut first)?;
+        }
+        let original_id = first[0].id.clone();
+
+        std::fs::write(scan_root.path().join("a.txt"), b"v2")?;
+        let mut second = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut second)?;
+            assert_eq!(second[0].id, original_id, "内容变化时仍应复用原 id");
+
+            let count: i64 = conn_guard.conn().query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1 AND is_deleted = 0",
+                rusqlite::params![second[0].path],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "内容变化应更新而非新增记录");
+        }
         Ok(())
     }
 
