@@ -99,26 +99,7 @@ _ = collect_data_files
 # --- excludes ---------------------------------------------------------------
 # 删除这些模块，是 <80MB 的关键。说明见文件头。
 _excludes: list[str] = [
-    "lancedb",
-    "lance",
-    "pyarrow",
-    "pylance",
-    "ollama",
-    # jieba（41MB，T4.3 前 Sidecar 只挂路由不执行，先剔）
-    "jieba",
-    "jieba.analyse",
-    "jieba.posseg",
-    "jieba._compat",
-    "jieba.finalseg",
-    # numpy 子集（numpy 本身 ~30MB，剔除罕见子包 ~8-12MB）
-    "numpy.linalg._umath_linalg",
-    "numpy.random._examples",
-    "numpy.f2py",
-    "numpy.distutils",
-    "numpy.testing",
-    "numpy.tests",
-    "numpy.core.tests",
-    # Tkinter / IDLE / ensurepip / venv — stdlib 冗余（打包 never 用）
+    # Tkinter / IDLE / ensurepip / venv / lib2to3 — stdlib 冗余（打包 never 用）
     "tkinter",
     "tkinter.ttk",
     "turtle",
@@ -131,9 +112,6 @@ _excludes: list[str] = [
     "_pytest",
     "ruff",
     "mypy",
-    # httpx 非同步 transport（Sidecar 只用同步 httpx）
-    "httpx._transports.asgi",
-    "httpx._transports.wsgi",
 ]
 
 

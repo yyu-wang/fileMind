@@ -30,8 +30,9 @@ use tauri::Manager as _;
 
 const SIDECAR_PORT: u16 = 8765;
 /// Sidecar 就绪轮询最大尝试次数。
-/// 实测 `PyInstaller` onefile 冷启动需 8~10s 才响应 /health，5s 窗口必然超时，放宽到 20s。
-const MAX_READY_ATTEMPTS: u32 = 200;
+/// 打包态 Sidecar 现包含 lancedb / numpy / pyarrow 等重依赖，冷启动实测约 39s，
+/// 放宽到 60s 窗口（600 × 100ms），避免重依赖场景下握手超时。
+const MAX_READY_ATTEMPTS: u32 = 600;
 /// 每次就绪轮询间隔（毫秒）。
 const READY_POLL_INTERVAL_MS: u64 = 100;
 /// 连续 /health 失败阈值：达到后认为 Sidecar 挂了，触发重启。
