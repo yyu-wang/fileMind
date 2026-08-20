@@ -8,6 +8,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
 import { FilePreviewDrawer } from '@/components/file/FilePreviewDrawer';
+import { useHotkeys } from '@/hooks/useHotkeys';
 import {
   filterFiles,
   sortFiles,
@@ -42,6 +43,17 @@ export function FilesPage() {
   const [statusFilter, setStatusFilter] = useState<'' | FileStatus>('');
   const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
+
+  // T6.10 快捷键：Space 预览选中的第一个文件（无修饰键，输入框内自动跳过）
+  useHotkeys([
+    {
+      key: ' ',
+      handler: () => {
+        const first = files.find((f) => selectedIds.includes(f.id));
+        if (first) setPreviewFile(first);
+      },
+    },
+  ]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();

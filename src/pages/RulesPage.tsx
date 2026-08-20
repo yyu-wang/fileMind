@@ -3,6 +3,7 @@
 // 删除采用二次确认（window.confirm）；启用开关与拖拽排序直接落库。
 
 import { useEffect, useState } from 'react';
+import { EmptyState, LoadingState } from '../components/common/StateViews';
 import { RuleForm } from '../components/rules/RuleForm';
 import { RuleList } from '../components/rules/RuleList';
 import { useRuleStore } from '../stores/ruleStore';
@@ -95,16 +96,17 @@ export function RulesPage() {
 
       <div className="rules-page__body">
         {isLoading ? (
-          <div className="rules-page__loading" role="status">
-            加载规则…
-          </div>
+          <LoadingState text="加载规则…" />
         ) : rules.length === 0 ? (
-          <div className="rules-page__empty">
-            <p className="rules-page__empty-title">暂无自定义规则</p>
-            <p className="rules-page__empty-sub">
-              内置启发式仍会自动分类；新建规则可覆盖默认行为。
-            </p>
-          </div>
+          <EmptyState
+            title="暂无自定义规则"
+            description="内置启发式仍会自动分类；新建规则可覆盖默认行为。"
+            action={
+              <button type="button" className="btn btn--primary" onClick={handleNew}>
+                + 新建规则
+              </button>
+            }
+          />
         ) : (
           <RuleList
             rules={rules}

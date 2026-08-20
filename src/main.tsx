@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { App } from './App';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { applyTheme } from './lib/theme';
 import { useChatStore } from './stores/chatStore';
 import { useFileStore } from './stores/fileStore';
@@ -16,7 +17,9 @@ const rootElement = document.getElementById('root');
 if (rootElement) {
   createRoot(rootElement).render(
     <StrictMode>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   );
 }

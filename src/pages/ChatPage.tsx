@@ -8,6 +8,7 @@ import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { SearchStatusBar } from '@/components/chat/SearchStatusBar';
 import { FilePreviewDrawer } from '@/components/file/FilePreviewDrawer';
+import { useHotkeys } from '@/hooks/useHotkeys';
 import { fileIpc } from '@/lib/ipc';
 import { useChatStore } from '@/stores/chatStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -45,6 +46,9 @@ export function ChatPage() {
   const clearError = useChatStore((s) => s.clearError);
   const totalFiles = useFileStore((s) => s.total);
   const files = useFileStore((s) => s.files);
+
+  // T6.10 快捷键：⌘N 新建对话（清空当前会话）
+  useHotkeys([{ key: 'n', meta: true, handler: clearHistory }]);
 
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
 

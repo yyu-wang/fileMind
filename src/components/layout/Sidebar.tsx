@@ -5,8 +5,9 @@
 //
 // 图标用 inline SVG（不引入图标库，保持依赖最小；T6.4+ 若需再统一引入）
 
-import { useEffect, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { useHotkeys } from '../../hooks/useHotkeys';
 
 interface NavItem {
   to: string;
@@ -64,26 +65,18 @@ export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // 快捷键：⌘1~⌘4 切换前 4 项，⌘, 切换设置
-  useEffect(() => {
-    const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const map: Record<string, string> = {
-        '1': '/',
-        '2': '/classify',
-        '3': '/chat',
-        '4': '/rules',
-        ',': '/settings',
-      };
-      const path = map[e.key];
-      if (path && location.pathname !== path) {
-        e.preventDefault();
-        navigate(path);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navigate, location.pathname]);
+  // T6.10 快捷键：⌘1~⌘4 切换前 4 项，⌘, 切换设置（迁移到统一 useHotkeys）
+  const navigateTo = (path: string) => {
+    if (location.pathname !== path) navigate(path);
+  };
+
+  useHotkeys([
+    { key: '1', meta: true, handler: () => navigateTo('/') },
+    { key: '2', meta: true, handler: () => navigateTo('/classify') },
+    { key: '3', meta: true, handler: () => navigateTo('/chat') },
+    { key: '4', meta: true, handler: () => navigateTo('/rules') },
+    { key: ',', meta: true, handler: () => navigateTo('/settings') },
+  ]);
 
   return (
     <nav className="sidebar" aria-label="主导航">
