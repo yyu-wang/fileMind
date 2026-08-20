@@ -1277,6 +1277,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "env_logger",
+ "futures-util",
  "hex",
  "hmac 0.13.0",
  "keyring",
@@ -4266,6 +4267,7 @@ checksum = "38f9a30cbcbb7011f1da7d73483983bf838af123883e45f2b36ed76328df9c50"
 dependencies = [
  "paste",
  "rustc_version",
+ "serde_json",
  "specta-macros",
 ]
 

@@ -26,13 +26,16 @@ pub struct ClassifyProgressEvent {
     pub category: Option<String>,
 }
 
-/// 对话流式 Token 事件。
+/// 聊天流式事件负载：Rust 代理 Sidecar `/chat/stream` `SSE` 帧后逐帧推送。
+///
+/// 前端通过 `@tauri-apps/api/event.listen('chat://event')` 订阅；
+/// `data` 与 Sidecar `SSE` `data:` 行的 `JSON` 保持一致（`04_API详细规格书` §3.4）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ChatTokenEvent {
-    /// 本帧 Token 文本。
-    pub token: String,
-    /// 是否为最后一帧。
-    pub is_final: bool,
+pub struct ChatEventPayload {
+    /// 事件名（`search_start` / `search_result` / `token` / `retry` / `citation` / `done` / `error`）。
+    pub event: String,
+    /// 事件载荷（与 Sidecar `data:` 行 JSON 一致）。
+    pub data: serde_json::Value,
 }
 
 /// Sidecar 状态变更事件。

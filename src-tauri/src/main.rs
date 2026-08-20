@@ -277,6 +277,8 @@ fn main() {
             sidecar_restart_count: AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
+            // T6.6 RAG 问答（Sidecar /chat/stream SSE 代理）
+            commands::chat::chat_stream,
             // T6.5 智能分类预览（规则引擎 + 启发式）
             commands::classify::classify_preview,
             commands::file_ops::scan_directory,

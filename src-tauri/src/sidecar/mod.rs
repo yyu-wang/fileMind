@@ -2,6 +2,7 @@
 
 pub mod manager;
 pub mod proxy;
+pub mod sse;
 
 pub use manager::{
     current_target_triple, resolve_bundle_binary_path, resolve_bundle_from_resources,

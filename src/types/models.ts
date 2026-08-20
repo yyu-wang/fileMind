@@ -45,12 +45,28 @@ export enum ChatRole {
   System = 'system',
 }
 
+/** RAG 引用（对齐 Sidecar citation 事件：id ⊆ search_result.sources.id）。 */
+export interface ChatCitation {
+  /** 引用来源 id（对应 search_result.sources.id） */
+  id: number;
+  /** 来源文件名 */
+  fileName: string;
+  /** 来源页码（前端预览定位依据） */
+  page: number;
+  /** 引用原文片段 */
+  text: string;
+}
+
 /** 聊天消息（chatStore 使用）。 */
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   content: string;
-  /** RAG 引用来源（T6.6 接入，当前可选） */
-  citations?: Array<{ fileId: string; fileName: string; snippet: string }>;
+  /** RAG 引用来源（T6.6 接入） */
+  citations?: ChatCitation[];
+  /** P-04 自我纠正：重试耗尽时标记低置信度 */
+  lowConfidence?: boolean;
+  /** P-04 自我纠正：实际重试次数 */
+  retries?: number;
   createdAt: string;
 }

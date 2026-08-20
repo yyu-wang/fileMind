@@ -1,5 +1,7 @@
 //! Tauri IPC 命令层：按领域拆分的命令模块。
 
+/// RAG 对话流式命令（Sidecar `/chat/stream` SSE 代理）。
+pub mod chat;
 /// 智能分类预览命令（规则引擎 + 启发式）。
 pub mod classify;
 /// 应用配置读写命令。

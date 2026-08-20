@@ -22,7 +22,7 @@ tauri-plugin-dialog = "2.7"
 tauri-plugin-fs = "2.5"
 # T6.1：单实例插件，防止二次启动产生孤儿 sidecar（第二个进程会抢端口）
 tauri-plugin-single-instance = "2.3"
-specta = "=2.0.0-rc.25"
+specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["javascript", "typescript"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +32,8 @@ thiserror = "2.0"
 rusqlite = { version = "0.39", features = ["bundled"] }
 refinery = { version = "0.9", features = ["rusqlite-bundled"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
+# T6.6 SSE 流式代理：迭代 bytes_stream 逐块喂给 SseParser
+futures-util = "0.3"
 uuid = { version = "1.24", features = ["v4"] }
 sha2 = "0.11"
 hex = "0.4"

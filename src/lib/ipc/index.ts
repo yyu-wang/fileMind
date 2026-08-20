@@ -4,4 +4,5 @@
 // 命令客户端：./fileIpc（薄 re-export 层）
 
 export { fileIpc } from './fileIpc';
+export { chatStream, listenChatEvent, type ChatEvent } from './chatIpc';
 export type * from '../../types/ipc';

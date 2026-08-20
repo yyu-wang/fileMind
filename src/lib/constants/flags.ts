@@ -1,5 +1,5 @@
 export const FEATURE_FLAGS = {
-  RAG_ENABLED: false,
+  RAG_ENABLED: true,
   CLOUD_INFERENCE: false,
   RULE_EDITOR: true,
 } as const;

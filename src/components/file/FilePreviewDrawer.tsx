@@ -23,11 +23,13 @@ type PreviewState =
 interface FilePreviewDrawerProps {
   file: FileInfo | null;
   onClose: () => void;
+  /** 初始页码（引用跳转定位用；txt/md 文本预览 best-effort 忽略） */
+  initialPage?: number;
 }
 
-export function FilePreviewDrawer({ file, onClose }: FilePreviewDrawerProps) {
+export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDrawerProps) {
   const [state, setState] = useState<PreviewState>({ phase: 'loading' });
-  const [pageNumber, setPageNumber] = useState(1);
+  const [pageNumber, setPageNumber] = useState(() => initialPage ?? 1);
   const [numPages, setNumPages] = useState<number | null>(null);
 
   // 状态在 useState 初始化（loading / 第 1 页）；文件切换由父级 key 触发重挂载重置。

@@ -75,6 +75,36 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
     Ok(text)
 }
 
+/// 转发 JSON POST 请求到 Sidecar 并返回流式响应（供 SSE 逐块读取）。
+///
+/// 与 [`forward_post`] 构造签名与请求头一致，但返回原始 `reqwest::Response`，
+/// 调用方通过 `.bytes_stream()` 迭代响应体并逐块喂给 `sse::SseParser`。
+///
+/// # Errors
+///
+/// 签名计算或请求发送失败时返回 `SidecarUnavailable`。
+pub async fn forward_post_stream(
+    path: &str,
+    body: &str,
+    psk: &[u8],
+    seq: u64,
+) -> AppResult<reqwest::Response> {
+    let url = format!("{SIDECAR_BASE_URL}{path}");
+    let canonical = handshake::build_request_canonical("POST", path, body, seq);
+    let signature = handshake::sign(psk, &canonical)?;
+
+    let resp = client()
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header(handshake::SIGNATURE_HEADER, &signature)
+        .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar POST 失败: {e}")))?;
+    Ok(resp)
+}
+
 /// 转发 POST /shutdown 请求到 Sidecar 并返回响应文本。
 ///
 /// 与 [`forward_post`] 的区别：`/shutdown` 无 body，对应 canonical string

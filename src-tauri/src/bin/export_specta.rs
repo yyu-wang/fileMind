@@ -18,6 +18,8 @@ fn main() {
 
     let builder =
         tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
+            // T6.6 RAG 问答（Sidecar /chat/stream SSE 代理）
+            commands::chat::chat_stream,
             // T6.5 智能分类预览（规则引擎 + 启发式）
             commands::classify::classify_preview,
             commands::file_ops::scan_directory,
