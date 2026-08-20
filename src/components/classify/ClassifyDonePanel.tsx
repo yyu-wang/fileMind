@@ -7,6 +7,8 @@ interface ClassifyDonePanelProps {
   summary: ClassifyExecSummary;
   /** 本次是否被用户取消（展示「部分执行」提示） */
   cancelled: boolean;
+  /** 是否存在可撤销的批次（不再依赖 success>0，避免统计异常时隐藏撤销） */
+  canUndo: boolean;
   /** 撤销最近整批 */
   onUndo: () => void;
   /** 完成（回到分类页初始态） */
@@ -16,6 +18,7 @@ interface ClassifyDonePanelProps {
 export function ClassifyDonePanel({
   summary,
   cancelled,
+  canUndo,
   onUndo,
   onFinish,
 }: ClassifyDonePanelProps) {
@@ -50,7 +53,7 @@ export function ClassifyDonePanel({
         )}
       </ul>
       <div className="classify-done__actions">
-        {!cancelled && summary.success > 0 && (
+        {!cancelled && canUndo && (
           <button type="button" className="btn" onClick={onUndo}>
             撤销本批
           </button>

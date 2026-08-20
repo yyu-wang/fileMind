@@ -273,6 +273,51 @@ describe('execute', () => {
     expect(state.execSummary?.success).toBe(50);
     expect(state.progress).toEqual({ done: 50, total: 55 });
   });
+
+  it('resolveConflicts=true includes conflict items and passes the flag', async () => {
+    const items = [
+      makeItem('ok'),
+      makeItem('conf', { status: 'Conflict', conflict_type: 'SameName' }),
+    ];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['ok', 'conf']);
+
+    vi.mocked(fileIpc.executeOperations).mockResolvedValue({
+      status: 'ok',
+      data: okExecute('b1', ['ok', 'conf']),
+    });
+    await useClassifyStore.getState().execute(true);
+
+    const req = vi.mocked(fileIpc.executeOperations).mock.calls[0][0];
+    expect(req.resolve_conflicts).toBe(true);
+    expect(req.plan.map((p) => p.file_id)).toEqual(['ok', 'conf']);
+    expect(useClassifyStore.getState().execSummary?.success).toBe(2);
+  });
+
+  it('default execute excludes conflict items without resolving', async () => {
+    const items = [
+      makeItem('ok'),
+      makeItem('conf', { status: 'Conflict', conflict_type: 'SameName' }),
+    ];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['ok', 'conf']);
+
+    vi.mocked(fileIpc.executeOperations).mockResolvedValue({
+      status: 'ok',
+      data: okExecute('b1', ['ok']),
+    });
+    await useClassifyStore.getState().execute();
+
+    const req = vi.mocked(fileIpc.executeOperations).mock.calls[0][0];
+    expect(req.resolve_conflicts).toBe(false);
+    expect(req.plan.map((p) => p.file_id)).toEqual(['ok']);
+  });
 });
 
 describe('undoLastBatch', () => {

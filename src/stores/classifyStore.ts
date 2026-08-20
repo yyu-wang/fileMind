@@ -74,8 +74,8 @@ interface ClassifyState {
   assignCategory: (fileId: string, category: Category) => void;
   /** 批量手动指定分类（T6.12 增强：一次 set 更新多个文件，避免逐点过慢） */
   assignCategories: (fileIds: string[], category: Category) => void;
-  /** 分块执行已确认分类（不含待确认/冲突项） */
-  execute: () => Promise<void>;
+  /** 分块执行已确认分类；`resolveConflicts=true` 时冲突项按 Rename 策略一并执行（确认执行全部） */
+  execute: (resolveConflicts?: boolean) => Promise<void>;
   /** 暂停执行 */
   pause: () => void;
   /** 继续执行 */
@@ -270,17 +270,25 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     });
   },
 
-  execute: async () => {
+  execute: async (resolveConflicts = false) => {
     const preview = get().preview;
     if (!preview) {
       set({ status: ClassifyStatus.Idle, error: '尚未生成分类预览' });
       return;
     }
+    // resolveConflicts=true（确认执行全部）：冲突项也纳入 plan，由 Rust 按 Rename 重算执行
     const execItems = preview.items.filter(
-      (item) => item.category_name != null && item.status === 'Ok',
+      (item) => item.category_name != null && (resolveConflicts || item.status === 'Ok'),
     );
     if (execItems.length === 0) {
-      set({ status: ClassifyStatus.Done, execSummary: buildSummary(preview, 0, 0) });
+      // 本次无可执行项：全部待确认（未分类）或已分类但目标冲突。
+      // 保留 lastBatchId（上次批次仍可撤销），并给出原因提示避免困惑。
+      const hasCategorized = preview.items.some((i) => i.category_name != null);
+      set({
+        status: ClassifyStatus.Done,
+        execSummary: buildSummary(preview, 0, 0),
+        error: hasCategorized ? '没有可执行的分类项（文件已分类或目标冲突）' : null,
+      });
       return;
     }
 
@@ -300,6 +308,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         batch_id: preview.batch_id,
         plan: chunk,
         exclude_file_ids: [],
+        resolve_conflicts: resolveConflicts,
       });
       if (result.status === 'error') {
         failed += chunk.length;
@@ -323,8 +332,9 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
 
     const nextStatus = control.cancelled ? ClassifyStatus.Cancelled : ClassifyStatus.Done;
     set({ status: nextStatus, execSummary: buildSummary(preview, success, failed) });
-    // 移动/打标已落库，刷新文件页列表（幂等，失败不影响本次状态）
-    void useFileStore.getState().loadAllFiles();
+    // 移动/打标已落库：只刷新轻量统计，不拉全量文件列表——
+    // 文件库可达数十万级，全量刷新（loadAllFiles）会卡死 UI；列表由用户手动「刷新」。
+    void useFileStore.getState().loadStats();
   },
 
   pause: () => {
@@ -355,7 +365,8 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     const result = await fileIpc.undoBatch(batchId);
     if (result.status === 'ok') {
       set({ status: ClassifyStatus.Idle, lastBatchId: null, progress: INITIAL_PROGRESS });
-      void useFileStore.getState().loadAllFiles();
+      // 同 execute：撤销后只刷统计，避免数十万级全量刷新卡 UI
+      void useFileStore.getState().loadStats();
     } else {
       set({ error: result.error });
     }

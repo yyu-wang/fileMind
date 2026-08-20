@@ -319,8 +319,31 @@ fn execute_operations_inner(
             continue;
         }
 
-        // 跳过非 Ok 状态的 plan（Conflict/Error 不执行）
-        if item.status != PlanStatus::Ok {
+        // 「确认执行全部」（resolve_conflicts=true）：冲突项按 Rename 策略重算目标路径
+        // （stem_1.ext 递增到不冲突），纳入执行；否则冲突项与 Error 项一律跳过。
+        let resolved = if item.status == PlanStatus::Conflict && request.resolve_conflicts {
+            item.new_path.as_ref().and_then(|np| {
+                Path::new(np).parent().map(|dir| {
+                    let (path, status, _) = conflict_resolver::resolve(
+                        &item.file_name,
+                        Path::new(&item.original_path),
+                        dir,
+                        ConflictStrategy::Rename,
+                    );
+                    let mut r = item.clone();
+                    r.new_path = path.map(|p| p.to_string_lossy().to_string());
+                    r.status = status;
+                    r
+                })
+            })
+        } else {
+            None
+        };
+
+        // 解析后仍非 Ok（非冲突项 / 未要求解析 / 重算异常）→ 跳过
+        if item.status != PlanStatus::Ok
+            && !matches!(&resolved, Some(r) if r.status == PlanStatus::Ok)
+        {
             summary.skipped += 1;
             results.push(ExecuteResult {
                 file_id: item.file_id.clone(),
@@ -335,9 +358,12 @@ fn execute_operations_inner(
             continue;
         }
 
-        let prev_hash = prev_hash_map.get(&item.file_id).cloned().flatten();
+        // 实际执行目标：Rename 重算后的项（冲突项）或原项（Ok 项）
+        let exec_item = resolved.as_ref().unwrap_or(item);
+
+        let prev_hash = prev_hash_map.get(&exec_item.file_id).cloned().flatten();
         let (success, error, current_hash) =
-            operation_executor::execute_plan_item(item, prev_hash.clone());
+            operation_executor::execute_plan_item(exec_item, prev_hash.clone());
 
         if success {
             summary.success += 1;
@@ -349,9 +375,9 @@ fn execute_operations_inner(
         let log = OperationLog {
             id: uuid::Uuid::new_v4().to_string(),
             batch_id: request.batch_id.clone(),
-            operation_type: format!("{:?}", item.operation).to_lowercase(),
-            source_path: item.original_path.clone(),
-            target_path: item.new_path.clone().unwrap_or_default(),
+            operation_type: format!("{:?}", exec_item.operation).to_lowercase(),
+            source_path: exec_item.original_path.clone(),
+            target_path: exec_item.new_path.clone().unwrap_or_default(),
             status: if success { "done" } else { "failed" }.into(),
             prev_hash: prev_hash.clone().unwrap_or_default(),
             current_hash: current_hash.clone().unwrap_or_default(),
@@ -365,17 +391,19 @@ fn execute_operations_inner(
         if success {
             if let Ok(guard) = state.db.lock() {
                 let conn = guard.conn();
-                match item.operation {
+                match exec_item.operation {
                     OperationType::Delete => {
-                        if let Err(e) = FileRepo::soft_delete(conn, &item.file_id) {
+                        if let Err(e) = FileRepo::soft_delete(conn, &exec_item.file_id) {
                             log::warn!(
                                 "execute_operations soft_delete 失败（不影响执行结果）: {e}"
                             );
                         }
                     }
                     OperationType::Move | OperationType::Rename => {
-                        if let Some(new_path) = &item.new_path {
-                            if let Err(e) = FileRepo::update_path(conn, &item.file_id, new_path) {
+                        if let Some(new_path) = &exec_item.new_path {
+                            if let Err(e) =
+                                FileRepo::update_path(conn, &exec_item.file_id, new_path)
+                            {
                                 log::warn!(
                                     "execute_operations update_path 失败（不影响执行结果）: {e}"
                                 );
@@ -390,10 +418,10 @@ fn execute_operations_inner(
         }
 
         results.push(ExecuteResult {
-            file_id: item.file_id.clone(),
-            operation: item.operation.clone(),
-            source_path: item.original_path.clone(),
-            target_path: item.new_path.clone(),
+            file_id: exec_item.file_id.clone(),
+            operation: exec_item.operation.clone(),
+            source_path: exec_item.original_path.clone(),
+            target_path: exec_item.new_path.clone(),
             success,
             error,
             prev_hash,
@@ -543,6 +571,45 @@ fn scan_files_on_disk(root: &Path) -> AppResult<Vec<FileInfo>> {
     Ok(files)
 }
 
+/// 扫描时跳过的目录名（任意层级命中即跳过，不区分大小写）。
+///
+/// 主要针对工程代码库的依赖/构建/版本控制目录：`node_modules` 等动辄数十万文件，
+/// 入库会拖垮文件库规模与 UI 性能（见历史问题：63.9 万文件卡死）。
+const SKIP_DIR_NAMES: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    "dist",
+    "build",
+    "target",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".idea",
+    ".vscode",
+    "vendor",
+];
+
+/// 扫描时跳过的文件（垃圾/临时文件，不区分大小写）。
+const SKIP_FILE_NAMES: &[&str] = &[".ds_store", "thumbs.db"];
+
+/// 判断目录名是否命中跳过黑名单。
+fn is_skipped_dir(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    SKIP_DIR_NAMES.contains(&lower.as_str())
+}
+
+/// 判断文件名是否命中跳过黑名单。
+fn is_skipped_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    SKIP_FILE_NAMES.contains(&lower.as_str())
+}
+
 /// 递归遍历目录，超过最大深度时跳过并记录警告。
 fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppResult<()> {
     if depth > MAX_SCAN_DEPTH {
@@ -553,10 +620,20 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
 
         if path.is_dir() {
+            // 黑名单目录（node_modules/.git 等）整体跳过，不递归、不入库
+            if is_skipped_dir(&name) {
+                log::debug!("扫描跳过黑名单目录: {}", path.display());
+                continue;
+            }
             scan_dir_recursive(&path, files, depth + 1)?;
         } else if path.is_file() {
+            // 垃圾/临时文件（.DS_Store 等）跳过
+            if is_skipped_file(&name) {
+                continue;
+            }
             let metadata = entry.metadata()?;
             let created_at = metadata
                 .created()
@@ -732,6 +809,9 @@ pub struct ExecuteRequest {
     pub plan: Vec<PlanItem>,
     /// 用户在预览后取消勾选的文件 ID 列表（执行时跳过这些项，计入 summary.skipped）。
     pub exclude_file_ids: Vec<String>,
+    /// 是否解析冲突项：`true` 时对 `Conflict` 项按 Rename 策略重算目标路径一并执行
+    /// （对应「确认执行全部」）；`false` 时冲突项跳过（对应「仅执行无冲突项」）。
+    pub resolve_conflicts: bool,
 }
 
 /// 单项执行结果（API §s2-2b `results[]`）。
@@ -856,6 +936,68 @@ mod tests {
 
         let files = scan_files_on_disk(tmp.path())?;
         assert!(files.iter().all(|f| f.file_name != "deep.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_skips_blacklist_dirs() -> Result<(), Box<dyn std::error::Error>> {
+        // 黑名单目录（node_modules/.git/dist/target/__pycache__/venv）整体跳过
+        let tmp = tempfile::tempdir()?;
+        for dir in [
+            "node_modules",
+            ".git",
+            "dist",
+            "target",
+            "__pycache__",
+            ".venv",
+        ] {
+            std::fs::create_dir_all(tmp.path().join(dir))?;
+            create_temp_file(&tmp.path().join(dir), "ignored.js", "x")?;
+        }
+        // 嵌套黑名单：src/node_modules/ 也应跳过
+        std::fs::create_dir_all(tmp.path().join("src/node_modules/pkg"))?;
+        create_temp_file(&tmp.path().join("src/node_modules/pkg"), "deep.js", "x")?;
+        // 正常文件应保留
+        create_temp_file(tmp.path(), "keep.txt", "keep")?;
+        create_temp_file(&tmp.path().join("src"), "keep2.txt", "keep")?;
+
+        let files = scan_files_on_disk(tmp.path())?;
+        let names: Vec<&str> = files.iter().map(|f| f.file_name.as_str()).collect();
+        assert!(names.contains(&"keep.txt"));
+        assert!(names.contains(&"keep2.txt"));
+        assert!(
+            !names.iter().any(|n| *n == "ignored.js"),
+            "黑名单目录内文件不应被扫描: {names:?}"
+        );
+        assert!(!names.contains(&"deep.js"), "嵌套黑名单目录应跳过");
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_skips_blacklist_case_insensitive() -> Result<(), Box<dyn std::error::Error>> {
+        // 目录名大小写不敏感：Node_Modules 也应跳过
+        let tmp = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp.path().join("Node_Modules"))?;
+        create_temp_file(&tmp.path().join("Node_Modules"), "a.js", "x")?;
+        create_temp_file(tmp.path(), "keep.txt", "keep")?;
+
+        let files = scan_files_on_disk(tmp.path())?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name, "keep.txt");
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_skips_garbage_files() -> Result<(), Box<dyn std::error::Error>> {
+        // .DS_Store / Thumbs.db 垃圾文件跳过（大小写不敏感）
+        let tmp = tempfile::tempdir()?;
+        create_temp_file(tmp.path(), ".DS_Store", "")?;
+        create_temp_file(tmp.path(), "Thumbs.db", "")?;
+        create_temp_file(tmp.path(), "real.txt", "x")?;
+
+        let files = scan_files_on_disk(tmp.path())?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name, "real.txt");
         Ok(())
     }
 
@@ -1433,6 +1575,7 @@ mod tests {
                 batch_id: preview.batch_id.clone(),
                 plan: preview.plan.clone(),
                 exclude_file_ids: exclude,
+                resolve_conflicts: false,
             },
             state,
         )?;
@@ -1511,6 +1654,7 @@ mod tests {
                 batch_id: preview.batch_id.clone(),
                 plan: preview.plan.clone(),
                 exclude_file_ids: vec![excluded_id.clone()],
+                resolve_conflicts: false,
             },
             &state,
         )?;
@@ -1629,6 +1773,7 @@ mod tests {
                 batch_id: preview.batch_id.clone(),
                 plan: preview.plan.clone(),
                 exclude_file_ids: vec![],
+                resolve_conflicts: false,
             },
             &state,
         )?;
@@ -1644,6 +1789,100 @@ mod tests {
             .map_err(|e| e.to_string())?;
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].status, "failed");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // T6.x 冲突项 Rename 解析（确认执行全部）
+    // ------------------------------------------------------------------
+
+    /// 构造冲突项 plan：目标目录已有同名文件 → status=Conflict。
+    fn make_conflict_plan(
+        state: &AppState,
+        scan_root: &Path,
+        target_dir: &Path,
+        name: &str,
+    ) -> Result<(String, Vec<PlanItem>), Box<dyn std::error::Error>> {
+        // 目标目录已存在同名文件 → 构造 Conflict 项
+        std::fs::write(target_dir.join(name), b"existing")?;
+        std::fs::write(scan_root.join(name), b"src")?;
+        let ids = seed_files_for_preview(state, scan_root, &[name])?;
+        let plan = vec![PlanItem {
+            file_id: ids[0].clone(),
+            file_name: name.to_string(),
+            original_path: scan_root.join(name).to_string_lossy().to_string(),
+            new_path: Some(target_dir.join(name).to_string_lossy().to_string()),
+            operation: OperationType::Move,
+            status: PlanStatus::Conflict,
+            conflict_type: Some(ConflictType::SameName),
+        }];
+        Ok((ids[0].clone(), plan))
+    }
+
+    #[test]
+    fn test_execute_resolve_conflicts_renames_target() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (file_id, plan) =
+            make_conflict_plan(&state, scan_root.path(), target_dir.path(), "a.txt")?;
+        let exec = execute_operations_inner(
+            ExecuteRequest {
+                batch_id: "b-resolve".into(),
+                plan,
+                exclude_file_ids: vec![],
+                resolve_conflicts: true,
+            },
+            &state,
+        )?;
+
+        // 冲突项经 Rename 解析后执行成功：生成 a_1.txt，原同名文件保留
+        assert_eq!(exec.summary.total, 1);
+        assert_eq!(exec.summary.success, 1);
+        assert_eq!(exec.summary.skipped, 0);
+        assert!(target_dir.path().join("a_1.txt").exists(), "应生成 a_1.txt");
+        assert!(target_dir.path().join("a.txt").exists(), "原同名文件应保留");
+        assert!(!scan_root.path().join("a.txt").exists(), "源文件应已移走");
+
+        // files 表路径回写到 a_1.txt
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        let rec = FileRepo::get_by_id(guard.conn(), &file_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("文件应存在")?;
+        assert!(
+            rec.path.ends_with("a_1.txt"),
+            "files.path 应回写为 a_1.txt: {}",
+            rec.path
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_execute_skips_conflicts_when_not_resolving() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let target_dir = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let (_, plan) = make_conflict_plan(&state, scan_root.path(), target_dir.path(), "a.txt")?;
+        let exec = execute_operations_inner(
+            ExecuteRequest {
+                batch_id: "b-skip".into(),
+                plan,
+                exclude_file_ids: vec![],
+                resolve_conflicts: false,
+            },
+            &state,
+        )?;
+
+        // 不解析冲突：跳过，源文件不动
+        assert_eq!(exec.summary.total, 1);
+        assert_eq!(exec.summary.success, 0);
+        assert_eq!(exec.summary.skipped, 1);
+        assert!(scan_root.path().join("a.txt").exists());
+        assert!(!target_dir.path().join("a_1.txt").exists());
         Ok(())
     }
 }
