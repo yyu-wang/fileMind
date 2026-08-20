@@ -2,8 +2,11 @@
 //
 // 三个选项：Local（推荐）/ Cloud / Hybrid（禁用，T11）
 // 选 Local → 直接进 directory；选 Cloud → 进 consent
+//
+// Ollama 检测占位 → 真实探测（T6.7）：挂载时 probeOllama，提示条反映真实状态。
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { InferenceMode } from '../../types/ipc';
 
 interface StepModeSelectProps {
@@ -51,6 +54,29 @@ const MODE_OPTIONS: ModeOption[] = [
 
 export function StepModeSelect({ onNext }: StepModeSelectProps) {
   const [selected, setSelected] = useState<ModeOptionValue>('Local');
+  const ollamaStatus = useSettingsStore((s) => s.ollamaStatus);
+  const ollamaProbing = useSettingsStore((s) => s.ollamaProbing);
+  const probeOllama = useSettingsStore((s) => s.probeOllama);
+
+  useEffect(() => {
+    void probeOllama();
+  }, [probeOllama]);
+
+  const ollamaHint = ollamaProbing ? (
+    <div className="onboarding__hint">⏳ 正在检测本地 Ollama...</div>
+  ) : ollamaStatus?.available ? (
+    <div className="onboarding__hint onboarding__hint--success">
+      ✓ 已检测到 Ollama · 推荐本地模式
+    </div>
+  ) : ollamaStatus ? (
+    <div className="onboarding__hint onboarding__hint--warn">
+      ⚠️ 未检测到本地 Ollama。本地模式需要先安装并启动 Ollama。
+    </div>
+  ) : (
+    <div className="onboarding__hint onboarding__hint--warn">
+      ⚠️ 暂时无法检测 Ollama，请稍后重试。
+    </div>
+  );
 
   return (
     <div className="onboarding__step">
@@ -59,10 +85,7 @@ export function StepModeSelect({ onNext }: StepModeSelectProps) {
         这决定你的文件数据在哪里被 AI 处理。你可以随时在设置中更改。
       </p>
 
-      {/* Ollama 检测提示（静态占位，实际检测留 T6.7） */}
-      <div className="onboarding__hint onboarding__hint--success">
-        ✓ 已检测到 Ollama · 显存 8GB · 推荐本地模式
-      </div>
+      {ollamaHint}
 
       <div className="onboarding__options" role="radiogroup" aria-label="推理模式选择">
         {MODE_OPTIONS.map((opt) => (

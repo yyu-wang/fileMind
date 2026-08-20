@@ -225,3 +225,57 @@ class RebuildStatusResponse(BaseModel):
     est_remaining_minutes: int | None = Field(description="预估剩余分钟（done=0 时为 None）")
     can_pause: bool = Field(description="是否可暂停（仅 in_progress）")
     can_resume: bool = Field(description="是否可恢复（paused/failed 状态）")
+
+
+class OllamaModelInfo(BaseModel):
+    """本地 Ollama 已安装的生成模型信息（来自 /api/tags，T6.7 探测用）。"""
+
+    name: str
+    size_bytes: int = Field(ge=0, description="模型文件大小（字节）")
+    family: str | None = Field(default=None, description="模型家族（details.family，可能缺失）")
+    modified_at: str | None = Field(default=None, description="最近修改时间（ISO 8601）")
+
+
+class EmbeddingModelAvailability(BaseModel):
+    """单个 Embedding 模型在本地 Ollama 的可用性（T6.7 探测用）。"""
+
+    name: str
+    dim: int = Field(ge=0, description="向量维度")
+    version: int = Field(ge=1, description="当前分配版本号")
+    available: bool = Field(description="对应 Ollama 模型是否已安装")
+
+
+class InferenceTestResponse(BaseModel):
+    """POST /inference/test 返回：本地 Ollama 推理环境探测结果。
+
+    Ollama 不可用时仍返回 HTTP 200（探测是轻量状态查询，不应让应用 5xx），
+    ``available=false`` + ``error_code='OLLAMA_UNAVAILABLE'`` 供前端展示。
+    """
+
+    available: bool
+    status: str = Field(description="ok | unavailable")
+    llm_models: list[OllamaModelInfo] = Field(default_factory=list)
+    embedding_models: list[EmbeddingModelAvailability] = Field(default_factory=list)
+    error_code: str | None = Field(default=None, description="OLLAMA_UNAVAILABLE 等错误码")
+    message: str | None = Field(default=None, description="人类可读的失败原因（展示用）")
+
+
+class _OllamaTagDetails(BaseModel):
+    """/api/tags 单个模型的 details 字段（可缺失，仅取 family）。"""
+
+    family: str | None = None
+
+
+class _OllamaTagModel(BaseModel):
+    """/api/tags 单个模型条目（对齐 Ollama HTTP API 实际字段）。"""
+
+    name: str
+    size: int = 0
+    modified_at: str = ""
+    details: _OllamaTagDetails | None = None
+
+
+class _OllamaTagsResponse(BaseModel):
+    """GET {OLLAMA_HOST}/api/tags 响应体。"""
+
+    models: list[_OllamaTagModel] = Field(default_factory=list)

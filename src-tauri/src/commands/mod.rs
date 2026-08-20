@@ -14,3 +14,5 @@ pub mod file_preview;
 pub mod file_query;
 /// 推理模式管理与转发命令。
 pub mod inference;
+/// Ollama 推理环境探测命令（Sidecar `/inference/test` 代理）。
+pub mod ollama;

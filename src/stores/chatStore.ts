@@ -17,8 +17,6 @@ import { useSettingsStore } from './settingsStore';
 import { ChatRole, type ChatCitation, type ChatMessage } from '../types/models';
 import type { ChatStreamRequest, ChatTurn } from '../types/ipc';
 
-/** 生成模型名（对齐 Sidecar `ChatStreamRequest` 默认）。 */
-const LLM_MODEL_DEFAULT = 'qwen3.8-27b';
 /** 向量检索候选数。 */
 const TOP_K = 20;
 /** 重排后保留数。 */
@@ -120,7 +118,7 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
     table_name: `documents_${embeddingModel}_v1`,
     embedding_model: embeddingModel,
     inference_mode: settings.inferenceMode.toLowerCase(),
-    llm_model: LLM_MODEL_DEFAULT,
+    llm_model: settings.llmModel || 'qwen3.8-27b',
     top_k: TOP_K,
     rerank_top_k: RERANK_TOP_K,
     max_retries: MAX_RETRIES,

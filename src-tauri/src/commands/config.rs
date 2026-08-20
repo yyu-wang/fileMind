@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub inference_mode: String,
     /// 本地 Embedding 模型名称。
     pub embedding_model: String,
+    /// 本地 LLM 推理模型名称（聊天/分类使用）。
+    pub llm_model: String,
     /// 参与扫描的最大单文件大小（MB）。
     // specta-typescript 默认禁止 u64 导出；MB 单位下 u32 已足够，但保留 u64 语义
     #[specta(type = specta_typescript::Number)]
@@ -51,6 +53,7 @@ impl Default for AppConfig {
             data_directory: format!("{home}/.filemind"),
             inference_mode: "local".to_string(),
             embedding_model: "bge-large-zh-v1.5".to_string(),
+            llm_model: "qwen3.8-27b".to_string(),
             max_file_size_mb: 100,
             language: "zh-CN".to_string(),
             onboarding_completed: false,

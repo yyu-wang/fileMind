@@ -10,7 +10,14 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { fileIpc } from '../lib/ipc';
-import type { AppConfig, CloudProvider, InferenceMode } from '../types/ipc';
+import type {
+  AppConfig,
+  CloudProvider,
+  EmbeddingModelAvailability,
+  InferenceMode,
+  OllamaModelInfo,
+  OllamaStatus,
+} from '../types/ipc';
 
 interface SettingsState {
   /** 当前推理模式（默认本地） */
@@ -33,11 +40,23 @@ interface SettingsState {
   isLoading: boolean;
   /** 错误信息（null 表示无错误） */
   error: string | null;
+  /** Ollama 探测结果（null 表示未探测或探测失败） */
+  ollamaStatus: OllamaStatus | null;
+  /** Ollama 探测中 */
+  ollamaProbing: boolean;
+  /** 可选的 LLM 模型列表（来自 Ollama 探测） */
+  llmModelOptions: OllamaModelInfo[];
+  /** Embedding 模型可用性列表（来自 Ollama 探测） */
+  embeddingModelOptions: EmbeddingModelAvailability[];
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
   /** 切换推理模式（需用户主动调用，记录审计日志） */
   setInferenceMode: (mode: InferenceMode) => Promise<void>;
+  /** 探测本地 Ollama 环境（可用性 + 模型列表，设置页/引导页调用） */
+  probeOllama: () => Promise<void>;
+  /** 切换本地 LLM 模型（乐观更新 + 持久化） */
+  setLlmModel: (name: string) => Promise<void>;
   /** 更新配置（部分字段） */
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
   /** 签署云端同意书 */
@@ -54,7 +73,7 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       inferenceMode: 'Local',
-      llmModel: 'Ollama · Qwen2.5:7B',
+      llmModel: 'qwen3.8-27b',
       dataDirectory: '',
       embeddingModel: 'bge-small-zh',
       maxFileSizeMb: 100,
@@ -63,6 +82,10 @@ export const useSettingsStore = create<SettingsState>()(
       cloudConsentSigned: false,
       isLoading: true,
       error: null,
+      ollamaStatus: null,
+      ollamaProbing: false,
+      llmModelOptions: [],
+      embeddingModelOptions: [],
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
@@ -78,7 +101,7 @@ export const useSettingsStore = create<SettingsState>()(
             language: cfg.language,
             onboardingCompleted: cfg.onboarding_completed,
             cloudConsentSigned: cfg.cloud_consent_signed,
-            llmModel: getLlmModelLabel(mode),
+            llmModel: cfg.llm_model,
             isLoading: false,
           });
         } else {
@@ -90,11 +113,36 @@ export const useSettingsStore = create<SettingsState>()(
         // source='ui' 标识来自前端用户主动操作（04 API §2-3b 安全约束）
         const result = await fileIpc.setInferenceMode(mode, 'ui');
         if (result.status === 'ok') {
-          set({ inferenceMode: mode, llmModel: getLlmModelLabel(mode) });
+          // 模式切换不改变用户已选的 LLM 模型（llmModel 保持真实模型名）
+          set({ inferenceMode: mode });
         } else {
           set({ error: result.error });
           throw new Error(result.error);
         }
+      },
+
+      probeOllama: async () => {
+        set({ ollamaProbing: true, error: null });
+        try {
+          const result = await fileIpc.ollamaStatus();
+          if (result.status === 'ok') {
+            set({
+              ollamaStatus: result.data,
+              llmModelOptions: result.data.llm_models,
+              embeddingModelOptions: result.data.embedding_models,
+            });
+          } else {
+            set({ ollamaStatus: null, error: result.error });
+          }
+        } finally {
+          set({ ollamaProbing: false });
+        }
+      },
+
+      setLlmModel: async (name) => {
+        // 乐观更新本地值，持久化失败时由调用方（设置页）回滚提示
+        set({ llmModel: name });
+        await get().updateConfig({ llm_model: name });
       },
 
       updateConfig: async (partial) => {
@@ -104,6 +152,7 @@ export const useSettingsStore = create<SettingsState>()(
           data_directory: partial.data_directory ?? current.dataDirectory,
           inference_mode: partial.inference_mode ?? current.inferenceMode.toLowerCase(),
           embedding_model: partial.embedding_model ?? current.embeddingModel,
+          llm_model: partial.llm_model ?? current.llmModel,
           max_file_size_mb: partial.max_file_size_mb ?? current.maxFileSizeMb,
           language: partial.language ?? current.language,
           onboarding_completed: partial.onboarding_completed ?? current.onboardingCompleted,
@@ -139,7 +188,6 @@ export const useSettingsStore = create<SettingsState>()(
           set({
             cloudConsentSigned: false,
             inferenceMode: 'Local',
-            llmModel: getLlmModelLabel('Local'),
           });
         } else {
           set({ error: result.error });
@@ -177,9 +225,4 @@ function normalizeInferenceMode(raw: string): InferenceMode {
   if (lower === 'cloud') return 'Cloud';
   // 默认 Local（含未知值兜底，避免前端崩溃）
   return 'Local';
-}
-
-/** 根据推理模式返回状态栏显示的模型名。 */
-function getLlmModelLabel(mode: InferenceMode): string {
-  return mode === 'Cloud' ? 'OpenAI · gpt-4o-mini' : 'Ollama · Qwen2.5:7B';
 }

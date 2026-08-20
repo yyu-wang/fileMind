@@ -8,7 +8,7 @@ use crate::commands::config::{AppConfig, CloudProvider};
 use crate::error::AppResult;
 
 const SELECT_CONFIG_SQL: &str = "
-    SELECT data_directory, inference_mode, embedding_model, max_file_size_mb,
+    SELECT data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
            language, onboarding_completed,
            cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
            cloud_consent_signed_at
@@ -17,15 +17,16 @@ const SELECT_CONFIG_SQL: &str = "
 
 const UPSERT_CONFIG_SQL: &str = "
     INSERT INTO app_config (
-        id, data_directory, inference_mode, embedding_model, max_file_size_mb,
+        id, data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
         language, onboarding_completed,
         cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
         cloud_consent_signed_at
-    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
     ON CONFLICT(id) DO UPDATE SET
         data_directory = excluded.data_directory,
         inference_mode = excluded.inference_mode,
         embedding_model = excluded.embedding_model,
+        llm_model = excluded.llm_model,
         max_file_size_mb = excluded.max_file_size_mb,
         language = excluded.language,
         onboarding_completed = excluded.onboarding_completed,
@@ -85,6 +86,7 @@ impl ConfigRepo {
                 config.data_directory,
                 config.inference_mode,
                 config.embedding_model,
+                config.llm_model,
                 max_file_size,
                 config.language,
                 bool_to_int(config.onboarding_completed),
@@ -131,20 +133,21 @@ impl ConfigRepo {
 /// `max_file_size_mb` 字段：`SQLite` 不支持 u64，存读 i64，值域远小于 i64 正数范围不会 wrap。
 #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
 fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
-    let onboarding_int: i64 = row.get(5)?;
-    let consent_int: i64 = row.get(6)?;
-    let provider_str: Option<String> = row.get(8)?;
+    let onboarding_int: i64 = row.get(6)?;
+    let consent_int: i64 = row.get(7)?;
+    let provider_str: Option<String> = row.get(9)?;
     Ok(AppConfig {
         data_directory: row.get(0)?,
         inference_mode: row.get(1)?,
         embedding_model: row.get(2)?,
-        max_file_size_mb: row.get::<_, i64>(3)? as u64,
-        language: row.get(4)?,
+        llm_model: row.get(3)?,
+        max_file_size_mb: row.get::<_, i64>(4)? as u64,
+        language: row.get(5)?,
         onboarding_completed: int_to_bool(onboarding_int),
         cloud_consent_signed: int_to_bool(consent_int),
-        cloud_consent_version: row.get(7)?,
+        cloud_consent_version: row.get(8)?,
         cloud_consent_provider: provider_str.as_deref().map(str_to_provider),
-        cloud_consent_signed_at: row.get(9)?,
+        cloud_consent_signed_at: row.get(10)?,
     })
 }
 
@@ -215,6 +218,7 @@ mod tests {
         let db = open_test_db();
         let config = ConfigRepo::get(db.conn()).expect("读取默认配置");
         assert_eq!(config.inference_mode, "local");
+        assert_eq!(config.llm_model, "qwen3.8-27b");
         assert!(!config.onboarding_completed);
         assert!(!config.cloud_consent_signed);
         assert!(config.cloud_consent_version.is_none());
@@ -226,6 +230,7 @@ mod tests {
         let mut config = ConfigRepo::get(db.conn()).unwrap();
         config.data_directory = "/tmp/test".to_string();
         config.inference_mode = "cloud".to_string();
+        config.llm_model = "qwen3.8-14b".to_string();
         config.onboarding_completed = true;
         config.max_file_size_mb = 200;
         ConfigRepo::upsert(db.conn(), &config).unwrap();
@@ -233,6 +238,7 @@ mod tests {
         let reloaded = ConfigRepo::get(db.conn()).unwrap();
         assert_eq!(reloaded.data_directory, "/tmp/test");
         assert_eq!(reloaded.inference_mode, "cloud");
+        assert_eq!(reloaded.llm_model, "qwen3.8-14b");
         assert!(reloaded.onboarding_completed);
         assert_eq!(reloaded.max_file_size_mb, 200);
     }

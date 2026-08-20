@@ -51,6 +51,7 @@ describe('chatStore 流式渲染', () => {
     useSettingsStore.setState({
       embeddingModel: 'bge-large-zh-v1.5',
       inferenceMode: 'Local',
+      llmModel: 'qwen3.8-27b',
     });
   });
 
