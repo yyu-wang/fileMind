@@ -101,6 +101,18 @@ def _context_block(chunk: SourceChunk) -> str:
     )
 
 
+def format_context_blocks(chunks: list[SourceChunk]) -> str:
+    """把检索片段格式化为上下文块（P-03 生成与 P-04 验证共用同一事实依据）。
+
+    Args:
+        chunks: 重排序后的检索片段（按 citation_id 升序）。
+
+    Returns:
+        多片段 ``\\n\\n`` 连接文本。
+    """
+    return "\n\n".join(_context_block(c) for c in chunks)
+
+
 def build_rag_prompt(query: str, chunks: list[SourceChunk]) -> tuple[str, str]:
     """按 P-03 模板构建 (system, user) 消息对。
 
@@ -111,10 +123,9 @@ def build_rag_prompt(query: str, chunks: list[SourceChunk]) -> tuple[str, str]:
     Returns:
         (system_prompt, user_prompt) 二元组，直接传入流式聊天调用。
     """
-    blocks = "\n\n".join(_context_block(c) for c in chunks)
     user = _USER_TEMPLATE.format(
         user_query=query,
-        context_blocks=blocks,
+        context_blocks=format_context_blocks(chunks),
         example=_FEW_SHOT_EXAMPLE,
     )
     return _SYSTEM_TEMPLATE, user

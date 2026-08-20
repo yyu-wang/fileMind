@@ -1,14 +1,16 @@
 """RAG 问答路由：/chat/stream SSE 流式输出。
 
-编排（T5.6，依赖 T5.3/T5.4/T5.5）：
+编排（T5.6/T5.7，依赖 T5.3/T5.4/T5.5）：
     查询改写（P-02）→ 混合检索（RRF 融合）→ BGE-reranker 重排序 →
-    P-03 流式生成（逐 token + 引用标注）。
+    P-03 流式生成（逐 token + 引用标注）→ P-04 自我纠正（幻觉检测，最多重试）。
 
 FTS5 由 Rust 层执行（Sidecar 永不碰 SQLite），命中含文本经请求体
-``fts_chunks`` 传入；本路由只做向量检索 + 融合 + 重排 + 生成。
+``fts_chunks`` 传入；本路由只做向量检索 + 融合 + 重排 + 生成 + 自我纠正。
 
 SSE 事件契约（04_API详细规格书 §3.4 + IT-005）：
     search_start → search_result → token* → citation → done / error
+    （P-04 检测到问题且重试次数 < max_retries 时：token* → retry → token* → citation → done；
+      重试耗尽仍失败：done 带 low_confidence: true）
 """
 
 from __future__ import annotations
@@ -31,12 +33,14 @@ from app.services.embedding_service import EmbeddingUnavailableError
 from app.services.generation_service import (
     SourceChunk,
     build_rag_prompt,
+    format_context_blocks,
     stream_generate,
     stream_with_citations,
 )
 from app.services.hybrid_search import hybrid_search
 from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
 from app.services.rewrite_service import ConversationTurn, rewrite_query
+from app.services.self_correct_service import validate_answer
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -134,6 +138,11 @@ def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
 
+async def _single_token(text: str) -> AsyncIterator[str]:
+    """把 P-04 修正回答作为单块 token 流，复用 stream_with_citations 解析引用。"""
+    yield text
+
+
 async def _rag_event_stream(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
@@ -171,18 +180,62 @@ async def _rag_event_stream(
     valid_ids = {c.citation_id for c in chunks}
     total_tokens = 0
     cited: list[int] = []
+    answer_parts: list[str] = []
     try:
         token_stream = stream_generate(system, user, model=request.llm_model)
         async for event in stream_with_citations(token_stream, valid_ids):
             if event[0] == "text":
                 yield ("token", {"content": event[1]})
+                answer_parts.append(event[1])
                 total_tokens += 1
             else:
                 cited.append(event[1])
+                answer_parts.append(f"[{event[1]}]")
     except LLMUnavailableError as exc:
         logger.warning("chat.generate_failed", error=str(exc))
         yield ("error", {"code": "OLLAMA_UNAVAILABLE", "message": str(exc)})
         return
+
+    # P-04 自我纠正：验证失败且重试次数 < max_retries 时重推修正回答（fail-open）
+    context_blocks = format_context_blocks(chunks)
+    try:
+        result = await validate_answer(rewritten_query, context_blocks, "".join(answer_parts))
+    except LLMUnavailableError:
+        result = None  # 验证不可用 → 跳过纠正，直接输出已生成回答
+
+    low_confidence = False
+    used = 0
+    while result is not None and not result.is_correct and used < request.max_retries:
+        corrected = result.corrected_answer
+        if not corrected:
+            # 无可用修正回答 → 保留原答案，仅标记低置信度，不触发 retry
+            low_confidence = True
+            break
+        used += 1
+        yield (
+            "retry",
+            {"reason": result.reason, "attempt": used, "rewritten_query": rewritten_query},
+        )
+        # 前端收到 retry 后清空缓冲，重推修正回答的 token 流
+        new_parts: list[str] = []
+        new_cited: list[int] = []
+        async for event in stream_with_citations(_single_token(corrected), valid_ids):
+            if event[0] == "text":
+                yield ("token", {"content": event[1]})
+                new_parts.append(event[1])
+                total_tokens += 1
+            else:
+                new_cited.append(event[1])
+                new_parts.append(f"[{event[1]}]")
+        cited = new_cited
+        answer_text = "".join(new_parts)
+        try:
+            result = await validate_answer(rewritten_query, context_blocks, answer_text)
+        except LLMUnavailableError:
+            result = None
+
+    if result is not None and not result.is_correct:
+        low_confidence = True
 
     citation_map = {c.citation_id: c for c in chunks}
     citations = [
@@ -196,26 +249,26 @@ async def _rag_event_stream(
     ]
     if citations:
         yield ("citation", {"citations": citations})
-    yield (
-        "done",
-        {
-            "session_id": session_id,
-            "total_tokens": total_tokens,
-            "duration_ms": _elapsed_ms(started),
-        },
-    )
+    done_data: dict[str, object] = {
+        "session_id": session_id,
+        "total_tokens": total_tokens,
+        "duration_ms": _elapsed_ms(started),
+    }
+    if low_confidence:
+        done_data["low_confidence"] = True
+    yield ("done", done_data)
 
 
 @router.post("/stream")
 async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
-    """RAG 问答 SSE 流式输出（查询改写 → 混合检索 → 重排序 → P-03 生成）。
+    """RAG 问答 SSE 流式输出（改写 → 检索 → 重排 → 生成 → 自我纠正）。
 
     Args:
         request: 流式请求（含 FTS 命中与对话历史）。
 
     Returns:
         ``text/event-stream``：事件序列 search_start → search_result → token*
-        → citation → done（本地推理失败发 error）。
+        → citation → done；P-04 触发重试时插入 retry 事件；本地推理失败发 error。
     """
     mgr = state.get_lancedb()
 

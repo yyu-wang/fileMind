@@ -109,7 +109,7 @@ class ChatStreamRequest(BaseModel):
         Rust 维护会话状态并回传最近 3 轮）
       - ``fts_chunks``：FTS5 由 Rust 执行（SQLite），命中含文本随请求传入
       - ``llm_model`` / ``embedding_model``：生成/向量化模型名（逐请求可覆盖）
-      - ``max_retries``：T5.7 自我纠正用，本任务（T5.6）忽略
+      - ``max_retries``：P-04 自我纠正最大重试次数（默认 2，对齐 §3.4 请求体）
       - ``inference_mode``：local|cloud|hybrid；本任务仅 local（云端代理 T6.x）
     """
 
