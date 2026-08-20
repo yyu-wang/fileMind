@@ -284,6 +284,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // T6.6 RAG 问答（Sidecar /chat/stream SSE 代理）
             commands::chat::chat_stream,
+            // T7.x 建立文件索引（Sidecar /index/build 代理）
+            commands::index::build_index,
             // T6.5 智能分类预览（规则引擎 + 启发式）
             commands::classify::classify_preview,
             // T6.8 规则编辑（CRUD + 拖拽排序）

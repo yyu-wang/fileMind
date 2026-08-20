@@ -48,6 +48,21 @@ class IndexBuildResponse(BaseModel):
     skipped_count: int
 
 
+class IndexBuildFile(BaseModel):
+    """单个待索引文件（来自 Rust SQLite files 表）。"""
+
+    file_id: str
+    path: str
+
+
+class IndexBuildRequest(BaseModel):
+    """POST /index/build 请求体（T7.x 建立索引）。"""
+
+    files: list[IndexBuildFile]
+    embedding_model: str = "bge-large-zh-v1.5"
+    table_name: str = ""
+
+
 class IncrementalIndexResponse(BaseModel):
     """增量索引响应（对齐 API 规格书 POST /index/incremental）。"""
 

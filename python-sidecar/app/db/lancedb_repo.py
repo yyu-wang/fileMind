@@ -223,6 +223,31 @@ class LanceDBManager:
             raise KeyError(f"LanceDB 表不存在: {table_name}")
         return self._db.open_table(table_name)
 
+    def add_chunks(self, table_name: str, chunks: Iterable[DocumentChunk]) -> int:
+        """批量写入文档分块向量。
+
+        追加写入（LanceDB add 语义）；调用方保证 chunk_id 不重复（建议
+        ``{file_id}-{seq}`` 或先清理旧 file_id 行）。返回写入条数。
+
+        Args:
+            table_name: 向量表名（``documents_{model}_v{version}``）。
+            chunks: 待写入的分块（vector 须已填充）。
+
+        Raises:
+            KeyError: 表不存在。
+            RuntimeError: 连接未初始化。
+        """
+        if self._db is None:
+            raise RuntimeError("LanceDBManager.connect() 尚未调用")
+        if not self.is_table_exists(table_name):
+            raise KeyError(f"LanceDB 表不存在: {table_name}")
+        rows = [c.model_dump() for c in chunks]
+        if not rows:
+            return 0
+        tbl = self.open_table(table_name)
+        tbl.add(rows)
+        return len(rows)
+
     def search_vectors(
         self,
         table_name: str,

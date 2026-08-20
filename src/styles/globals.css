@@ -1912,8 +1912,23 @@ body {
   color: var(--muted);
 }
 
-.chat-page__clear {
+/* 头部右侧操作区：建立索引 + 清空对话，靠右排布 */
+.chat-page__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
+}
+
+.chat-page__index-tip {
+  margin: 12px 20px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid var(--accent);
+  color: var(--ink);
+  word-break: break-word;
 }
 
 .chat-page__error {

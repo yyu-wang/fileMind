@@ -47,10 +47,27 @@ export function ChatPage() {
   const totalFiles = useFileStore((s) => s.total);
   const files = useFileStore((s) => s.files);
 
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
+  // 建立索引：请求状态 + 结果提示（T7.x）
+  const [building, setBuilding] = useState(false);
+  const [indexMessage, setIndexMessage] = useState<string | null>(null);
+
   // T6.10 快捷键：⌘N 新建对话（清空当前会话）
   useHotkeys([{ key: 'n', meta: true, handler: clearHistory }]);
 
-  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
+  const handleBuildIndex = async () => {
+    setBuilding(true);
+    setIndexMessage(null);
+    const result = await fileIpc.buildIndex();
+    if (result.status === 'ok') {
+      setIndexMessage(
+        `索引完成：${result.data.indexed_count} 个文件，跳过 ${result.data.skipped_count} 个`,
+      );
+    } else {
+      setIndexMessage(result.error);
+    }
+    setBuilding(false);
+  };
 
   const handleCitationClick = async (citation: ChatCitation) => {
     const local = files.find((f) => f.file_name === citation.fileName);
@@ -77,12 +94,33 @@ export function ChatPage() {
       <header className="chat-page__header">
         <h1 className="chat-page__title">知识问答</h1>
         <span className="chat-page__count">共 {totalFiles} 个文件</span>
-        {messages.length > 0 && (
-          <button type="button" className="btn btn--ghost chat-page__clear" onClick={clearHistory}>
-            清空对话
+        <div className="chat-page__header-actions">
+          {/* T7.x：建立索引（向量化入库 LanceDB，问答检索的数据源） */}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => void handleBuildIndex()}
+            disabled={building}
+          >
+            {building ? '索引中…' : '建立索引'}
           </button>
-        )}
+          {messages.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--ghost chat-page__clear"
+              onClick={clearHistory}
+            >
+              清空对话
+            </button>
+          )}
+        </div>
       </header>
+
+      {indexMessage && (
+        <div className="chat-page__index-tip" role="status">
+          <span>{indexMessage}</span>
+        </div>
+      )}
 
       {error && (
         <div className="chat-page__error" role="alert">

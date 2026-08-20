@@ -12,6 +12,8 @@ pub mod file_ops;
 pub mod file_preview;
 /// 文件查询、搜索与统计命令。
 pub mod file_query;
+/// 文件索引建立命令（Sidecar `/index/build` 代理）。
+pub mod index;
 /// 推理模式管理与转发命令。
 pub mod inference;
 /// Ollama 推理环境探测命令（Sidecar `/inference/test` 代理）。
