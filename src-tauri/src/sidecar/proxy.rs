@@ -167,7 +167,7 @@ pub async fn forward_shutdown(psk: &[u8], seq: u64) -> AppResult<String> {
 mod tests {
     use super::*;
 
-    /// FastAPI 标准错误体含 `detail` → 提取 `detail` 作为真实错误原因。
+    /// `FastAPI` 标准错误体含 `detail` → 提取 `detail` 作为真实错误原因。
     #[test]
     fn sidecar_error_detail_extracts_detail_field() {
         let err = sidecar_error_detail(

@@ -12,6 +12,7 @@ import { persist } from 'zustand/middleware';
 import { fileIpc } from '../lib/ipc';
 import { applyTheme } from '../lib/theme';
 import type {
+  ApiKeyStatus,
   AppConfig,
   CloudProvider,
   EmbeddingModelAvailability,
@@ -52,6 +53,8 @@ interface SettingsState {
   embeddingModelOptions: EmbeddingModelAvailability[];
   /** 主题模式（跟随系统 / 亮色 / 暗色） */
   theme: ThemeMode;
+  /** 各云服务商 API Key 状态（仅掩码提示，不含完整 Key；不持久化） */
+  apiKeyStatus: Record<CloudProvider, ApiKeyStatus>;
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
@@ -67,6 +70,12 @@ interface SettingsState {
   signCloudConsent: (provider: CloudProvider) => Promise<void>;
   /** 撤销云端同意书（自动切回 Local 模式） */
   revokeCloudConsent: () => Promise<void>;
+  /** 加载各云服务商 API Key 状态（仅掩码提示，不含完整 Key） */
+  loadApiKeyStatus: () => Promise<void>;
+  /** 保存指定云服务商 API Key（存系统 Keychain；成功返回新状态） */
+  setApiKey: (provider: CloudProvider, key: string) => Promise<void>;
+  /** 删除指定云服务商 API Key（Keychain） */
+  deleteApiKey: (provider: CloudProvider) => Promise<void>;
   /** 标记引导完成（写入 DB） */
   completeOnboarding: (dataDirectory: string) => Promise<void>;
   /** 切换主题模式（持久化 + 应用到 html data-theme） */
@@ -93,6 +102,10 @@ export const useSettingsStore = create<SettingsState>()(
       llmModelOptions: [],
       embeddingModelOptions: [],
       theme: ThemeMode.System,
+      apiKeyStatus: {
+        Openai: { provider: 'Openai', has_key: false, hint: '' },
+        Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
+      },
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
@@ -196,6 +209,39 @@ export const useSettingsStore = create<SettingsState>()(
             cloudConsentSigned: false,
             inferenceMode: 'Local',
           });
+        } else {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
+      },
+
+      loadApiKeyStatus: async () => {
+        const result = await fileIpc.getApiKeyStatus();
+        if (result.status === 'ok') {
+          // 数组 → 以 provider 为键的映射，组件按服务商取状态
+          const map = {} as Record<CloudProvider, ApiKeyStatus>;
+          for (const status of result.data) map[status.provider] = status;
+          set({ apiKeyStatus: map });
+        } else {
+          set({ error: result.error });
+        }
+      },
+
+      setApiKey: async (provider, key) => {
+        const result = await fileIpc.setApiKey(provider, key);
+        if (result.status === 'ok') {
+          // 只更新该服务商状态；Rust 侧返回的只有掩码 hint，不回传完整 Key
+          set((state) => ({ apiKeyStatus: { ...state.apiKeyStatus, [provider]: result.data } }));
+        } else {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
+      },
+
+      deleteApiKey: async (provider) => {
+        const result = await fileIpc.deleteApiKey(provider);
+        if (result.status === 'ok') {
+          set((state) => ({ apiKeyStatus: { ...state.apiKeyStatus, [provider]: result.data } }));
         } else {
           set({ error: result.error });
           throw new Error(result.error);

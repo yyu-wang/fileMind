@@ -335,6 +335,10 @@ fn main() {
             commands::config::update_config,
             commands::config::sign_cloud_consent,
             commands::config::revoke_cloud_consent,
+            // T7.3 云端 API Key 存取（只存 Keychain、不回传完整 Key）
+            commands::api_key::get_api_key_status,
+            commands::api_key::set_api_key,
+            commands::api_key::delete_api_key,
         ])
         .setup(move |app| {
             // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖

@@ -2226,6 +2226,37 @@ body {
   font-weight: 600;
 }
 
+.settings-mode-badge--empty {
+  background: var(--rule);
+  color: var(--muted);
+}
+
+.settings-api-key__provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 160px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-api-key__input {
+  flex: 1 1 260px;
+  min-width: 200px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-api-key__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .settings-status {
   display: flex;
   align-items: center;

@@ -1,9 +1,10 @@
-// 设置页：推理模式 / Ollama 环境 / Embedding 模型 三个区块（T6.7）。
+// 设置页：推理模式 / Ollama 环境 / Embedding 模型 / API Key / 主题 区块（T6.7 / T7.3）。
 //
 // 挂载时触发一次 Ollama 探测（probeOllama），区块各自读取 store 结果；
 // OllamaStatusCard 提供手动「重新检测」。
 
 import { useEffect } from 'react';
+import { CloudApiKeySection } from '../components/settings/CloudApiKeySection';
 import { EmbeddingModelSection } from '../components/settings/EmbeddingModelSection';
 import { InferenceModeSection } from '../components/settings/InferenceModeSection';
 import { OllamaStatusCard } from '../components/settings/OllamaStatusCard';
@@ -25,6 +26,7 @@ export function SettingsPage() {
       </header>
       <div className="settings-page__body">
         <InferenceModeSection />
+        <CloudApiKeySection />
         <OllamaStatusCard />
         <EmbeddingModelSection />
         <ThemeSection />

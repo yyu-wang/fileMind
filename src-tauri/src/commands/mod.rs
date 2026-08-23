@@ -1,5 +1,7 @@
 //! Tauri IPC 命令层：按领域拆分的命令模块。
 
+/// 云端 API Key 存取命令（安全 07-§4 / T7.3，只存 Keychain、不回传完整 Key）。
+pub mod api_key;
 /// RAG 对话流式命令（Sidecar `/chat/stream` SSE 代理）。
 pub mod chat;
 /// 智能分类预览命令（规则引擎 + 启发式）。
