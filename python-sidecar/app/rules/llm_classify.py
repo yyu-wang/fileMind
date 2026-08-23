@@ -21,6 +21,8 @@ import httpx
 from ollama import AsyncClient, Message, Options, ResponseError
 from pydantic import BaseModel, ValidationError
 
+from app.core.cloud_mask import CloudMasker, content_max, is_cloud_masking_active
+
 if TYPE_CHECKING:
     from app.models import ClassifyItem
 
@@ -179,24 +181,43 @@ def _file_type(item: ClassifyItem) -> str:
     return item.name.rsplit(".", 1)[-1] if "." in item.name else ""
 
 
-def build_classify_prompt(item: ClassifyItem, categories: list[str]) -> tuple[str, str]:
+def build_classify_prompt(
+    item: ClassifyItem,
+    categories: list[str],
+    masker: CloudMasker | None = None,
+) -> tuple[str, str]:
     """按 P-01 模板构建 (system, user) 消息对。
 
     Args:
         item: 待分类文件信息。
         categories: 预定义分类列表（SQLite categories 表）。
+        masker: 云端脱敏器。``None`` 且云端脱敏激活时自动创建（单文件兜底）；
+            批处理场景由调用方传入共享实例，保证 ``file_001`` 编号跨文件连续。
 
     Returns:
-        (system_prompt, user_prompt) 二元组，直接传入 Ollama chat。
+        (system_prompt, user_prompt) 二元组，直接传入 LLM chat。
     """
+    if masker is None and is_cloud_masking_active():
+        masker = CloudMasker(content_max())
+
+    if masker is not None:
+        masked = masker.mask_file(item.path, item.name, item.path, item.content_summary)
+        file_name = masked.mask_name
+        directory_path = f"depth={masked.depth}"
+        content_summary = masked.content_head
+    else:
+        file_name = item.name
+        directory_path = item.path
+        content_summary = item.content_summary[:CONTENT_SUMMARY_MAX]
+
     system = _SYSTEM_TEMPLATE.format(predefined_categories="、".join(categories))
     user = _USER_TEMPLATE.format(
-        file_name=item.name,
+        file_name=file_name,
         file_type=_file_type(item),
         file_size=_human_size(item.size),
-        directory_path=item.path,
+        directory_path=directory_path,
         modified_time=item.modified_time,
-        content_summary=item.content_summary[:CONTENT_SUMMARY_MAX],
+        content_summary=content_summary,
         examples=_FEW_SHOT_EXAMPLES,
     )
     return system, user
@@ -235,7 +256,11 @@ async def call_ollama_json(system: str, user: str) -> str:
     return content
 
 
-async def classify_file_with_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+async def classify_file_with_llm(
+    item: ClassifyItem,
+    categories: list[str],
+    masker: CloudMasker | None = None,
+) -> ClassifyResult:
     """对单个文件执行 LLM 兜底分类（P-01 调用 + JSON 解析）。
 
     失败兜底（对齐 08-§2）：
@@ -246,11 +271,12 @@ async def classify_file_with_llm(item: ClassifyItem, categories: list[str]) -> C
     Args:
         item: 待分类文件信息。
         categories: 预定义分类列表。
+        masker: 云端脱敏器（批处理共享实例，保证编号连续）。
 
     Returns:
         解析后的分类结果。
     """
-    system, user = build_classify_prompt(item, categories)
+    system, user = build_classify_prompt(item, categories, masker)
     try:
         raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
     except TimeoutError:

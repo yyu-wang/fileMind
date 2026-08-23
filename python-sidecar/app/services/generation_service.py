@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 from ollama import AsyncClient, Message, Options, ResponseError
 
+from app.core.cloud_mask import CloudMasker, content_max, is_cloud_masking_active
 from app.rules.llm_classify import LLM_MODEL, OLLAMA_HOST, LLMUnavailableError
 
 if TYPE_CHECKING:
@@ -93,39 +94,60 @@ class SourceChunk:
     text: str
 
 
-def _context_block(chunk: SourceChunk) -> str:
-    """单片段格式：``[N] 来源：{file_name}（第 {page} 页）\\n内容：{text}``。"""
+def _context_block(chunk: SourceChunk, masker: CloudMasker | None = None) -> str:
+    """单片段格式：``[N] 来源：{file_name}（第 {page} 页）\\n内容：{text}``。
+
+    云端脱敏激活时来源替换为编号（``file_001``），不暴露真实文件名。
+    """
+    label = chunk.file_name
+    if masker is not None:
+        # 以 file_name 为 key：同文件多片段共享同一编号，供 LLM 引用还原
+        masked = masker.mask_file(chunk.file_name, chunk.file_name, None, chunk.text)
+        label = masked.mask_name
     return (
-        f"[{chunk.citation_id}] 来源：{chunk.file_name}"
+        f"[{chunk.citation_id}] 来源：{label}"
         f"（第 {chunk.page} 页）\n内容：{chunk.text[:CONTENT_MAX]}"
     )
 
 
-def format_context_blocks(chunks: list[SourceChunk]) -> str:
+def format_context_blocks(
+    chunks: list[SourceChunk],
+    masker: CloudMasker | None = None,
+) -> str:
     """把检索片段格式化为上下文块（P-03 生成与 P-04 验证共用同一事实依据）。
 
     Args:
         chunks: 重排序后的检索片段（按 citation_id 升序）。
+        masker: 云端脱敏器；``None`` 且云端脱敏激活时自动创建（单次调用兜底）。
 
     Returns:
         多片段 ``\\n\\n`` 连接文本。
     """
-    return "\n\n".join(_context_block(c) for c in chunks)
+    if masker is None and is_cloud_masking_active():
+        masker = CloudMasker(content_max())
+    return "\n\n".join(_context_block(c, masker) for c in chunks)
 
 
-def build_rag_prompt(query: str, chunks: list[SourceChunk]) -> tuple[str, str]:
+def build_rag_prompt(
+    query: str,
+    chunks: list[SourceChunk],
+    masker: CloudMasker | None = None,
+) -> tuple[str, str]:
     """按 P-03 模板构建 (system, user) 消息对。
 
     Args:
         query: 用户查询（改写后结果，P-03 输入变量 user_query）。
         chunks: 重排序后的检索片段（Top-K，默认 5），按 citation_id 升序。
+        masker: 云端脱敏器；``None`` 且云端脱敏激活时自动创建。
 
     Returns:
         (system_prompt, user_prompt) 二元组，直接传入流式聊天调用。
     """
+    if masker is None and is_cloud_masking_active():
+        masker = CloudMasker(content_max())
     user = _USER_TEMPLATE.format(
         user_query=query,
-        context_blocks=format_context_blocks(chunks),
+        context_blocks=format_context_blocks(chunks, masker),
         example=_FEW_SHOT_EXAMPLE,
     )
     return _SYSTEM_TEMPLATE, user

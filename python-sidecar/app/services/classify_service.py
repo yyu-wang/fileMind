@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.cloud_mask import CloudMasker, content_max, is_cloud_masking_active
 from app.core.logging import getLogger
 from app.models import ClassifyItem, ClassifyResponse
 from app.rules.engine import RuleEngine
@@ -169,6 +170,8 @@ async def _run_llm_pass(
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
     llm_down = False
+    # 云端脱敏：批内共享一个 masker，保证 file_001.. 编号跨文件连续且可还原
+    masker = CloudMasker(content_max()) if is_cloud_masking_active() else None
 
     async def classify_one(index: int) -> None:
         nonlocal llm_down
@@ -177,7 +180,7 @@ async def _run_llm_pass(
             return
         async with semaphore:
             try:
-                result = await classify_file_with_llm(files[index], categories)
+                result = await classify_file_with_llm(files[index], categories, masker)
             except LLMUnavailableError as exc:
                 llm_down = True
                 logger.warning("llm.unavailable", error=str(exc))

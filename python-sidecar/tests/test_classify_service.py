@@ -67,7 +67,7 @@ async def test_heuristic_layer_wins_skips_llm() -> None:
 async def test_llm_layer_classified() -> None:
     """两层未命中 → LLM 兜底，高置信度 status=classified。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         return ClassifyResult(
             category="数据文件", confidence=0.9, reason="未知类型", is_new_category=False
         )
@@ -85,7 +85,7 @@ async def test_llm_layer_classified() -> None:
 async def test_llm_low_confidence_needs_review() -> None:
     """LLM 低置信度 → status=needs_review（待人工确认）。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         return ClassifyResult(
             category="数据文件", confidence=0.5, reason="不确定", is_new_category=False
         )
@@ -101,7 +101,7 @@ async def test_llm_low_confidence_needs_review() -> None:
 async def test_llm_unavailable_marks_manual() -> None:
     """Ollama 不可用 → 整个第 3 层跳过，文件标记待手动分类。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         raise LLMUnavailableError("Ollama down")
 
     with mock.patch("app.services.classify_service.classify_file_with_llm", fake_llm):
@@ -116,7 +116,7 @@ async def test_llm_unavailable_marks_manual() -> None:
 async def test_llm_timeout_marks_unclassified() -> None:
     """单文件 LLM 超时 → 未分类，不阻塞其他文件。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         return ClassifyResult(
             category="未分类",
             confidence=0.0,
@@ -136,7 +136,7 @@ async def test_llm_concurrency_limited() -> None:
     """并发分类不超过 MAX_CONCURRENT_LLM。"""
     counters = {"active": 0, "max": 0}
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         counters["active"] += 1
         counters["max"] = max(counters["max"], counters["active"])
         await asyncio.sleep(0.02)
@@ -165,7 +165,7 @@ async def test_empty_files_returns_empty_response() -> None:
 async def test_response_stats_counts_statuses() -> None:
     """stats 正确统计 classified/needs_review/unclassified 与分类分布。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         return ClassifyResult(
             category="数据文件", confidence=0.5, reason="不确定", is_new_category=False
         )
@@ -192,7 +192,7 @@ async def test_response_stats_counts_statuses() -> None:
 async def test_mixed_funnel_confidence_average() -> None:
     """平均置信度正确（1.0 + 0.9 + 0.9 → 0.9333）。"""
 
-    async def fake_llm(item: ClassifyItem, categories: list[str]) -> ClassifyResult:
+    async def fake_llm(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
         return ClassifyResult(
             category="数据文件", confidence=0.9, reason="ok", is_new_category=False
         )
