@@ -721,7 +721,10 @@ fn is_skipped_file(name: &str) -> bool {
 /// 递归遍历目录，超过最大深度时跳过并记录警告。
 fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppResult<()> {
     if depth > MAX_SCAN_DEPTH {
-        log::warn!("超过最大扫描深度 {MAX_SCAN_DEPTH}，跳过: {}", dir.display());
+        log::warn!(
+            "超过最大扫描深度 {MAX_SCAN_DEPTH}，跳过: {}",
+            security::log_redact::sanitize_path(&dir.display().to_string())
+        );
         return Ok(());
     }
 
@@ -733,7 +736,10 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
         if path.is_dir() {
             // 黑名单目录（node_modules/.git 等）整体跳过，不递归、不入库
             if is_skipped_dir(&name) {
-                log::debug!("扫描跳过黑名单目录: {}", path.display());
+                log::debug!(
+                    "扫描跳过黑名单目录: {}",
+                    security::log_redact::sanitize_path(&path.display().to_string())
+                );
                 continue;
             }
             scan_dir_recursive(&path, files, depth + 1)?;

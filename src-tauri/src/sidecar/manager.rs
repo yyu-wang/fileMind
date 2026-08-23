@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::{AppError, AppResult};
-use crate::security::handshake;
+use crate::security::{handshake, log_redact};
 use crate::sidecar::proxy;
 use std::process::Child;
 use tauri::Manager as _;
@@ -140,7 +140,10 @@ impl SidecarManager {
         let psk = handshake::generate_psk()?;
         let psk_hex = hex::encode(&psk);
 
-        log::info!("准备启动 Sidecar，binary={}", self.binary_path_.display());
+        log::info!(
+            "准备启动 Sidecar，binary={}",
+            log_redact::sanitize_path(&self.binary_path_.display().to_string())
+        );
 
         let mut child = std::process::Command::new(&self.binary_path_)
             .env("SIDECAR_PORT", self.port.to_string())

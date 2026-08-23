@@ -16,6 +16,7 @@
 //! 单实例：`tauri-plugin-single-instance` 防止二次启动产生孤儿 sidecar，第二次启动
 //! 时回调里把已有主窗口显示出来并聚焦，新进程随后退出。
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -24,6 +25,7 @@ use std::time::Duration;
 use filemind_lib::commands;
 use filemind_lib::db::{CategoryRepo, Database, OperationRepo};
 use filemind_lib::error::AppError;
+use filemind_lib::security::log_redact;
 use filemind_lib::sidecar::{
     resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
 };
@@ -203,7 +205,23 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
 /// 串联职责，硬拆会破坏可读性，已经按段落分层注释。
 #[allow(clippy::large_stack_frames, clippy::too_many_lines)]
 fn main() {
-    env_logger::init();
+    // T7.1 日志脱敏：自定义 formatter 在「单一出口」统一脱敏，所有日志消息经
+    // `log_redact::redact` 过滤后再输出（安全 I-03）。formatter 经静态路径调用
+    // redact，与下方 init 顺序无关；正则未就绪时 redact 原样返回，仅可能在 init
+    // 失败并退出前出现（失败日志为编译错误文本，不含敏感信息）。
+    env_logger::Builder::new()
+        .format(|buf, record| {
+            let message = log_redact::redact(&record.args().to_string());
+            writeln!(buf, "[{} {}] {}", record.level(), record.target(), message)
+        })
+        .init();
+
+    // 正则集合编译：模式为编译期常量，正常不可达失败；此时日志可能明文泄漏
+    // 敏感信息，直接以非零码退出，不进入无脱敏运行状态。
+    if let Err(e) = log_redact::init() {
+        log::error!("致命错误：日志脱敏正则初始化失败: {e}");
+        std::process::exit(1);
+    }
     let db_path = get_db_path();
 
     let database = match Database::open(&db_path) {
@@ -243,7 +261,10 @@ fn main() {
                 std::process::exit(1);
             }
         };
-    log::info!("Sidecar binary path: {}", sidecar_binary.display());
+    log::info!(
+        "Sidecar binary path: {}",
+        log_redact::sanitize_path(&sidecar_binary.display().to_string())
+    );
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
     let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
         Ok(psk) => Some(psk),

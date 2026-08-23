@@ -4,6 +4,8 @@
 pub mod handshake;
 /// API Key 安全存储（系统 Keychain）。
 pub mod keychain;
+/// 日志脱敏过滤器（I-03）：API Key / 绝对路径统一替换占位符。
+pub mod log_redact;
 /// 推理模式切换安全阀（用户同意校验）。
 pub mod mode_switch;
 /// 路径安全守卫（黑名单与越界校验）。

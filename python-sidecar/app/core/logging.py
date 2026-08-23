@@ -1,11 +1,16 @@
 """Sidecar 日志适配：优先 structlog（生产带 kv 结构化日志），否则回退 logging。
 
+统一在 ``getLogger`` 出口做日志脱敏（安全 I-03）：msg 与所有字符串 kv 值经
+``redact`` 过滤后再交给底层 logger，保证新增日志语句即使忘记手动消毒也不会
+泄漏 API Key / 绝对路径。
+
 不对外暴露三方依赖，避免打包态 PyInstaller 缺 structlog 时直接 ImportError 起不来。
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Protocol, runtime_checkable
 
 try:
@@ -16,12 +21,80 @@ except Exception:  # noqa: BLE001 - dev venv / ci 可能没有装，fallback 到
     _HAS_STRUCTLOG = False
 
 
+# —— 日志脱敏（与 Rust src-tauri/src/security/log_redact.rs 规则保持一致）——
+
+_REDACTED = "***REDACTED***"
+_PATH_PREFIX = "***"
+
+# 密钥/令牌型泄漏：顺序敏感，须在路径处理前整体替换（token 可含 `/`）
+_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    re.compile(r"(?i)bearer[ =:]+[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(
+        r"(?i)(?:api[_-]?key|access[_-]?token|secret|password)[ =:]+[\"']?[A-Za-z0-9._~+/=-]{6,}"
+    ),
+)
+
+# 绝对路径型：POSIX（≥2 段）+ Windows 盘符两种写法。段内排除空白与常见标点，
+# 避免跨词贪心；含空格的路径由调用侧 sanitize_path 兜底。
+_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"/(?:[^/\s\"'(),;:]+/)+[^/\s\"'(),;:]+"),
+    re.compile(r"[A-Za-z]:\\(?:[^\\\s\"'(),;:]+)(?:\\[^\\\s\"'(),;:]+)*"),
+    re.compile(r"[A-Za-z]:/(?:[^/\s\"'(),;:]+)(?:/[^/\s\"'(),;:]+)+"),
+)
+
+
+def sanitize_path(path: str) -> str:
+    """路径脱敏：仅保留最后一级，前缀替换为 `***`（与 Rust sanitize_path 一致）。"""
+    normalized = path.replace("\\", "/")
+    segments = [seg for seg in normalized.split("/") if seg]
+    if not segments:
+        return _PATH_PREFIX
+    return f"{_PATH_PREFIX}/{segments[-1]}"
+
+
+def redact(text: str) -> str:
+    """把文本中的 API Key / 绝对路径替换为占位符。
+
+    先处理密钥/令牌（可能含 `/`），再把绝对路径收敛为 `***/末级`。用户查询内容属
+    自由文本，无法靠正则判定；规范要求「不记录原始内容」，由调用侧保证不落日志。
+    """
+    for pattern in _KEY_PATTERNS:
+        text = pattern.sub(_REDACTED, text)
+    for pattern in _PATH_PATTERNS:
+        text = pattern.sub(lambda m: sanitize_path(m.group(0)), text)
+    return text
+
+
 @runtime_checkable
 class SidecarLogger(Protocol):
     """Logger duck-type：.info/.warning(msg, **kwargs) 是唯一承诺的 API。"""
 
     def info(self, msg: str, **kwargs: object) -> None: ...
     def warning(self, msg: str, **kwargs: object) -> None: ...
+
+
+class _MaskingLogger:
+    """统一脱敏包装：msg 与所有字符串 kv 值经 redact 过滤后再交给底层 logger。
+
+    作为 ``getLogger`` 的单一出口，structlog 与 stdlib 两条路径共用，保证新增日志
+    语句即使忘记手动消毒也不会泄漏敏感信息。
+    """
+
+    def __init__(self, inner: SidecarLogger) -> None:
+        self._inner = inner
+
+    def info(self, msg: str, **kwargs: object) -> None:
+        self._inner.info(redact(msg), **self._mask_kwargs(kwargs))
+
+    def warning(self, msg: str, **kwargs: object) -> None:
+        self._inner.warning(redact(msg), **self._mask_kwargs(kwargs))
+
+    @staticmethod
+    def _mask_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
+        return {
+            key: redact(value) if isinstance(value, str) else value for key, value in kwargs.items()
+        }
 
 
 def _format_kv(msg: str, kwargs: dict[str, object]) -> str:
@@ -50,8 +123,8 @@ class _StdlibLogger:
 
 
 def getLogger(name: str = "filemind.sidecar") -> SidecarLogger:  # noqa: N802 - 复刻 logging.getLogger 命名
-    """返回 structlog 绑定 logger（有依赖）或标准 logging 适配器。"""
+    """返回统一脱敏包装后的 logger（structlog 或标准 logging 适配器）。"""
     if _HAS_STRUCTLOG:
         # structlog.get_logger 返回 BoundLogger，与 SidecarLogger Protocol 鸭子兼容
-        return structlog.get_logger(name)  # type: ignore[return-value]
-    return _StdlibLogger(logging.getLogger(name))
+        return _MaskingLogger(structlog.get_logger(name))  # type: ignore[arg-type]
+    return _MaskingLogger(_StdlibLogger(logging.getLogger(name)))

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.core.logging import getLogger
+from app.core.logging import getLogger, sanitize_path
 from app.db.lancedb_repo import DocumentChunk, LanceDBManager
 from app.services.embedding_service import EMBEDDING_MODEL, embed_texts
 
@@ -166,7 +166,12 @@ async def build_index(
         try:
             text = read_text(path)
         except OSError as exc:
-            logger.warning("ingest.read_failed", file_id=file_id, path=raw_path, error=str(exc))
+            logger.warning(
+                "ingest.read_failed",
+                file_id=file_id,
+                path=sanitize_path(raw_path),
+                error=str(exc),
+            )
             skipped += 1
             continue
         chunks = chunk_text(text)
