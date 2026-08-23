@@ -65,6 +65,11 @@ jobs:
 
       - run: npm ci
 
+      # src/types/ipc.ts 是 specta 生成的类型文件（gitignored），CI 全新检出没有它；
+      # 必须先生成，否则 tsc 报 Cannot find module '@/types/ipc' 全崩。
+      - name: Generate IPC types
+        run: npm run gen:ipc
+
       # 真实交叉编译：--target 决定产物 triple，--bundles 限定安装包格式
       # （Linux 排除 rpm 防缺 rpmbuild 红；macOS x64 由 arm64 runner 交叉产出）
       - name: Build Tauri (${{ matrix.label }})
