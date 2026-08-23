@@ -6,5 +6,5 @@ pub mod sse;
 
 pub use manager::{
     current_target_triple, resolve_bundle_binary_path, resolve_bundle_from_resources,
-    resolve_dev_binary_path, SidecarManager, WatchdogAction,
+    resolve_dev_binary_path, CloudSidecarEnv, SidecarManager, WatchdogAction,
 };

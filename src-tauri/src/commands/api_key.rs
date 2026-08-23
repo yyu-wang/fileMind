@@ -58,6 +58,11 @@ pub fn set_api_key(provider: CloudProvider, key: String) -> Result<ApiKeyStatus,
     validate_key(key)?;
     security::store_key(provider_key(provider), key)
         .map_err(|e| format!("KEY-002:API Key 保存失败 ({e})"))?;
+    // 07-§4 审计：只记 provider，绝不写 Key 内容（T7.1 日志脱敏二次兜底）
+    log::info!(
+        "security.api_key: 已更新 provider={}",
+        provider_key(provider)
+    );
     Ok(build_status(provider, Some(key)))
 }
 

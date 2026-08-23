@@ -23,11 +23,13 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use filemind_lib::commands;
-use filemind_lib::db::{CategoryRepo, Database, OperationRepo};
+use filemind_lib::db::{CategoryRepo, ConfigRepo, Database, OperationRepo};
 use filemind_lib::error::AppError;
-use filemind_lib::security::log_redact;
+use filemind_lib::security::cloud_proxy::{self, CLOUD_PROXY_HOST, CLOUD_PROXY_PORT};
+use filemind_lib::security::{generate_token, log_redact};
 use filemind_lib::sidecar::{
-    resolve_bundle_binary_path, resolve_dev_binary_path, SidecarManager, WatchdogAction,
+    resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv, SidecarManager,
+    WatchdogAction,
 };
 use filemind_lib::AppState;
 use tauri::{
@@ -266,6 +268,33 @@ fn main() {
         log_redact::sanitize_path(&sidecar_binary.display().to_string())
     );
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
+
+    // T7.4 云端代理（07-§4）：生成调用方共享 token → 启动本机代理（127.0.0.1:8766）→
+    // 按当前推理模式决定给 Sidecar 注入哪些云端 env（含脱敏开关）。
+    // 失败即退出（安全边界初始化不可跳过，模式与 log_redact 一致）。
+    let proxy_token = match generate_token() {
+        Ok(token) => token,
+        Err(e) => {
+            log::error!("云端代理 token 生成失败: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) =
+        cloud_proxy::spawn_proxy_server(cloud_proxy::CloudProxyState::new(proxy_token.clone()))
+    {
+        log::error!("云端代理启动失败: {e}");
+        std::process::exit(1);
+    }
+    // 脱敏仅云端需要（本地 Ollama 需要原始内容做 RAG）；读失败按本地处理，不阻断启动
+    let masking_on =
+        ConfigRepo::get(database.conn()).is_ok_and(|config| config.inference_mode == "cloud");
+    log::info!("云端代理就绪: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}, masking={masking_on}");
+    sidecar_manager.set_cloud_env(CloudSidecarEnv {
+        proxy_url: format!("http://{CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}"),
+        proxy_token,
+        masking_on,
+    });
+
     let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
         Ok(psk) => Some(psk),
         Err(e) => {

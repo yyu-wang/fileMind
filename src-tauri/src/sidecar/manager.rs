@@ -53,6 +53,20 @@ const GRACEFUL_SELF_EXIT_SECS: u64 = 3;
 /// 优雅关闭：`kill` 之后 `wait` 兜底 + 余量总超时（秒），总 `DoD` ≤ 5s。
 const GRACEFUL_TOTAL_TIMEOUT_SECS: u64 = 5;
 
+/// 云端模式需要注入 Sidecar 进程的 env（T7.4 代理接线）。
+///
+/// 由 Rust 在启动 Sidecar 前设置；Sidecar 侧 E8 Provider 据此调用
+/// `FILEMIND_CLOUD_PROXY_URL` 代理并携带 `FILEMIND_CLOUD_PROXY_TOKEN` 鉴权头，
+/// `FILEMIND_CLOUD_MASKING` 触发 T7.2 云端脱敏。
+pub struct CloudSidecarEnv {
+    /// Rust 云端代理地址（`http://127.0.0.1:{CLOUD_PROXY_PORT}`）。
+    pub proxy_url: String,
+    /// 代理调用方共享 token（Sidecar 请求时放 `X-FileMind-Token`）。
+    pub proxy_token: String,
+    /// 是否启用云端数据脱敏（T7.2，`inference_mode=cloud` 时为真）。
+    pub masking_on: bool,
+}
+
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
 pub struct SidecarManager {
     /// Sidecar 二进制绝对路径，由调用方在构造时显式注入。
@@ -67,6 +81,8 @@ pub struct SidecarManager {
     process: Option<Child>,
     /// Sidecar 监听端口。
     port: u16,
+    /// 云端模式 env 注入（`None` = 本地模式，不注入；重启后自动保持）。
+    cloud_env: Option<CloudSidecarEnv>,
     /// 当前 Sidecar 握手后的 PSK（`restart` 后替换为新 PSK）。
     psk: Option<Vec<u8>>,
     /// 最近重启时间戳队列：用于 `CrashLoop` 窗口阈值统计。
@@ -92,6 +108,7 @@ impl SidecarManager {
             binary_path_: binary_path,
             process: None,
             port: SIDECAR_PORT,
+            cloud_env: None,
             psk: None,
             recent_restarts: VecDeque::new(),
             consecutive_failures: 0,
@@ -130,6 +147,11 @@ impl SidecarManager {
         self.process.as_ref().map(Child::id)
     }
 
+    /// 设置云端模式 env 注入（须在 `start` 之前调用；重启自动沿用）。
+    pub fn set_cloud_env(&mut self, cloud_env: CloudSidecarEnv) {
+        self.cloud_env = Some(cloud_env);
+    }
+
     /// 启动 Sidecar 子进程，通过 stdin 注入 PSK，返回 PSK 给调用方。
     ///
     /// # Errors
@@ -145,16 +167,24 @@ impl SidecarManager {
             log_redact::sanitize_path(&self.binary_path_.display().to_string())
         );
 
-        let mut child = std::process::Command::new(&self.binary_path_)
-            .env("SIDECAR_PORT", self.port.to_string())
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                AppError::SidecarUnavailable(format!(
-                    "Sidecar 启动失败 (binary={}): {e}",
-                    self.binary_path_.display()
-                ))
-            })?;
+        let mut cmd = std::process::Command::new(&self.binary_path_);
+        cmd.env("SIDECAR_PORT", self.port.to_string());
+        // T7.4：云端模式注入代理地址/token/脱敏开关（重启后经字段保持）
+        if let Some(cloud) = &self.cloud_env {
+            cmd.env("FILEMIND_CLOUD_PROXY_URL", &cloud.proxy_url);
+            cmd.env("FILEMIND_CLOUD_PROXY_TOKEN", &cloud.proxy_token);
+            cmd.env(
+                "FILEMIND_CLOUD_MASKING",
+                if cloud.masking_on { "1" } else { "0" },
+            );
+        }
+        cmd.stdin(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
+            AppError::SidecarUnavailable(format!(
+                "Sidecar 启动失败 (binary={}): {e}",
+                self.binary_path_.display()
+            ))
+        })?;
 
         // 通过 stdin 注入 PSK（hex 字符串 + 换行），随后关闭管道
         // 安全：stdin 管道仅在父子进程间可见，比 env 更稳妥（防同用户进程 ps 读取）
