@@ -1,9 +1,12 @@
 // 云端知情同意书对话框（设置页切云端用，内容对齐 StepConsent / 07 规范 §隐私合规）。
 //
 // 作为 modal 复用同意书文案与提供商选择；确认回调由父组件调 signCloudConsent。
+// T7.5 滚动到底门控：未滚读完同意书前 checkbox 禁用，勾选后才能确认。
 
 import { useState } from 'react';
+import { CLOUD_CONSENT_VERSION } from '../../lib/consent';
 import type { CloudProvider } from '../../types/ipc';
+import { ConsentAgreement } from '../consent/ConsentAgreement';
 
 interface CloudConsentDialogProps {
   busy: boolean;
@@ -18,6 +21,7 @@ const PROVIDER_OPTIONS: Array<{ value: CloudProvider; label: string }> = [
 
 export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDialogProps) {
   const [agreed, setAgreed] = useState(false);
+  const [bottomReached, setBottomReached] = useState(false);
   const [provider, setProvider] = useState<CloudProvider>('Openai');
 
   return (
@@ -31,25 +35,7 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
       <div className="settings-dialog" role="dialog" aria-modal="true" aria-label="隐私知情同意书">
         <h3 className="settings-dialog__title">隐私知情同意书</h3>
 
-        <div className="onboarding__hint onboarding__hint--warn">
-          <div className="onboarding__hint-title">⚠️ 请仔细阅读以下内容</div>
-          <div className="onboarding__hint-body">
-            <p>
-              <strong>选择云端模式意味着：</strong>
-            </p>
-            <ul>
-              <li>
-                你的<strong>文件内容</strong>将被发送到第三方 AI 服务提供商（如 OpenAI、DeepSeek）
-              </li>
-              <li>这些内容将在对方服务器上处理以生成 AI 回答</li>
-              <li>虽然提供商有保密政策，但数据已离开你的设备</li>
-            </ul>
-            <p>
-              <strong>你可以随时撤回同意：</strong>
-              在设置中撤回后，应用自动切换回本地模式，不会再上传任何数据。
-            </p>
-          </div>
-        </div>
+        <ConsentAgreement version={CLOUD_CONSENT_VERSION} onBottomReached={setBottomReached} />
 
         <div className="onboarding__provider-select">
           <label className="onboarding__field-label">选择云端提供商：</label>
@@ -73,7 +59,7 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
             checked={agreed}
             onChange={(e) => setAgreed(e.target.checked)}
             className="onboarding__checkbox-input"
-            disabled={busy}
+            disabled={!bottomReached || busy}
           />
           <span>我已阅读并理解以上内容，同意在云端模式下上传文件内容到第三方服务。</span>
         </label>
@@ -85,7 +71,7 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
           <button
             type="button"
             className="btn btn--primary"
-            disabled={!agreed || busy}
+            disabled={!agreed || !bottomReached || busy}
             onClick={() => onConfirm(provider)}
           >
             确认并切换到云端

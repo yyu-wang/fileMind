@@ -473,6 +473,25 @@ body {
   flex-shrink: 0;
 }
 
+/* ========== T7.5 同意书滚动内容（滚动到底门控） ========== */
+.consent-agreement__scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--bg);
+  outline-offset: 2px;
+}
+
+.consent-agreement__version-line {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--rule);
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .onboarding__actions {
   display: flex;
   justify-content: flex-end;
@@ -2203,6 +2222,12 @@ body {
 .settings-section__desc {
   font-size: 13px;
   color: var(--muted);
+}
+
+.settings-section__consent-info {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--success);
 }
 
 .settings-section__error {

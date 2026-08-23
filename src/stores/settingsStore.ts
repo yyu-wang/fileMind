@@ -9,6 +9,7 @@
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { CLOUD_CONSENT_VERSION } from '../lib/consent';
 import { fileIpc } from '../lib/ipc';
 import { applyTheme } from '../lib/theme';
 import type {
@@ -39,6 +40,12 @@ interface SettingsState {
   onboardingCompleted: boolean;
   /** 云端同意书是否已签（云端模式前置条件） */
   cloudConsentSigned: boolean;
+  /** 已签署的同意书版本号（未签为 null） */
+  cloudConsentVersion: string | null;
+  /** 已签署时选择的云端提供商（未签为 null） */
+  cloudConsentProvider: CloudProvider | null;
+  /** 签署时间（ISO 8601，未签为 null） */
+  cloudConsentSignedAt: string | null;
   /** 配置加载中 */
   isLoading: boolean;
   /** 错误信息（null 表示无错误） */
@@ -95,6 +102,9 @@ export const useSettingsStore = create<SettingsState>()(
       language: 'zh-CN',
       onboardingCompleted: false,
       cloudConsentSigned: false,
+      cloudConsentVersion: null,
+      cloudConsentProvider: null,
+      cloudConsentSignedAt: null,
       isLoading: true,
       error: null,
       ollamaStatus: null,
@@ -121,6 +131,9 @@ export const useSettingsStore = create<SettingsState>()(
             language: cfg.language,
             onboardingCompleted: cfg.onboarding_completed,
             cloudConsentSigned: cfg.cloud_consent_signed,
+            cloudConsentVersion: cfg.cloud_consent_version,
+            cloudConsentProvider: cfg.cloud_consent_provider,
+            cloudConsentSignedAt: cfg.cloud_consent_signed_at,
             llmModel: cfg.llm_model,
             isLoading: false,
           });
@@ -191,10 +204,16 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       signCloudConsent: async (provider) => {
-        // 同意书版本号当前固定 v1.0（07 规范 §隐私合规），后续版本变更在 T11
-        const result = await fileIpc.signCloudConsent('v1.0', provider);
+        // 同意书版本与后端 signCloudConsent 的 consent_version 一致（共享常量）
+        const result = await fileIpc.signCloudConsent(CLOUD_CONSENT_VERSION, provider);
         if (result.status === 'ok') {
-          set({ cloudConsentSigned: true, inferenceMode: 'Cloud' });
+          set({
+            cloudConsentSigned: true,
+            inferenceMode: 'Cloud',
+            cloudConsentVersion: CLOUD_CONSENT_VERSION,
+            cloudConsentProvider: provider,
+            cloudConsentSignedAt: new Date().toISOString(),
+          });
         } else {
           set({ error: result.error });
           throw new Error(result.error);
@@ -204,10 +223,14 @@ export const useSettingsStore = create<SettingsState>()(
       revokeCloudConsent: async () => {
         const result = await fileIpc.revokeCloudConsent();
         if (result.status === 'ok') {
-          // 撤回后自动切回 Local（04 API §2-3d 联动，Rust 端已完成 DB 切换）
+          // 撤回后自动切回 Local（04 API §2-3d 联动，Rust 端已完成 DB 切换），
+          // 同意元数据一并清空
           set({
             cloudConsentSigned: false,
             inferenceMode: 'Local',
+            cloudConsentVersion: null,
+            cloudConsentProvider: null,
+            cloudConsentSignedAt: null,
           });
         } else {
           set({ error: result.error });
