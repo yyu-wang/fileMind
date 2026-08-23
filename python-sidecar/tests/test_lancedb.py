@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.db.lancedb_repo import LanceDBManager  # noqa: E402
+from app.services.ingest_service import update_paths  # noqa: E402
 
 
 @pytest.fixture
@@ -137,3 +138,95 @@ def test_list_document_tables_filters_only_documents(ldb: LanceDBManager) -> Non
     # 但 list_document_tables 必须只返回 documents_ 前缀的
     for n in names:
         assert n.startswith("documents_")
+
+
+def _seed_table(ldb: LanceDBManager, table_name: str) -> None:
+    """向表中写入两个文件的分块（fid1-0/fid1-1/fid2-0），便于路径更新断言。"""
+    tbl = ldb.open_table(table_name)
+    tbl.add(
+        [
+            {
+                "vector": [0.1] * 8,
+                "chunk_id": "fid1-0",
+                "file_path": "/old/a",
+                "chunk_text": "x",
+                "page": 0,
+            },
+            {
+                "vector": [0.2] * 8,
+                "chunk_id": "fid1-1",
+                "file_path": "/old/a",
+                "chunk_text": "y",
+                "page": 0,
+            },
+            {
+                "vector": [0.3] * 8,
+                "chunk_id": "fid2-0",
+                "file_path": "/old/c",
+                "chunk_text": "z",
+                "page": 0,
+            },
+        ]
+    )
+
+
+def _read_paths(ldb: LanceDBManager, table_name: str) -> dict[str, str]:
+    """读取表中 chunk_id → file_path 映射（PyArrow 读取，避免依赖 pandas）。"""
+    tbl = ldb.open_table(table_name)
+    df = tbl.to_arrow()
+    ids = df.column("chunk_id").to_pylist()
+    paths = df.column("file_path").to_pylist()
+    return {cid: pth for cid, pth in zip(ids, paths, strict=True)}
+
+
+def test_update_paths_updates_matching_chunks(ldb: LanceDBManager) -> None:
+    """LIKE 前缀匹配：更新本 file_id 全部分块，不影响其它 file_id。"""
+    tname = ldb.ensure_table("bge-large-zh-v1.5", version=1, dim=8)
+    _seed_table(ldb, tname)
+
+    updated = update_paths(tname, [("fid1", "/new/a")], ldb)
+
+    assert updated == 1
+    paths = _read_paths(ldb, tname)
+    assert paths["fid1-0"] == "/new/a"
+    assert paths["fid1-1"] == "/new/a"
+    # 其它 file_id 不受影响
+    assert paths["fid2-0"] == "/old/c"
+
+
+def test_update_paths_multiple_mappings(ldb: LanceDBManager) -> None:
+    """多文件批量更新各写各的路径。"""
+    tname = ldb.ensure_table("bge-small-en", version=1, dim=8)
+    _seed_table(ldb, tname)
+
+    updated = update_paths(tname, [("fid1", "/new/a"), ("fid2", "/new/c")], ldb)
+
+    assert updated == 2
+    paths = _read_paths(ldb, tname)
+    assert paths["fid1-0"] == "/new/a"
+    assert paths["fid2-0"] == "/new/c"
+
+
+def test_update_paths_table_missing_returns_zero(ldb: LanceDBManager) -> None:
+    """从未建索引（表不存在）→ 静默返回 0，不抛错。"""
+    assert update_paths("documents_ghost_v1", [("fid1", "/new/a")], ldb) == 0
+
+
+def test_update_paths_empty_mappings_returns_zero(ldb: LanceDBManager) -> None:
+    """空映射 → 返回 0。"""
+    tname = ldb.ensure_table("bge-small-en", version=1, dim=8)
+    assert update_paths(tname, [], ldb) == 0
+
+
+def test_update_paths_unsafe_file_id_skipped(ldb: LanceDBManager) -> None:
+    """非法 file_id（含引号）跳过不更新，合法 file_id 正常更新。"""
+    tname = ldb.ensure_table("bge-small-en", version=1, dim=8)
+    _seed_table(ldb, tname)
+
+    updated = update_paths(tname, [("fid1'; DROP TABLE x; --", "/evil"), ("fid2", "/new/c")], ldb)
+
+    assert updated == 1
+    paths = _read_paths(ldb, tname)
+    assert paths["fid2-0"] == "/new/c"
+    # 非法项被跳过，未注入
+    assert ldb.is_table_exists(tname)

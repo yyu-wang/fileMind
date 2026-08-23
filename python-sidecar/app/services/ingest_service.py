@@ -207,3 +207,49 @@ async def build_index(
         table=table_name,
     )
     return BuildIndexResult(indexed=indexed, skipped=skipped)
+
+
+def _is_safe_file_id(value: str) -> bool:
+    """file_id 白名单校验：仅允许字母/数字/连字符。
+
+    用于拼入 ``chunk_id LIKE '{file_id}-%'`` 谓词前的防御性检查——
+    挡掉引号、空格、``%``/``_`` 通配符、``;`` 等注入/误匹配字符；
+    真实 file_id（uuid 十六进制+连字符）必过。命中异常值时跳过该条。
+    """
+    return bool(value) and all(ch.isalnum() or ch == "-" for ch in value)
+
+
+def update_paths(
+    table_name: str,
+    mappings: list[tuple[str, str]],
+    mgr: LanceDBManager,
+) -> int:
+    """把指定文件的最新路径同步到向量索引（chunk_id 前缀匹配，不重新 embedding）。
+
+    分类移动/撤销后调用：SQLite 的 ``files.path`` 已是新路径，但向量行里的
+    ``file_path`` 仍是旧路径（增量索引只认 created/modified/deleted，无移动语义）。
+    这里按 ``chunk_id = {file_id}-{seq}`` 前缀原地更新 ``file_path``，向量不变。
+    表不存在（从未建索引）或 ``mappings`` 为空时返回 0（静默跳过）。
+
+    Args:
+        table_name: 目标向量表名（``documents_{model}_v{version}``）。
+        mappings: ``(file_id, 最新路径)`` 列表。
+        mgr: LanceDB 管理器。
+
+    Returns:
+        成功更新路径的文件数（一个文件可对应多个分块行）。
+    """
+    if not mappings:
+        return 0
+    if not mgr.is_table_exists(table_name):
+        return 0
+
+    tbl = mgr.open_table(table_name)
+    updated = 0
+    for file_id, path in mappings:
+        if not _is_safe_file_id(file_id):
+            logger.warning("ingest.update_paths_skipped", file_id=file_id)
+            continue
+        tbl.update(where=f"chunk_id LIKE '{file_id}-%'", values={"file_path": path})
+        updated += 1
+    return updated

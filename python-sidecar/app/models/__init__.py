@@ -81,6 +81,26 @@ class IncrementalChangeRequest(BaseModel):
     table_name: str
 
 
+class IndexPathUpdateItem(BaseModel):
+    """单个文件的最新路径（分类移动/撤销后同步向量索引用）。"""
+
+    file_id: str
+    path: str
+
+
+class IndexPathUpdateRequest(BaseModel):
+    """POST /index/update_paths 请求体：原地更新向量行 file_path（不重新 embedding）。"""
+
+    table_name: str
+    mappings: list[IndexPathUpdateItem]
+
+
+class IndexPathUpdateResponse(BaseModel):
+    """POST /index/update_paths 响应体。"""
+
+    updated: int
+
+
 class EmbeddingModelsResponse(BaseModel):
     models: list[str]
 

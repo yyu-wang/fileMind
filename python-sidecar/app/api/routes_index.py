@@ -6,6 +6,7 @@ POST /index/incremental — 增量索引（T2.3：双重判断 content_hash + em
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -16,9 +17,16 @@ from app.models import (
     IncrementalIndexResponse,
     IndexBuildRequest,
     IndexBuildResponse,
+    IndexPathUpdateRequest,
+    IndexPathUpdateResponse,
 )
 from app.services.index_service import evaluate_incremental
-from app.services.ingest_service import build_index as build_index_service
+from app.services.ingest_service import (
+    build_index as build_index_service,
+)
+from app.services.ingest_service import (
+    update_paths as update_paths_service,
+)
 
 router = APIRouter(prefix="/index", tags=["索引"])
 
@@ -75,3 +83,26 @@ async def incremental_update(req: IncrementalChangeRequest) -> IncrementalIndexR
         deleted=len(result.deleted),
         duration_ms=duration_ms,
     )
+
+
+@router.post("/update_paths", response_model=IndexPathUpdateResponse)
+async def update_index_paths(req: IndexPathUpdateRequest) -> IndexPathUpdateResponse:
+    """原地更新向量索引中的文件路径（分类移动/撤销后同步，不重新 embedding）。
+
+    Args:
+        req: 目标表名 + ``(file_id, 最新路径)`` 映射列表。
+
+    Returns:
+        成功更新的文件数。
+
+    Raises:
+        HTTPException 503: 向量库未初始化。
+    """
+    mgr = state.get_lancedb()
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="向量库未初始化")
+
+    mappings = [(m.file_id, m.path) for m in req.mappings]
+    # LanceDB 更新为阻塞 I/O，放线程池避免阻塞事件循环（异步优先）
+    updated = await asyncio.to_thread(update_paths_service, req.table_name, mappings, mgr)
+    return IndexPathUpdateResponse(updated=updated)

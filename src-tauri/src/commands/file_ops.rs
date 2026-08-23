@@ -4,13 +4,14 @@
 //! 声明为线程池执行，避免阻塞主线程。
 
 use crate::db::models::{FileRecord, OperationLog};
-use crate::db::{FileRepo, OperationRepo};
+use crate::db::{ConfigRepo, FileRepo, OperationRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
 use crate::services::hash_service::compute_file_hash;
 use crate::services::operation_executor;
 use crate::services::undo_executor;
+use crate::sidecar::proxy;
 use crate::{AppState, FileInfo};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -267,6 +268,86 @@ fn aggregate_summary(plan: &[PlanItem]) -> PreviewSummary {
     summary
 }
 
+/// `/index/update_paths` 请求体（对齐 sidecar `IndexPathUpdateRequest`）。
+#[derive(Debug, Serialize)]
+struct SidecarPathUpdateItem {
+    file_id: String,
+    path: String,
+}
+
+/// `/index/update_paths` 请求体。
+#[derive(Debug, Serialize)]
+struct SidecarPathUpdateRequest {
+    table_name: String,
+    mappings: Vec<SidecarPathUpdateItem>,
+}
+
+/// 尽力而为：把分类移动/撤销后的文件路径同步到向量索引。
+///
+/// `SQLite` 的 `files.path` 已是新路径，但 `LanceDB` 向量行里的 `file_path` 仍是旧路径
+/// （索引增量逻辑只认 created/modified/deleted，无移动语义），RAG 问答引用会指向
+/// 失效位置。这里经 `/index/update_paths` 原地更新 `file_path`（向量不变，不重新
+/// embedding）。纯 best-effort：sidecar 未就绪或失败仅记录日志，绝不影响执行结果。
+fn spawn_index_path_sync(state: &AppState, mappings: Vec<(String, String)>) {
+    if mappings.is_empty() {
+        return;
+    }
+
+    // 目标表名由当前 embedding 模型决定（对齐 build_index 的 documents_{model}_v1）
+    let table_name = match state.db.lock() {
+        Ok(guard) => match ConfigRepo::get(guard.conn()) {
+            Ok(config) => format!("documents_{}_v1", config.embedding_model),
+            Err(e) => {
+                log::warn!("索引路径同步：读取 embedding 模型失败（跳过）: {e}");
+                return;
+            }
+        },
+        Err(poisoned) => {
+            log::warn!("索引路径同步：获取 DB 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+
+    // sidecar 未握手（PSK 为空，如测试环境）→ 静默跳过，不 spawn
+    let psk = match state.sidecar_psk.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => {
+            log::warn!("索引路径同步：获取 PSK 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+    let Some(psk) = psk else {
+        return;
+    };
+    let seq = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    let count = mappings.len();
+    let mappings: Vec<SidecarPathUpdateItem> = mappings
+        .into_iter()
+        .map(|(file_id, path)| SidecarPathUpdateItem { file_id, path })
+        .collect();
+
+    tauri::async_runtime::spawn(async move {
+        let request = SidecarPathUpdateRequest {
+            table_name,
+            mappings,
+        };
+        let body = match serde_json::to_string(&request) {
+            Ok(body) => body,
+            Err(e) => {
+                log::warn!("索引路径同步：序列化请求失败（跳过）: {e}");
+                return;
+            }
+        };
+        match proxy::forward_post("/index/update_paths", &body, &psk, seq).await {
+            Ok(_) => log::info!("索引路径已同步 {count} 个文件"),
+            Err(e) => log::warn!("索引路径同步失败（不影响执行结果）: {e}"),
+        }
+    });
+}
+
 /// 批量执行文件操作（API §s2-2b）。
 ///
 /// 流程：
@@ -324,6 +405,8 @@ fn execute_operations_inner(
     };
 
     let mut logs_to_insert: Vec<OperationLog> = Vec::new();
+    // 路径被移动/重命名的文件（file_id, 新路径），执行后同步到向量索引
+    let mut moved_paths: Vec<(String, String)> = Vec::new();
 
     for item in &request.plan {
         // 跳过用户排除的文件
@@ -420,6 +503,8 @@ fn execute_operations_inner(
                                 log::warn!(
                                     "execute_operations update_path 失败（不影响执行结果）: {e}"
                                 );
+                            } else {
+                                moved_paths.push((exec_item.file_id.clone(), new_path.clone()));
                             }
                         }
                     }
@@ -450,6 +535,9 @@ fn execute_operations_inner(
             }
         }
     }
+
+    // 尽力而为：把移动后文件的最新路径同步到向量索引（失败仅告警）
+    spawn_index_path_sync(state, moved_paths);
 
     Ok(ExecuteResponse {
         batch_id: request.batch_id,
@@ -511,6 +599,8 @@ fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse>
     let task_id = uuid::Uuid::new_v4().to_string();
     let mut undone_count = 0u32;
     let mut failed_count = 0u32;
+    // 路径被移回的文件（file_id, 恢复的原路径），撤销后同步到向量索引
+    let mut restored_paths: Vec<(String, String)> = Vec::new();
 
     // 反向遍历：后执行的先撤销（同类操作互相独立，反序仅为语义正确性）
     for log in logs.iter().rev() {
@@ -537,6 +627,8 @@ fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse>
                                     FileRepo::update_path(conn, &rec.id, &log.source_path)
                                 {
                                     log::warn!("undo_batch 回写 files.path 失败: {e}");
+                                } else {
+                                    restored_paths.push((rec.id.clone(), log.source_path.clone()));
                                 }
                             }
                         }
@@ -555,6 +647,9 @@ fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse>
             }
         }
     }
+
+    // 尽力而为：把移回原路径的文件同步到向量索引（失败仅告警）
+    spawn_index_path_sync(state, restored_paths);
 
     Ok(UndoResponse {
         success: failed_count == 0,
@@ -1152,6 +1247,17 @@ mod tests {
         assert!(undo2.is_err());
         assert!(matches!(undo2.unwrap_err(), AppError::Forbidden(_)));
         Ok(())
+    }
+
+    #[test]
+    fn test_spawn_index_path_sync_skips_without_psk() {
+        // PSK 未握手（测试环境恒为 None）时静默跳过：不 spawn、不 panic；
+        // 空映射直接返回。保证 sidecar 不可用时索引同步绝不影响执行结果。
+        let tmp_db = tempfile::NamedTempFile::new().unwrap();
+        let state = make_test_app_state(tmp_db.path());
+
+        spawn_index_path_sync(&state, vec![("fid1".into(), "/new/a".into())]);
+        spawn_index_path_sync(&state, vec![]);
     }
 
     #[test]
