@@ -15,6 +15,8 @@ import { ClassifyRuleSourceTag } from './ClassifyRuleSourceTag';
 interface ClassifyPreviewTreeProps {
   /** 分类预览结果 */
   preview: ClassifyPreview;
+  /** 点击文件名打开预览抽屉（由父级传入对应文件的最小元信息） */
+  onOpenPreview?: (item: ClassifyPlanItem) => void;
 }
 
 interface PreviewGroup {
@@ -71,7 +73,7 @@ function targetSubdir(targetPath: string, scanPath: string | null): string {
   return dir ? ` → /${dir}/` : '';
 }
 
-export function ClassifyPreviewTree({ preview }: ClassifyPreviewTreeProps) {
+export function ClassifyPreviewTree({ preview, onOpenPreview }: ClassifyPreviewTreeProps) {
   const groups = useMemo(() => groupPreviewItems(preview.items), [preview.items]);
   const scanPath = useFileStore((s) => s.scanPath);
   // 手动分类数据源 + 动作（待确认组用）
@@ -207,9 +209,21 @@ export function ClassifyPreviewTree({ preview }: ClassifyPreviewTreeProps) {
                           aria-label={`选择 ${item.file_name}`}
                         />
                       )}
-                      <span className="tree-node__name" title={item.original_path}>
-                        {item.file_name}
-                      </span>
+                      {/* 提供 onOpenPreview 时文件名可点击，打开预览抽屉（对齐文件页） */}
+                      {onOpenPreview ? (
+                        <button
+                          type="button"
+                          className="tree-node__name tree-node__name--preview"
+                          title={item.original_path}
+                          onClick={() => onOpenPreview(item)}
+                        >
+                          {item.file_name}
+                        </button>
+                      ) : (
+                        <span className="tree-node__name" title={item.original_path}>
+                          {item.file_name}
+                        </span>
+                      )}
                       <ClassifyRuleSourceTag source={item.rule_source} />
                       {isConflictGroup && (
                         <span className="tree-node__conflict">目标已存在（跳过）</span>

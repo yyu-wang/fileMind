@@ -1,6 +1,6 @@
-// ClassifyPreviewTree 单元测试：树形分组、待确认高亮、冲突标记、按钮回调。
+// ClassifyPreviewTree 单元测试：树形分组、待确认高亮、冲突标记、按钮回调、预览回调。
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -37,8 +37,9 @@ function makePreview(items: ClassifyPlanItem[]): ClassifyPreview {
   };
 }
 
-function renderTree(preview: ClassifyPreview) {
-  render(<ClassifyPreviewTree preview={preview} />);
+function renderTree(preview: ClassifyPreview, onOpenPreview?: (item: ClassifyPlanItem) => void) {
+  // exactOptionalPropertyTypes：仅在传入回调时才透传，避免显式传 undefined
+  render(<ClassifyPreviewTree preview={preview} {...(onOpenPreview ? { onOpenPreview } : {})} />);
 }
 
 describe('ClassifyPreviewTree', () => {
@@ -100,5 +101,24 @@ describe('ClassifyPreviewTree', () => {
     expect(screen.queryByText('a.pdf')).not.toBeInTheDocument();
     await user.click(screen.getByText('财务'));
     expect(screen.getByText('a.pdf')).toBeInTheDocument();
+  });
+
+  it('renders file name as plain text when no onOpenPreview', () => {
+    renderTree(makePreview([makeItem('a')]));
+    const name = screen.getByText('a.pdf');
+    expect(name.tagName).toBe('SPAN');
+    expect(screen.queryByRole('button', { name: 'a.pdf' })).not.toBeInTheDocument();
+  });
+
+  it('calls onOpenPreview with the item when file name clicked', async () => {
+    const user = userEvent.setup();
+    const onOpenPreview = vi.fn();
+    const item = makeItem('a', { category_name: '财务' });
+    renderTree(makePreview([item]), onOpenPreview);
+
+    await user.click(screen.getByRole('button', { name: 'a.pdf' }));
+
+    expect(onOpenPreview).toHaveBeenCalledTimes(1);
+    expect(onOpenPreview).toHaveBeenCalledWith(item);
   });
 });

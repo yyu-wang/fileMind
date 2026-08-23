@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
-import { FilePreviewDrawer } from '@/components/file/FilePreviewDrawer';
+import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import {
   filterByName,
@@ -43,8 +43,6 @@ export function FilesPage() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<'' | FileStatus>('');
   const [searchQuery, setSearchQuery] = useState('');
-  // 筛选面板展开态（对齐交互原型「筛选」按钮）
-  const [filterOpen, setFilterOpen] = useState(false);
   const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
 
@@ -146,15 +144,6 @@ export function FilesPage() {
       )}
 
       <div className="files-toolbar">
-        <button
-          type="button"
-          className="btn"
-          onClick={handleClassifySelected}
-          disabled={selectedIds.length === 0}
-        >
-          整理选中 ({selectedIds.length})
-        </button>
-
         {/* 搜索框（对齐交互原型） */}
         <div className="search-box">
           <svg
@@ -179,43 +168,46 @@ export function FilesPage() {
 
         <span className="files-toolbar__spacer" />
 
-        {/* 筛选按钮 + 展开面板（对齐交互原型） */}
-        <button type="button" className="btn btn--ghost" onClick={() => setFilterOpen((v) => !v)}>
-          筛选 {filterOpen ? '▴' : '▾'}
+        {/* 常驻筛选条件（与搜索框同级；去掉「筛选」展开按钮，一次点击即筛选） */}
+        <label className="filter-field">
+          <span>分类</span>
+          <select
+            className="files-toolbar__select"
+            aria-label="按分类筛选"
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+          >
+            <option value="">全部分类</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="filter-field">
+          <span>状态</span>
+          <select
+            className="files-toolbar__select"
+            aria-label="按状态筛选"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
+          >
+            <option value="">全部状态</option>
+            <option value="categorized">已分类</option>
+            <option value="uncategorized">未分类</option>
+          </select>
+        </label>
+
+        {/* 主操作：整理选中（右侧，与检索条件同组） */}
+        <button
+          type="button"
+          className="btn"
+          onClick={handleClassifySelected}
+          disabled={selectedIds.length === 0}
+        >
+          整理选中 ({selectedIds.length})
         </button>
-        {filterOpen && (
-          <div className="filter-panel">
-            <label className="filter-panel__field">
-              <span>分类</span>
-              <select
-                className="files-toolbar__select"
-                aria-label="按分类筛选"
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-              >
-                <option value="">全部分类</option>
-                {categories.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="filter-panel__field">
-              <span>状态</span>
-              <select
-                className="files-toolbar__select"
-                aria-label="按状态筛选"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
-              >
-                <option value="">全部状态</option>
-                <option value="categorized">已分类</option>
-                <option value="uncategorized">未分类</option>
-              </select>
-            </label>
-          </div>
-        )}
       </div>
 
       <div className="files-page__body">

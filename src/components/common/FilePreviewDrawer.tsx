@@ -1,4 +1,7 @@
-// 文件预览抽屉：按类型渲染 文本 / 图片 / PDF / 不支持 降级提示。
+// 文件预览抽屉（公共组件）：按类型渲染 文本 / 图片 / PDF / 不支持 降级提示。
+//
+// 供 文件管理 / 智能分类 / 问答 等模块复用：只依赖 path + file_name 即可预览，
+// file_size / category 为可选元信息（缺省时对应 meta 行不显示）。
 //
 // props 受控：file 为 null 时不渲染；file 变化时重新拉取预览内容。
 // PDF 走 react-pdf，worker 用同源 URL（CSP script-src 'self' 禁 blob:）。
@@ -8,12 +11,22 @@ import { Document, Page, pdfjs } from 'react-pdf';
 
 import { formatFileSize } from '@/lib/format';
 import { fileIpc } from '@/lib/ipc';
-import type { FileInfo, FilePreview } from '@/types/ipc';
+import type { FilePreview } from '@/types/ipc';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url,
 ).toString();
+
+/** 预览目标的最小子集：path/file_name 必填，size/category 可选（缺省隐藏对应 meta 行）。 */
+export interface FilePreviewTarget {
+  path: string;
+  file_name: string;
+  /** 文件大小（字节）；缺省时 meta 不显示大小行 */
+  file_size?: number;
+  /** 分类名：undefined 隐藏分类行，null 显示「未分类」，字符串显示分类名 */
+  category?: string | null;
+}
 
 type PreviewState =
   | { phase: 'loading' }
@@ -21,7 +34,7 @@ type PreviewState =
   | { phase: 'ready'; preview: FilePreview };
 
 interface FilePreviewDrawerProps {
-  file: FileInfo | null;
+  file: FilePreviewTarget | null;
   onClose: () => void;
   /** 初始页码（引用跳转定位用；txt/md 文本预览 best-effort 忽略） */
   initialPage?: number;
@@ -93,8 +106,12 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
         <span className="files-preview__meta-item" title={file.path}>
           {file.path}
         </span>
-        <span className="files-preview__meta-item">{formatFileSize(file.file_size)}</span>
-        <span className="files-preview__meta-item">{file.category ?? '未分类'}</span>
+        {file.file_size != null && (
+          <span className="files-preview__meta-item">{formatFileSize(file.file_size)}</span>
+        )}
+        {file.category !== undefined && (
+          <span className="files-preview__meta-item">{file.category ?? '未分类'}</span>
+        )}
       </div>
     </div>
   );

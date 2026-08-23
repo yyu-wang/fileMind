@@ -196,6 +196,34 @@ describe('execute', () => {
     expect(state.lastBatchId).toBe('b1');
   });
 
+  it('copy mode sends Copy operation and still labels original files', async () => {
+    const items = [makeItem('a'), makeItem('b')];
+    vi.mocked(fileIpc.classifyPreview).mockResolvedValue({
+      status: 'ok',
+      data: makePreview(items),
+    });
+    await useClassifyStore.getState().generatePreview(['a', 'b']);
+
+    vi.mocked(fileIpc.executeOperations).mockResolvedValue({
+      status: 'ok',
+      data: okExecute('b1', ['a', 'b']),
+    });
+
+    await useClassifyStore.getState().execute(false, 'copy');
+
+    const plan = vi.mocked(fileIpc.executeOperations).mock.calls[0][0].plan;
+    expect(plan).toHaveLength(2);
+    expect(plan[0].operation).toBe('Copy');
+    expect(plan[0].new_path).toBe(items[0].target_path);
+    // 复制模式同样给原文件打分类标签（软排除，避免重复选中）
+    expect(fileIpc.updateFileCategory).toHaveBeenCalledTimes(2);
+    expect(fileIpc.updateFileCategory).toHaveBeenCalledWith('a', '图片');
+
+    const state = useClassifyStore.getState();
+    expect(state.status).toBe(ClassifyStatus.Done);
+    expect(state.execSummary).toEqual({ success: 2, failed: 0, pending: 0, total: 2 });
+  });
+
   it('excludes pending and conflict items from execution plan', async () => {
     const items = [
       makeItem('ok'),

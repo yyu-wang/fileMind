@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { SearchStatusBar } from '@/components/chat/SearchStatusBar';
-import { FilePreviewDrawer } from '@/components/file/FilePreviewDrawer';
+import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { fileIpc } from '@/lib/ipc';
 import { useChatStore } from '@/stores/chatStore';

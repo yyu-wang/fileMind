@@ -1,7 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+// FilePreviewDrawer 单元测试：文本/图片/PDF/不支持渲染、错误态、关闭回调、
+// 以及可选元信息行（file_size/category 缺省时隐藏）。
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { FileInfo, FilePreview } from '@/types/ipc';
+
+import { FilePreviewDrawer, type FilePreviewTarget } from './FilePreviewDrawer';
 
 const mocks = vi.hoisted(() => ({
   readFilePreview: vi.fn(),
@@ -18,8 +23,6 @@ vi.mock('react-pdf', () => ({
   Document: mocks.Document,
   Page: mocks.Page,
 }));
-
-import { FilePreviewDrawer } from './FilePreviewDrawer';
 
 function makeFile(overrides: Partial<FileInfo> = {}): FileInfo {
   return {
@@ -114,6 +117,26 @@ describe('FilePreviewDrawer', () => {
     });
     render(<FilePreviewDrawer file={makeFile()} onClose={vi.fn()} />);
     expect(await screen.findByText(/暂不支持预览/)).toBeInTheDocument();
+  });
+
+  it('shows size and category meta rows when provided', async () => {
+    mocks.readFilePreview.mockResolvedValue({ status: 'ok', data: makePreview({ text: 'x' }) });
+    render(<FilePreviewDrawer file={makeFile({ category: '财务' })} onClose={vi.fn()} />);
+    await screen.findByText('x');
+    expect(screen.getByText('100 B')).toBeInTheDocument();
+    expect(screen.getByText('财务')).toBeInTheDocument();
+    expect(screen.getByText('/tmp/a.txt')).toBeInTheDocument();
+  });
+
+  it('hides size and category meta rows when omitted', async () => {
+    mocks.readFilePreview.mockResolvedValue({ status: 'ok', data: makePreview({ text: 'x' }) });
+    // 智能分类场景：只有 path + file_name，无 size/category 元信息
+    const target: FilePreviewTarget = { path: '/tmp/a.txt', file_name: 'a.txt' };
+    render(<FilePreviewDrawer file={target} onClose={vi.fn()} />);
+    await screen.findByText('x');
+    expect(screen.getByText('/tmp/a.txt')).toBeInTheDocument();
+    expect(screen.queryByText('100 B')).not.toBeInTheDocument();
+    expect(screen.queryByText(/未分类/)).not.toBeInTheDocument();
   });
 
   it('calls onClose when close button clicked', async () => {

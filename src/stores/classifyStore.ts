@@ -16,6 +16,14 @@ import { useFileStore } from './fileStore';
 /** 待确认分组的展示名（对应 Rust `pending` 来源标签）。 */
 export const PENDING_NAME = '待确认';
 
+/**
+ * 分类执行方式：
+ *   `move` 移动原文件到分类子文件夹（现有行为）；
+ *   `copy` 保留原文件，复制副本到分类子文件夹（不影响原文件）。
+ * 后端 `execute_operations` 原生支持 Copy，纯前端传 operation 即可。
+ */
+export type ClassifyExecMode = 'move' | 'copy';
+
 /** 单块执行的文件数上限（分批调用避免单次 IPC 过久）。 */
 const CHUNK_SIZE = 50;
 
@@ -74,8 +82,8 @@ interface ClassifyState {
   assignCategory: (fileId: string, category: Category) => void;
   /** 批量手动指定分类（T6.12 增强：一次 set 更新多个文件，避免逐点过慢） */
   assignCategories: (fileIds: string[], category: Category) => void;
-  /** 分块执行已确认分类；`resolveConflicts=true` 时冲突项按 Rename 策略一并执行（确认执行全部） */
-  execute: (resolveConflicts?: boolean) => Promise<void>;
+  /** 分块执行已确认分类；`resolveConflicts=true` 时冲突项按 Rename 策略一并执行（确认执行全部）；`mode` 决定移动还是复制 */
+  execute: (resolveConflicts?: boolean, mode?: ClassifyExecMode) => Promise<void>;
   /** 暂停执行 */
   pause: () => void;
   /** 继续执行 */
@@ -90,14 +98,14 @@ interface ClassifyState {
   clearError: () => void;
 }
 
-/** 分类计划项 → T3.x 执行用 PlanItem（Move 到各自目标路径）。 */
-function toPlanItem(item: ClassifyPlanItem): PlanItem {
+/** 分类计划项 → T3.x 执行用 PlanItem（按 mode 选 Move 移动 / Copy 复制）。 */
+function toPlanItem(item: ClassifyPlanItem, mode: ClassifyExecMode): PlanItem {
   return {
     file_id: item.file_id,
     file_name: item.file_name,
     original_path: item.original_path,
     new_path: item.target_path,
-    operation: 'Move',
+    operation: mode === 'copy' ? 'Copy' : 'Move',
     status: item.status,
     conflict_type: item.conflict_type,
   };
@@ -270,7 +278,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     });
   },
 
-  execute: async (resolveConflicts = false) => {
+  execute: async (resolveConflicts = false, mode: ClassifyExecMode = 'move') => {
     const preview = get().preview;
     if (!preview) {
       set({ status: ClassifyStatus.Idle, error: '尚未生成分类预览' });
@@ -292,7 +300,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       return;
     }
 
-    const plan = execItems.map(toPlanItem);
+    const plan = execItems.map((item) => toPlanItem(item, mode));
     control.paused = false;
     control.cancelled = false;
     set({ status: ClassifyStatus.Running, error: null, progress: { done: 0, total: plan.length } });
@@ -319,6 +327,8 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         if (r.success) {
           success += 1;
           const execItem = execItems.find((item) => item.file_id === r.file_id);
+          // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
+          // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
           if (execItem?.category_name) {
             await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
           }
