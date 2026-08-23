@@ -236,6 +236,7 @@ def test_history_passed_to_rewrite(client: TestClient) -> None:
     rewrite_mock.assert_awaited_once_with(
         "那营收多少？",
         [ConversationTurn(user="2024年Q3营收是多少？", assistant="5.2亿元")],
+        provider=None,
     )
 
 
@@ -413,7 +414,7 @@ def test_retry_exhausted_marks_low_confidence(client: TestClient) -> None:
 def test_validate_llm_unavailable_fail_open(client: TestClient) -> None:
     """验证阶段 Ollama 故障 → fail-open：不重试，直接 done（无 low_confidence）。"""
 
-    async def boom(query: str, context: str, answer: str) -> object:
+    async def boom(query: str, context: str, answer: str, provider=None) -> object:
         raise LLMUnavailableError("Ollama down")
 
     with (

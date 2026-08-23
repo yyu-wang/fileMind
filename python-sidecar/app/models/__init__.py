@@ -37,10 +37,13 @@ class ClassifyRequest(BaseModel):
 
     ``categories`` 为 SQLite categories 表预定义分类列表（P-01 输入变量
     ``predefined_categories``），由 Rust 层传入；所有 DB 操作在 Rust 侧。
+    ``llm_model`` 指定生成模型名（T8.5 云端适配）：空串回落本地默认
+    ``LLM_MODEL``，云端前缀（gpt-* / deepseek-*）走云端推理。
     """
 
     files: list[ClassifyItem]
     categories: list[str] = []
+    llm_model: str = ""
 
 
 class IndexBuildResponse(BaseModel):

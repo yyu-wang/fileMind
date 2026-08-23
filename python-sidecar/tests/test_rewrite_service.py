@@ -225,3 +225,67 @@ async def test_rewrite_parse_failure_falls_back() -> None:
     assert result.rewritten_query == "原问题"
     assert result.need_rewrite is False
     assert "解析失败" in result.reason
+
+
+# ------------------------------------------------------------------
+# T8.5 云端变体（Prompt 版本适配）
+# ------------------------------------------------------------------
+
+#: P-02 JSON schema 字段（local/cloud 必须完全一致，DoD 依据）
+_REWRITE_SCHEMA_FIELDS = ("rewritten_query", "need_rewrite", "expanded_keywords")
+
+
+def test_build_prompt_cloud_schema_consistent_with_local() -> None:
+    """云端变体 JSON schema 字段与本地完全一致；few-shot 3 → 1。"""
+    local_system, local_user = build_rewrite_prompt("那利润呢？", [turn()])
+    cloud_system, cloud_user = build_rewrite_prompt("那利润呢？", [turn()], version="cloud")
+    for field in _REWRITE_SCHEMA_FIELDS:
+        assert field in local_system, field
+        assert field in cloud_system, field
+    assert cloud_user.count("[示例") == 1
+    assert local_user.count("[示例") == 3
+
+
+async def test_rewrite_query_cloud_provider_uses_generate() -> None:
+    """传入云端 Provider → 走 provider.generate(json_mode=True) 并解析。"""
+    from app.services.cloud_provider import CloudUnavailableError
+
+    history = [turn(user="2024年Q3营收是多少？", assistant="5.2亿元")]
+
+    class FakeCloud:
+        version = "cloud"
+        calls: list[dict[str, object]] = []
+
+        async def generate(
+            self,
+            system: str,
+            user: str,
+            *,
+            temperature: float = 0.2,
+            max_tokens: int | None = None,
+            json_mode: bool = False,
+            **kwargs: object,
+        ) -> str:
+            FakeCloud.calls.append(
+                {"json_mode": json_mode, "temperature": temperature, "max_tokens": max_tokens}
+            )
+            return (
+                '{"rewritten_query": "2024年Q3的利润是多少", "need_rewrite": true,'
+                ' "expanded_keywords": ["2024", "利润"]}'
+            )
+
+    result = await rewrite_query("那利润呢？", history, provider=FakeCloud())  # type: ignore[arg-type]
+    assert result.rewritten_query == "2024年Q3的利润是多少"
+    assert len(FakeCloud.calls) == 1
+    assert FakeCloud.calls[0]["json_mode"] is True
+    assert FakeCloud.calls[0]["temperature"] == 0.0
+    assert FakeCloud.calls[0]["max_tokens"] == 256
+
+    class BoomCloud:
+        version = "cloud"
+
+        async def generate(self, *args: object, **kwargs: object) -> str:
+            raise CloudUnavailableError("proxy down")
+
+    with pytest.raises(LLMUnavailableError):
+        await rewrite_query("查询", [turn()], provider=BoomCloud())  # type: ignore[arg-type]

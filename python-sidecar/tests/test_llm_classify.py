@@ -247,3 +247,91 @@ async def test_classify_file_with_llm_unavailable_propagates() -> None:
         pytest.raises(LLMUnavailableError),
     ):
         await classify_file_with_llm(make_item(), [])
+
+
+# ------------------------------------------------------------------
+# T8.5 云端变体（Prompt 版本适配）
+# ------------------------------------------------------------------
+
+#: P-01 JSON schema 字段（local/cloud 必须完全一致，DoD 依据）
+_CLASSIFY_SCHEMA_FIELDS = ("category", "confidence", "reason", "is_new_category")
+
+
+def test_build_prompt_cloud_schema_consistent_with_local() -> None:
+    """云端变体 JSON schema 字段与本地完全一致（DoD「输出格式一致」）。
+
+    云端指令精简 + 单 few-shot，但输出字段名不可变。
+    """
+    local_system, _ = build_classify_prompt(make_item(), ["财务", "文档"])
+    cloud_system, cloud_user = build_classify_prompt(make_item(), ["财务", "文档"], version="cloud")
+    for field in _CLASSIFY_SCHEMA_FIELDS:
+        assert field in local_system, field
+        assert field in cloud_system, field
+    # 云端精简：few-shot 3 → 1（示例 1 仅一个），本地三个
+    assert cloud_user.count("[示例") == 1
+    assert build_classify_prompt(make_item(), ["财务"])[1].count("[示例") == 3
+
+
+class _FakeCloudProvider:
+    """简化云端 Provider：仅记录 generate 调用参数，返回预设 JSON。"""
+
+    version = "cloud"
+
+    def __init__(self, raw: str) -> None:
+        self._raw = raw
+        self.calls: list[dict[str, object]] = []
+
+    async def generate(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+        json_mode: bool = False,
+        **kwargs: object,
+    ) -> str:
+        self.calls.append(
+            {
+                "system": system,
+                "user": user,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "json_mode": json_mode,
+            }
+        )
+        return self._raw
+
+
+async def test_classify_file_with_llm_cloud_provider_uses_generate() -> None:
+    """传入云端 Provider → 走 provider.generate(json_mode=True) 并解析。"""
+    provider = _FakeCloudProvider(
+        '{"category": "财务报表", "confidence": 0.9, "reason": "报表", "is_new_category": false}'
+    )
+    result = await classify_file_with_llm(make_item(), ["财务"], provider=provider)  # type: ignore[arg-type]
+    assert result.category == "财务报表"
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["json_mode"] is True
+    assert call["temperature"] == 0.0
+    assert call["max_tokens"] == 256
+    # 云端变体 Prompt：user 不含本地 three-shot 示例
+    assert "[示例" not in call["user"] or call["user"].count("[示例") == 1
+
+
+async def test_classify_file_with_llm_cloud_unavailable_maps_to_llm() -> None:
+    """云端不可用（CloudUnavailableError）→ LLMUnavailableError（跳过第 3 层语义）。"""
+    from app.services.cloud_provider import CloudUnavailableError
+
+    class BoomProvider:
+        version = "cloud"
+
+        async def generate(self, *args: object, **kwargs: object) -> str:
+            raise CloudUnavailableError("proxy down")
+
+    with pytest.raises(LLMUnavailableError):
+        await classify_file_with_llm(
+            make_item(),
+            ["财务"],
+            provider=BoomProvider(),  # type: ignore[arg-type]
+        )

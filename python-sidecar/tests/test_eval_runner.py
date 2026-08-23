@@ -29,7 +29,9 @@ async def test_run_eval_with_oracle_llm_high_accuracy() -> None:
     records = generate_dataset(120, seed=1)
     by_name = {record.file_name: record.correct_category for record in records}
 
-    async def oracle(item: ClassifyItem, categories: list[str], masker=None) -> ClassifyResult:
+    async def oracle(
+        item: ClassifyItem, categories: list[str], masker=None, provider=None
+    ) -> ClassifyResult:
         return ClassifyResult(
             category=by_name[item.name], confidence=0.9, reason="oracle", is_new_category=False
         )

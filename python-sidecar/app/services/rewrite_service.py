@@ -25,12 +25,16 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.rules.llm_classify import (
     OLLAMA_TIMEOUT,
+    LLMUnavailableError,
     call_ollama_json,
     extract_json_text,
 )
+from app.services.cloud_provider import CloudUnavailableError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from app.services.cloud_provider import LLMProvider, PromptVersion
 
 #: 参与改写的最近对话轮数（P-02 输入变量 conversation_history「最近 3 轮」）
 HISTORY_TURNS = 3
@@ -72,6 +76,32 @@ _FEW_SHOT_EXAMPLES = """[示例 1 — 代词消解]
 用户：什么是增量索引？
 
 {"rewritten_query": "什么是增量索引", "need_rewrite": false, "expanded_keywords": ["增量索引"]}"""
+
+# T8.5 云端变体：利用云端 response_format(json_object) 强约束，指令精简、
+# few-shot 3→1；JSON schema 与本地版本完全一致（DoD「同一请求在 local/cloud
+# 下输出格式一致」）。
+_SYSTEM_TEMPLATE_CLOUD = """你是一个查询改写助手。将多轮对话中的查询改写为独立、完整的检索查询。
+
+## 改写规则
+1. 将代词（这个、那个、它）替换为上文中的具体指代对象
+2. 补充必要的上下文信息，使查询可以独立理解
+3. 保持用户原始意图，不添加用户未表达的内容
+4. 如果用户查询已经完整，直接返回原文
+
+## 输出格式（严格 JSON）
+{{
+  "rewritten_query": "改写后的查询",
+  "need_rewrite": true,
+  "expanded_keywords": ["关键词1", "关键词2"]
+}}"""
+
+_FEW_SHOT_EXAMPLES_CLOUD = """[示例 1 — 代词消解]
+对话历史：
+用户：2024年Q3的营收是多少？
+助手：根据财务报告，2024年Q3营收为 5.2 亿元...
+用户：那利润呢？
+
+{"rewritten_query": "2024年Q3的利润是多少", "need_rewrite": true, "expanded_keywords": ["2024", "Q3", "利润", "财务报告"]}"""
 
 _USER_TEMPLATE = """## 对话历史（最近 3 轮）
 {conversation_history}
@@ -121,21 +151,30 @@ def format_history(history: Sequence[ConversationTurn]) -> str:
     return "\n\n".join(blocks)
 
 
-def build_rewrite_prompt(query: str, history: Sequence[ConversationTurn]) -> tuple[str, str]:
+def build_rewrite_prompt(
+    query: str,
+    history: Sequence[ConversationTurn],
+    version: PromptVersion = "local",
+) -> tuple[str, str]:
     """按 P-02 模板构建 (system, user) 消息对。
 
     Args:
         query: 当前用户输入的原始查询。
         history: 对话历史（内部取最近 3 轮格式化）。
+        version: Prompt 版本（T8.5）。``"cloud"`` 用精简指令 + 单 few-shot；
+            ``"local"`` 用详细指令 + 3 few-shot。两者 JSON schema 完全一致。
 
     Returns:
         (system_prompt, user_prompt) 二元组，直接传入 ``call_ollama_json``。
     """
-    system = _SYSTEM_TEMPLATE
+    if version == "cloud":
+        system, examples = _SYSTEM_TEMPLATE_CLOUD, _FEW_SHOT_EXAMPLES_CLOUD
+    else:
+        system, examples = _SYSTEM_TEMPLATE, _FEW_SHOT_EXAMPLES
     history_text = format_history(history)
     user = _USER_TEMPLATE.format(
         conversation_history=history_text,
-        examples=_FEW_SHOT_EXAMPLES,
+        examples=examples,
         user_query=query,
     )
     return system, user
@@ -172,27 +211,38 @@ def parse_rewrite_response(raw: str, original_query: str) -> RewriteResult:
 async def rewrite_query(
     query: str,
     history: Sequence[ConversationTurn],
+    provider: LLMProvider | None = None,
 ) -> RewriteResult:
     """对用户查询执行 P-02 改写（代词消解 + 关键词扩展）。
-
-    使用与 P-01 共用的 ``LLM_MODEL``（llm_classify 模块常量），与
-    ``call_ollama_json`` 的内部模型一致。
 
     Args:
         query: 用户原始查询。
         history: 对话历史；为空时不调 LLM，原样返回（改写策略第 1 步）。
+        provider: 推理 Provider（T8.5）。``None`` 走本地 Ollama（默认行为，
+            ``LLM_MODEL`` / ``call_ollama_json``）；传入云端 Provider 时用其
+            ``generate(json_mode=True)`` 并选用对应 Prompt 版本。
 
     Returns:
         改写结果；无历史 / 超时 / 解析失败时 ``rewritten_query`` 为原查询。
 
     Raises:
-        LLMUnavailableError: Ollama 连接/HTTP 失败（调用方决定降级）。
+        LLMUnavailableError: Ollama 连接/HTTP 失败 / 云端不可用
+            （调用方决定降级）。
     """
     if not history:
         return RewriteResult(rewritten_query=query, need_rewrite=False)
-    system, user = build_rewrite_prompt(query, history)
+    version = provider.version if provider is not None else "local"
+    system, user = build_rewrite_prompt(query, history, version=version)
     try:
-        raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
+        if provider is not None:
+            try:
+                raw = await provider.generate(
+                    system, user, json_mode=True, temperature=0.0, max_tokens=256
+                )
+            except CloudUnavailableError as exc:
+                raise LLMUnavailableError(f"云端推理不可用: {exc}") from exc
+        else:
+            raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
     except TimeoutError:
         return _fallback(query, f"LLM 超时（>{OLLAMA_TIMEOUT}s）")
     return parse_rewrite_response(raw, query)

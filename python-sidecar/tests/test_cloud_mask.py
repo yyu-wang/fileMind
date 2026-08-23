@@ -229,7 +229,7 @@ def test_llm_pass_shares_masker_across_batch(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("FILEMIND_CLOUD_MASKING", "1")
     seen: list[CloudMasker | None] = []
 
-    async def recording_classify(item, categories, masker=None):
+    async def recording_classify(item, categories, masker=None, provider=None):
         seen.append(masker)
         # 模拟真实链路：出口会调用 build_classify_prompt 完成脱敏登记
         build_classify_prompt(item, categories, masker)

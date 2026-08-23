@@ -153,3 +153,62 @@ async def test_validate_llm_unavailable_propagates() -> None:
         pytest.raises(LLMUnavailableError),
     ):
         await validate_answer("查询", "片段", "回答")
+
+
+# ------------------------------------------------------------------
+# T8.5 云端变体（Prompt 版本适配）
+# ------------------------------------------------------------------
+
+#: P-04 JSON schema 字段（local/cloud 必须完全一致，DoD 依据）
+_SELF_CORRECT_SCHEMA_FIELDS = ("is_correct", "issues", "corrected_answer")
+
+
+def test_build_prompt_cloud_schema_consistent_with_local() -> None:
+    """云端变体 JSON schema 字段与本地完全一致；few-shot 3 → 1。"""
+    local_system, local_user = build_self_correct_prompt("查询", "片段", "回答")
+    cloud_system, cloud_user = build_self_correct_prompt("查询", "片段", "回答", version="cloud")
+    for field in _SELF_CORRECT_SCHEMA_FIELDS:
+        assert field in local_system, field
+        assert field in cloud_system, field
+    assert cloud_user.count("[示例") == 1
+    assert local_user.count("[示例") == 3
+
+
+async def test_validate_answer_cloud_provider_uses_generate() -> None:
+    """传入云端 Provider → 走 provider.generate(json_mode=True) 并解析。"""
+    from app.services.cloud_provider import CloudUnavailableError
+
+    class FakeCloud:
+        version = "cloud"
+        calls: list[dict[str, object]] = []
+
+        async def generate(
+            self,
+            system: str,
+            user: str,
+            *,
+            temperature: float = 0.2,
+            max_tokens: int | None = None,
+            json_mode: bool = False,
+            **kwargs: object,
+        ) -> str:
+            FakeCloud.calls.append(
+                {"json_mode": json_mode, "temperature": temperature, "max_tokens": max_tokens}
+            )
+            return '{"is_correct": true, "issues": [], "corrected_answer": null}'
+
+    result = await validate_answer("查询", "片段", "回答", provider=FakeCloud())  # type: ignore[arg-type]
+    assert result.is_correct is True
+    assert len(FakeCloud.calls) == 1
+    assert FakeCloud.calls[0]["json_mode"] is True
+    assert FakeCloud.calls[0]["temperature"] == 0.0
+    assert FakeCloud.calls[0]["max_tokens"] == 256
+
+    class BoomCloud:
+        version = "cloud"
+
+        async def generate(self, *args: object, **kwargs: object) -> str:
+            raise CloudUnavailableError("proxy down")
+
+    with pytest.raises(LLMUnavailableError):
+        await validate_answer("查询", "片段", "回答", provider=BoomCloud())  # type: ignore[arg-type]

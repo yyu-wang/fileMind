@@ -22,9 +22,11 @@ from ollama import AsyncClient, Message, Options, ResponseError
 from pydantic import BaseModel, ValidationError
 
 from app.core.cloud_mask import CloudMasker, content_max, is_cloud_masking_active
+from app.services.cloud_provider import CloudUnavailableError
 
 if TYPE_CHECKING:
     from app.models import ClassifyItem
+    from app.services.cloud_provider import LLMProvider, PromptVersion
 
 #: 业务判定阈值：LLM 置信度 < 阈值 → 标记"待人工确认"
 #: （对齐任务 T4.4「置信度阈值 >0.7」与 API 规格书错误码 LOW_CONFIDENCE）
@@ -44,7 +46,10 @@ class LLMUnavailableError(Exception):
     """Ollama 服务不可用（连接失败 / HTTP 错误）→ 整个第 3 层跳过。"""
 
 
-class ClassifyResult(BaseModel):
+# pydantic mypy 插件为 BaseModel 子类生成的 __init__/__eq__ 等成员带显式 Any，
+# 与 strict 的 disallow_any_explicit 冲突；错误无法从模型侧消除，仅抑制本行
+# （同 app.models 的 disallow_any_explicit=false override 的同类问题，此处更收敛）。
+class ClassifyResult(BaseModel):  # type: ignore[explicit-any]
     """P-01 输出的 LLM 分类结果。"""
 
     category: str
@@ -89,6 +94,32 @@ _FEW_SHOT_EXAMPLES = """[示例 1]
 文件类型：docx
 内容摘要：关于产品迭代方向的讨论，包含用户调研结果和竞品分析...
 {"category": "产品文档", "confidence": 0.82, "reason": "含产品迭代和用户调研内容", "is_new_category": false}"""
+
+# T8.5 云端变体：利用云端 response_format(json_object) 强约束，指令精简、
+# few-shot 3→1；JSON schema 与本地版本完全一致（DoD「同一请求在 local/cloud
+# 下输出格式一致」）。
+_SYSTEM_TEMPLATE_CLOUD = """你是一个专业的文件分类助手。根据文件的元数据和内容摘要，为文件推荐一个最合适的分类。
+
+## 分类规则
+1. 从预定义分类列表中选择，都不合适可提出新分类
+2. 分类名称用中文，简洁明了（2-6 个字）
+
+## 预定义分类列表
+{predefined_categories}
+
+## 输出格式（严格 JSON）
+{{
+  "category": "分类名称",
+  "confidence": 0.85,
+  "reason": "简短理由（不超过30字）",
+  "is_new_category": false
+}}"""
+
+_FEW_SHOT_EXAMPLES_CLOUD = """[示例 1]
+文件名：2024Q3财务报告.xlsx
+文件类型：xlsx
+内容摘要：季度营收、利润、现金流数据...
+{"category": "财务报表", "confidence": 0.95, "reason": "Excel财务数据文件，含营收利润", "is_new_category": false}"""
 
 _USER_TEMPLATE = """请对以下文件进行分类：
 
@@ -185,6 +216,7 @@ def build_classify_prompt(
     item: ClassifyItem,
     categories: list[str],
     masker: CloudMasker | None = None,
+    version: PromptVersion = "local",
 ) -> tuple[str, str]:
     """按 P-01 模板构建 (system, user) 消息对。
 
@@ -193,6 +225,9 @@ def build_classify_prompt(
         categories: 预定义分类列表（SQLite categories 表）。
         masker: 云端脱敏器。``None`` 且云端脱敏激活时自动创建（单文件兜底）；
             批处理场景由调用方传入共享实例，保证 ``file_001`` 编号跨文件连续。
+        version: Prompt 版本（T8.5）。``"cloud"`` 用精简指令 + 单 few-shot
+            （利用 response_format 强约束）；``"local"`` 用详细指令 + 3 few-shot。
+            两者 JSON schema 完全一致。
 
     Returns:
         (system_prompt, user_prompt) 二元组，直接传入 LLM chat。
@@ -210,7 +245,12 @@ def build_classify_prompt(
         directory_path = item.path
         content_summary = item.content_summary[:CONTENT_SUMMARY_MAX]
 
-    system = _SYSTEM_TEMPLATE.format(predefined_categories="、".join(categories))
+    if version == "cloud":
+        system_template, examples = _SYSTEM_TEMPLATE_CLOUD, _FEW_SHOT_EXAMPLES_CLOUD
+    else:
+        system_template, examples = _SYSTEM_TEMPLATE, _FEW_SHOT_EXAMPLES
+
+    system = system_template.format(predefined_categories="、".join(categories))
     user = _USER_TEMPLATE.format(
         file_name=file_name,
         file_type=_file_type(item),
@@ -218,7 +258,7 @@ def build_classify_prompt(
         directory_path=directory_path,
         modified_time=item.modified_time,
         content_summary=content_summary,
-        examples=_FEW_SHOT_EXAMPLES,
+        examples=examples,
     )
     return system, user
 
@@ -260,11 +300,13 @@ async def classify_file_with_llm(
     item: ClassifyItem,
     categories: list[str],
     masker: CloudMasker | None = None,
+    provider: LLMProvider | None = None,
 ) -> ClassifyResult:
     """对单个文件执行 LLM 兜底分类（P-01 调用 + JSON 解析）。
 
     失败兜底（对齐 08-§2）：
-      - Ollama 连接/HTTP 失败 → 抛 :class:`LLMUnavailableError`（调用方跳过第 3 层）
+      - Ollama 连接/HTTP 失败 / 云端不可用 → 抛 :class:`LLMUnavailableError`
+        （调用方跳过第 3 层）
       - LLM 超时 → 返回``未分类``（reason 标记 LLM 超时），不抛异常
       - JSON 解析失败 → 返回``未分类``，不抛异常
 
@@ -272,13 +314,25 @@ async def classify_file_with_llm(
         item: 待分类文件信息。
         categories: 预定义分类列表。
         masker: 云端脱敏器（批处理共享实例，保证编号连续）。
+        provider: 推理 Provider（T8.5）。``None`` 走本地 Ollama（默认行为）；
+            传入云端 Provider 时用其 ``generate(json_mode=True)`` 并选用对应
+            Prompt 版本（``provider.version``）。
 
     Returns:
         解析后的分类结果。
     """
-    system, user = build_classify_prompt(item, categories, masker)
+    version = provider.version if provider is not None else "local"
+    system, user = build_classify_prompt(item, categories, masker, version=version)
     try:
-        raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
+        if provider is not None:
+            try:
+                raw = await provider.generate(
+                    system, user, json_mode=True, temperature=0.0, max_tokens=256
+                )
+            except CloudUnavailableError as exc:
+                raise LLMUnavailableError(f"云端推理不可用: {exc}") from exc
+        else:
+            raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
     except TimeoutError:
         return ClassifyResult(
             category="未分类",

@@ -180,3 +180,78 @@ async def test_stream_generate_conn_error_raises_unavailable() -> None:
     ):
         async for _ in stream_generate("sys", "user"):
             pass
+
+
+# ------------------------------------------------------------------
+# T8.5 云端变体（Prompt 版本适配）
+# ------------------------------------------------------------------
+
+
+def test_build_prompt_cloud_variant_consistent_with_local() -> None:
+    """云端变体输出格式约束与本地一致（引用标注 + 禁 JSON），仅精简指令/省 few-shot。"""
+    local_system, local_user = build_rag_prompt("查询", [chunk(1)])
+    cloud_system, cloud_user = build_rag_prompt("查询", [chunk(1)], version="cloud")
+    # 输出格式 DoD：引用标注与禁 JSON 约束两者都有
+    for template in (local_system, cloud_system):
+        assert "[引用编号]" in template
+        assert "不要输出 JSON" in template
+    # 云端精简：省略 few-shot 示例（本地含示例正文，云端无该段）
+    assert "根据财务报告" in local_user
+    assert "根据财务报告" not in cloud_user
+
+
+def test_build_prompt_cloud_truncates_context_by_model() -> None:
+    """传入 model → 检索上下文按模型窗口截断（Token 长度适配）。"""
+    # 每片段正文被 _context_block 截到 500 字符，需足够多片段才超窗
+    many_chunks = [chunk(i, text="x" * 500) for i in range(1, 101)]
+    _, cloud_user = build_rag_prompt("查询", many_chunks, version="cloud", model="qwen3.8-27b")
+    assert "[上下文已截断]" in cloud_user
+    # 大窗口模型不触发截断
+    _, local_user = build_rag_prompt("查询", many_chunks, model="gpt-4o")
+    assert "[上下文已截断]" not in local_user
+
+
+async def test_stream_generate_cloud_provider_delegates() -> None:
+    """传入云端 Provider → 委托 generate_stream，不碰本地 AsyncClient。"""
+    from app.rules.llm_classify import LLMUnavailableError
+
+    class FakeCloud:
+        version = "cloud"
+        calls: list[tuple[str, str, float]] = []
+
+        async def generate_stream(
+            self,
+            system: str,
+            user: str,
+            *,
+            temperature: float = 0.2,
+            max_tokens: int | None = None,
+            **kwargs: object,
+        ) -> AsyncIterator[str]:
+            FakeCloud.calls.append((system, user, temperature))
+            for delta in ["云端", "回答"]:
+                yield delta
+
+    got = [tok async for tok in stream_generate("sys", "user", provider=FakeCloud())]  # type: ignore[arg-type]
+    assert got == ["云端", "回答"]
+    assert len(FakeCloud.calls) == 1
+    assert FakeCloud.calls[0][2] == 0.2
+
+    class BoomCloud:
+        version = "cloud"
+
+        async def generate_stream(
+            self,
+            system: str,
+            user: str,
+            *,
+            temperature: float = 0.2,
+            max_tokens: int | None = None,
+            **kwargs: object,
+        ) -> AsyncIterator[str]:
+            raise LLMUnavailableError("proxy down")
+            yield ""  # pragma: no cover — 使函数成为 async 生成器
+
+    with pytest.raises(LLMUnavailableError):
+        async for _ in stream_generate("sys", "user", provider=BoomCloud()):  # type: ignore[arg-type]
+            pass

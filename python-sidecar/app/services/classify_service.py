@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from app.rules.engine import RuleMatch
     from app.rules.heuristic import HeuristicMatch
     from app.rules.llm_classify import ClassifyResult
+    from app.services.cloud_provider import LLMProvider
 
 logger = getLogger("filemind.classify")
 
@@ -162,11 +163,14 @@ async def _run_llm_pass(
     indices: list[int],
     categories: list[str],
     results: list[dict[str, object]],
+    provider: LLMProvider | None = None,
 ) -> None:
-    """对需 LLM 兜底的文件并发分类；Ollama 不可用时跳过整个第 3 层。
+    """对需 LLM 兜底的文件并发分类；推理后端不可用时跳过整个第 3 层。
 
     并发受 ``MAX_CONCURRENT_LLM`` 信号量限制。``llm_down`` 一旦置位，
     其余任务不再发起调用，统一标记"待手动分类（LLM 不可用）"。
+    ``provider`` 为 ``None`` 时走本地 Ollama（默认行为）；传入云端 Provider
+    时分类走云端推理（P-01 cloud Prompt 变体）。
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
     llm_down = False
@@ -180,7 +184,9 @@ async def _run_llm_pass(
             return
         async with semaphore:
             try:
-                result = await classify_file_with_llm(files[index], categories, masker)
+                result = await classify_file_with_llm(
+                    files[index], categories, masker, provider=provider
+                )
             except LLMUnavailableError as exc:
                 llm_down = True
                 logger.warning("llm.unavailable", error=str(exc))
@@ -195,6 +201,7 @@ async def classify_files(
     files: list[ClassifyItem],
     categories: list[str],
     engine: RuleEngine | None = None,
+    provider: LLMProvider | None = None,
 ) -> ClassifyResponse:
     """对文件列表执行三层分类漏斗（规则 → 启发式 → LLM），返回聚合响应。
 
@@ -202,6 +209,8 @@ async def classify_files(
         files: 待分类文件列表。
         categories: 预定义分类列表（LLM 兜底用）。
         engine: 规则引擎；``None`` 时跳过规则层（测试/无预置集场景）。
+        provider: 推理 Provider（T8.5 云端适配）。``None`` 走本地 Ollama
+            （默认行为）；传入云端 Provider 时分类走云端推理。
 
     Returns:
         聚合响应：items（逐文件结果）、stats（分类统计）、confidence（均值）。
@@ -223,6 +232,6 @@ async def classify_files(
         llm_indices.append(index)
 
     if llm_indices:
-        await _run_llm_pass(files, llm_indices, categories, results)
+        await _run_llm_pass(files, llm_indices, categories, results, provider=provider)
 
     return _to_response(results)

@@ -38,6 +38,7 @@ from app.services.generation_service import (
     stream_with_citations,
 )
 from app.services.hybrid_search import hybrid_search
+from app.services.provider_factory import resolve_cloud_provider
 from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
 from app.services.rewrite_service import ConversationTurn, rewrite_query
 from app.services.self_correct_service import validate_answer
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.db.lancedb_repo import LanceDBManager
+    from app.services.cloud_provider import LLMProvider
 
 router = APIRouter(prefix="/chat", tags=["RAG 问答"])
 
@@ -69,12 +71,14 @@ def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
 async def _retrieve(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
+    provider: LLMProvider | None,
 ) -> tuple[str, int, list[dict[str, object]], list[SourceChunk]]:
     """改写 → 混合检索 → 重排序，返回 (rewritten_query, candidates, sources, chunks)。
 
     Args:
         request: 流式请求（含 FTS 命中与对话历史）。
         mgr: LanceDB 管理器（向量检索）。
+        provider: 推理 Provider（T8.5）；``None`` 走本地 Ollama（默认）。
 
     Returns:
         - ``rewritten_query``：改写后的查询（向量检索 + 生成上下文用）。
@@ -84,9 +88,9 @@ async def _retrieve(
 
     Raises:
         LLMUnavailableError / EmbeddingUnavailableError / RerankUnavailableError:
-            本地推理（改写 / 向量化 / 重排）不可用。
+            推理（改写 / 向量化 / 重排）不可用。
     """
-    rewritten = await rewrite_query(request.query, _to_turns(request.history))
+    rewritten = await rewrite_query(request.query, _to_turns(request.history), provider=provider)
     rewritten_query = rewritten.rewritten_query
 
     fused = await hybrid_search(
@@ -154,9 +158,11 @@ async def _rag_event_stream(
     """
     session_id = request.session_id or uuid.uuid4().hex
     started = time.monotonic()
+    provider = resolve_cloud_provider(request.llm_model)
+    version = provider.version if provider is not None else "local"
 
     try:
-        rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr)
+        rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
     except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
         logger.warning("chat.retrieve_failed", error=str(exc))
         yield ("error", {"code": "OLLAMA_UNAVAILABLE", "message": str(exc)})
@@ -176,13 +182,15 @@ async def _rag_event_stream(
         )
         return
 
-    system, user = build_rag_prompt(rewritten_query, chunks)
+    system, user = build_rag_prompt(
+        rewritten_query, chunks, version=version, model=request.llm_model
+    )
     valid_ids = {c.citation_id for c in chunks}
     total_tokens = 0
     cited: list[int] = []
     answer_parts: list[str] = []
     try:
-        token_stream = stream_generate(system, user, model=request.llm_model)
+        token_stream = stream_generate(system, user, model=request.llm_model, provider=provider)
         async for event in stream_with_citations(token_stream, valid_ids):
             if event[0] == "text":
                 yield ("token", {"content": event[1]})
@@ -199,7 +207,9 @@ async def _rag_event_stream(
     # P-04 自我纠正：验证失败且重试次数 < max_retries 时重推修正回答（fail-open）
     context_blocks = format_context_blocks(chunks)
     try:
-        result = await validate_answer(rewritten_query, context_blocks, "".join(answer_parts))
+        result = await validate_answer(
+            rewritten_query, context_blocks, "".join(answer_parts), provider=provider
+        )
     except LLMUnavailableError:
         result = None  # 验证不可用 → 跳过纠正，直接输出已生成回答
 
@@ -230,7 +240,9 @@ async def _rag_event_stream(
         cited = new_cited
         answer_text = "".join(new_parts)
         try:
-            result = await validate_answer(rewritten_query, context_blocks, answer_text)
+            result = await validate_answer(
+                rewritten_query, context_blocks, answer_text, provider=provider
+            )
         except LLMUnavailableError:
             result = None
 
