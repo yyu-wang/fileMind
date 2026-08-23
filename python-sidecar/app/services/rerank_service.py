@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 RERANK_MODEL = os.environ.get("FILEMIND_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 #: HF 主站被墙（curl 000），模型下载走镜像；setdefault 不覆盖用户显式配置
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+#: 默认离线加载（用户可显式置 0 恢复联网）：模型已完整缓存在本地
+#: (~/.cache/huggingface)，而打包后二进制经镜像下载会触发 TLS 握手失败
+#: （SSLV3_ALERT_BAD_RECORD_MAC，主站又不可达）。离线模式直接从缓存加载，
+#: 实测 ~5.8s 就绪；侧车仅此一处用 transformers，不影响 Ollama 链路的 embedding/LLM。
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 #: 单例 pipeline（懒加载；在 to_thread 中构造）
 _pipeline: CrossEncoder | None = None
