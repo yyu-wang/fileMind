@@ -17,7 +17,19 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      # ipc.ts 是 specta 生成的类型文件（gitignored），tsc/lint/vitest 都依赖它；
+      # 需要 Rust 工具链跑 `gen:ipc` 生成，否则全新检出报 Cannot find module '@/types/ipc'。
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
       - run: npm ci
+      - name: Generate IPC types
+        run: npm run gen:ipc
       - run: npm run format:check
       - run: npm run lint
       - run: npm run type-check
