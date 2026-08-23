@@ -7,7 +7,13 @@ import { useEffect, useRef, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { formatDateTime, formatFileSize, getFileTypeMeta } from '@/lib/format';
-import { categoryTagClass, deriveFileStatus, type SortDir, type SortKey } from '@/lib/fileTable';
+import {
+  categoryTagClass,
+  deriveFileStatus,
+  isOrganized,
+  type SortDir,
+  type SortKey,
+} from '@/lib/fileTable';
 import type { FileInfo } from '@/types/ipc';
 
 import { StatusBadge } from './StatusBadge';
@@ -56,19 +62,21 @@ export function FileListTable({
     overscan: ROW_OVERSCAN,
   });
 
-  const visibleIds = files.map((file) => file.id);
-  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.includes(id)).length;
-  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
-  const someVisibleSelected = selectedVisibleCount > 0;
+  // 软排除：表头「全选」只圈选未整理文件；已整理文件可手动勾选重分类，但不进批量。
+  const selectableIds = files.filter((file) => !isOrganized(file)).map((file) => file.id);
+  const selectedSelectableCount = selectableIds.filter((id) => selectedIds.includes(id)).length;
+  const allSelectableSelected =
+    selectableIds.length > 0 && selectedSelectableCount === selectableIds.length;
+  const someSelectableSelected = selectedSelectableCount > 0;
 
   useEffect(() => {
     if (checkboxRef.current) {
-      checkboxRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+      checkboxRef.current.indeterminate = someSelectableSelected && !allSelectableSelected;
     }
-  }, [someVisibleSelected, allVisibleSelected]);
+  }, [someSelectableSelected, allSelectableSelected]);
 
   const handleSelectAll = () => {
-    onSelectAll(allVisibleSelected ? null : visibleIds);
+    onSelectAll(allSelectableSelected ? null : selectableIds);
   };
 
   const renderHeaderArrow = (key: SortKey) => (
@@ -88,7 +96,7 @@ export function FileListTable({
             ref={checkboxRef}
             type="checkbox"
             aria-label="全选当前列表"
-            checked={allVisibleSelected}
+            checked={allSelectableSelected}
             onChange={handleSelectAll}
           />
         </div>
@@ -151,7 +159,11 @@ interface FileRowProps {
 function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileRowProps) {
   const status = deriveFileStatus(file);
   const typeMeta = getFileTypeMeta(file.file_name);
-  const rowClass = selected ? 'files-table__row files-table__row--selected' : 'files-table__row';
+  // 已整理行弱化样式（标记 + 与状态列「已分类」徽标呼应），软排除提示
+  const organizedClass = isOrganized(file) ? ' files-table__row--organized' : '';
+  const rowClass = selected
+    ? `files-table__row files-table__row--selected${organizedClass}`
+    : `files-table__row${organizedClass}`;
 
   return (
     <div className={rowClass} style={style} role="row" onClick={() => onOpenPreview(file)}>

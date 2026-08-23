@@ -62,15 +62,28 @@ pub fn scan_directory(
 /// 会保留库内旧 id——若不回写，前端拿到的是库中不存在的 id，后续按 id 反查
 /// （`classify_preview` / `preview_operations` / `execute_operations`）会报"文件不存在"。
 ///
+/// 同时回显既存分类：`scan_files_on_disk` 把 category 置为 `None`，但同一路径此前
+/// 若被整理过，DB 里已有分类。这里按 path 回查并覆盖回结果，前端才能正确标记
+/// 「已整理」、避免重复整理（软排除依赖该字段）。
+///
 /// # Errors
 ///
 /// 落库失败时返回 `AppError`。
 fn persist_scan_files(conn: &rusqlite::Connection, files: &mut [FileInfo]) -> AppResult<()> {
     let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
     let result = FileRepo::upsert_batch(conn, &records)?;
-    for f in files {
+    for f in &mut *files {
         if let Some(real_id) = result.id_map.get(&f.id) {
             f.id.clone_from(real_id);
+        }
+    }
+
+    // 回显既有分类（DB 中无该路径或未分类的保持 `None`）
+    let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+    let categories = FileRepo::get_categories_by_paths(conn, &paths)?;
+    for f in &mut *files {
+        if let Some(category) = categories.get(&f.path) {
+            f.category = Some(category.clone());
         }
     }
     Ok(())
@@ -1260,6 +1273,63 @@ mod tests {
             )?;
             assert_eq!(count, 2, "重复扫描不应新增记录");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_rescan_rehydrates_category() -> Result<(), Box<dyn std::error::Error>> {
+        // 已整理文件重新扫描后：返回结果应回显 DB 中既存分类，而非恒为 None
+        let scan_root = tempfile::tempdir()?;
+        create_temp_file(scan_root.path(), "a.txt", "v1")?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        // 第一次扫描落库，然后模拟已整理：给文件打上分类标签
+        let mut first = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut first)?;
+            FileRepo::update_category(conn_guard.conn(), &first[0].id, "文档")?;
+        }
+
+        // 重新扫描：内容未变 → upsert 跳过（保留分类），persist 应把分类回显到返回值
+        let mut second = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut second)?;
+        }
+
+        assert_eq!(
+            second[0].category.as_deref(),
+            Some("文档"),
+            "已整理文件重扫后应回显既存分类"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_rescan_unorganized_keeps_none_category() -> Result<(), Box<dyn std::error::Error>> {
+        // 未整理过的文件重扫后 category 仍为 None（不回显成别的值）
+        let scan_root = tempfile::tempdir()?;
+        create_temp_file(scan_root.path(), "raw.txt", "x")?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+
+        let mut first = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut first)?;
+        }
+        let mut second = scan_files_on_disk(scan_root.path())?;
+        {
+            let conn_guard = state.db.lock().unwrap();
+            persist_scan_files(conn_guard.conn(), &mut second)?;
+        }
+
+        assert!(
+            second[0].category.is_none(),
+            "未整理文件 category 应保持 None"
+        );
         Ok(())
     }
 

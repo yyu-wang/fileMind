@@ -18,6 +18,15 @@ export function deriveFileStatus(file: FileInfo): FileStatus {
   return file.category == null ? 'uncategorized' : 'categorized';
 }
 
+/** 是否已整理：`category` 非空即已整理（与状态徽标同源）。
+ *
+ * 已整理文件默认不参与「全选 / 全部分类」批量操作（软排除），
+ * 但勾选框仍可手动勾选，允许用户按需重分类。
+ */
+export function isOrganized(file: FileInfo): boolean {
+  return file.category != null;
+}
+
 /** 按分类/状态筛选，返回新数组（不改动入参）。 */
 export function filterFiles(files: FileInfo[], options: FilterOptions): FileInfo[] {
   return files.filter((file) => {

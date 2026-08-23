@@ -79,8 +79,9 @@ describe('FileListTable', () => {
     expect(props.onSortChange).toHaveBeenCalledWith('size');
   });
 
-  it('select-all checkbox reflects all rows selected', async () => {
+  it('select-all checkbox reflects all selectable rows selected', async () => {
     const user = userEvent.setup();
+    // a 已整理（软排除）：即使 a/b/c 全选，表头只按可批量项 b/c 判定
     const props = renderTable({ selectedIds: ['a', 'b', 'c'] });
     const checkbox = screen.getByLabelText('全选当前列表');
     expect(checkbox).toBeChecked();
@@ -88,11 +89,30 @@ describe('FileListTable', () => {
     expect(props.onSelectAll).toHaveBeenCalledWith(null);
   });
 
-  it('select-all checkbox calls onSelectAll with visible ids', async () => {
+  it('select-all checkbox calls onSelectAll with selectable ids only (excludes organized)', async () => {
     const user = userEvent.setup();
     const props = renderTable();
+    // a.txt 已整理（category='财务'）→ 全选只圈选未整理的 b、c
     await user.click(screen.getByLabelText('全选当前列表'));
-    expect(props.onSelectAll).toHaveBeenCalledWith(['a', 'b', 'c']);
+    expect(props.onSelectAll).toHaveBeenCalledWith(['b', 'c']);
+  });
+
+  it('select-all unselects when only organized files are selected', async () => {
+    const user = userEvent.setup();
+    // 只有已整理文件被选（手动勾选），表头应视为未全选 → 点击后圈选 b、c
+    const props = renderTable({ selectedIds: ['a'] });
+    const checkbox = screen.getByLabelText('全选当前列表');
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    expect(props.onSelectAll).toHaveBeenCalledWith(['b', 'c']);
+  });
+
+  it('organized rows keep manual checkbox selectable (soft exclude)', async () => {
+    const user = userEvent.setup();
+    const props = renderTable();
+    // 已整理文件 a.txt 的勾选框仍可手动勾选（软排除 = 不进批量，但允许重分类）
+    await user.click(screen.getByLabelText('选择 a.txt'));
+    expect(props.onToggleSelect).toHaveBeenCalledWith('a');
   });
 
   it('empty list renders no rows', () => {

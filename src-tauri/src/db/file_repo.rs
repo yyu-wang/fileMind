@@ -318,6 +318,44 @@ impl FileRepo {
         Ok(())
     }
 
+    /// 按路径批量回查既存分类（扫描后回显「已整理」状态用）。
+    ///
+    /// 返回 `path → category`，仅包含库中存在且未软删除、且已有分类的路径。
+    /// `scan_directory` 扫描到的文件 category 恒为 `None`，但同一路径此前若被整理过，
+    /// DB 里已存有分类；这里按 path 回查后覆盖回返回结果，前端才能正确标记。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回数据库错误。
+    pub fn get_categories_by_paths(
+        conn: &Connection,
+        paths: &[String],
+    ) -> AppResult<HashMap<String, String>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT path, category FROM files
+             WHERE path IN ({placeholders}) AND is_deleted = 0 AND category IS NOT NULL"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> =
+            paths.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut categories = HashMap::new();
+        for row in rows {
+            let (path, category) = row?;
+            categories.insert(path, category);
+        }
+        Ok(categories)
+    }
+
     /// 按内容哈希查找所有未删除文件（用于重复文件分组）。
     ///
     /// # Errors
