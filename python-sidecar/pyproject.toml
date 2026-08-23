@@ -1,5 +1,5 @@
 [tool.ruff]
-target-version = "py314"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
@@ -13,7 +13,7 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -31,6 +31,21 @@ disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
 module = "app.services.index_service"
+disallow_any_explicit = false
+
+# 以下三个模块的 BaseModel 由 pydantic.mypy 插件生成显式 Any __init__
+# （实测插件对每个 BaseModel 子类都如此，init_typed 不生效），与
+# app.models / lancedb_repo / index_service 同源同因，沿用既有 override。
+[[tool.mypy.overrides]]
+module = "app.rules.models"
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = "app.services.self_correct_service"
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = "app.services.rewrite_service"
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]

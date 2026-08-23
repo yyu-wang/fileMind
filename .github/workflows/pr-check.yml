@@ -44,13 +44,24 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.14'
+          python-version: '3.12'
       - run: pip install ruff mypy
       - run: pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
-      - run: ruff check python-sidecar/
-      - run: ruff format --check python-sidecar/
-      - run: mypy python-sidecar/app/
-      - run: pytest python-sidecar/tests/
+      # 以下步骤统一 working-directory=python-sidecar，让 ruff/mypy/pytest
+      # 自然发现 sidecar 的 pyproject.toml；从仓库根调用会绕过配置导致假绿。
+      - name: Ruff lint
+        working-directory: python-sidecar
+        run: ruff check .
+      - name: Ruff format check
+        working-directory: python-sidecar
+        run: ruff format --check .
+      - name: mypy (strict)
+        working-directory: python-sidecar
+        run: mypy --strict app/
+      - name: pytest (unit + coverage gate)
+        working-directory: python-sidecar
+        # 排除需真实 Ollama/LanceDB 的 e2e；--cov 门禁 fail_under=80 生效
+        run: pytest tests/ -q --ignore=tests/e2e
 
   build-check:
     needs: [frontend-check, rust-check]

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import httpx
 from ollama import AsyncClient, Message, Options, ResponseError
@@ -31,8 +31,6 @@ from app.services.provider_factory import truncate_context
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from typing import Literal
-
-    from ollama import ChatResponse
 
     from app.services.cloud_provider import LLMProvider, PromptVersion
 
@@ -235,20 +233,18 @@ async def stream_generate(
         return
     client = AsyncClient(host=OLLAMA_HOST)
     try:
-        # chat() 是 async def，stream=True 时 await 后得到流式迭代器
-        stream = cast(
-            "AsyncIterator[ChatResponse]",
-            await client.chat(
-                model=model,
-                messages=[
-                    Message(role="system", content=system),
-                    Message(role="user", content=user),
-                ],
-                stream=True,
-                # 关闭 qwen3 思维链：思考 token 混入回答流会破坏引用标注（同 P-01）
-                think=False,
-                options=Options(temperature=0.2),
-            ),
+        # chat() 是 async def，stream=True 时 await 后得到流式迭代器；
+        # ollama 类型 stub 已标 return 为 AsyncIterator[ChatResponse]，无需 cast
+        stream = await client.chat(
+            model=model,
+            messages=[
+                Message(role="system", content=system),
+                Message(role="user", content=user),
+            ],
+            stream=True,
+            # 关闭 qwen3 思维链：思考 token 混入回答流会破坏引用标注（同 P-01）
+            think=False,
+            options=Options(temperature=0.2),
         )
         async for chunk in stream:
             message = chunk.message

@@ -24,6 +24,8 @@ __pycache__/
 htmlcov/
 .coverage
 coverage.xml
+coverage/
+src-tauri/coverage/
 .cache/
 
 # IDE

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -71,9 +71,11 @@ def _load_cross_encoder(model: str) -> CrossEncoder:
     延迟导入 sentence-transformers：torch 加载即占用约 500MB+ RSS，
     若顶层导入会让整个 sidecar 进程常驻超内存预算（Go/No-Go 第 7 项 <300MB）。
     """
-    from sentence_transformers import CrossEncoder  # type: ignore[import-untyped]
+    from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(model)
+    # sentence_transformers 已提供 py.typed，但 CrossEncoder 构造器/返回类型
+    # 仍解析为 Any（下游 torch 缺 stub），mypy no-any-return 下需显式断言
+    return cast("CrossEncoder", CrossEncoder(model))
 
 
 async def _get_pipeline(model: str) -> CrossEncoder:
@@ -91,8 +93,7 @@ async def _get_pipeline(model: str) -> CrossEncoder:
                 _pipeline = await asyncio.to_thread(_load_cross_encoder, model)
             except Exception as exc:  # noqa: BLE001
                 raise RerankUnavailableError(f"Rerank 模型加载失败: {model!r}（{exc}）") from exc
-    # CrossEncoder 动态类型，模块级全局在 await 点无法被 mypy 收窄非空
-    return _pipeline  # type: ignore[return-value]
+    return _pipeline
 
 
 async def rerank(

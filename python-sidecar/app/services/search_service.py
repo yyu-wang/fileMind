@@ -9,7 +9,7 @@ SQLite FTS5 的 ``unicode61`` tokenizer 按空格切分 token，不识别中文�
 
 from __future__ import annotations
 
-import jieba  # type: ignore[import-untyped]
+import jieba
 
 # jieba 词典懒加载标记：首次调用时分词方法内部会自动初始化
 _jieba_initialized = False

@@ -35,6 +35,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
+      // 自动生成（specta）与 IPC 薄封装不参与覆盖率：业务价值低且依赖运行环境
+      exclude: ['src/types/ipc.ts', 'src/lib/ipc/**'],
       thresholds: {
         lines: 80,
         functions: 80,
