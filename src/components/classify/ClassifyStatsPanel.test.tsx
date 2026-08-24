@@ -2,14 +2,12 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { ClassifyPreview } from '@/types/ipc';
+import type { ClassifyPlanItem, ClassifyPreview } from '@/types/ipc';
 import { useFileStore } from '@/stores/fileStore';
 
 import { ClassifyStatsPanel } from './ClassifyStatsPanel';
 
-function item(
-  overrides: Partial<{ category_name: string | null; status: string; rule_source: string }>,
-) {
+function item(overrides: Partial<ClassifyPlanItem> = {}): ClassifyPlanItem {
   return {
     file_id: 'f1',
     file_name: 'a.pdf',

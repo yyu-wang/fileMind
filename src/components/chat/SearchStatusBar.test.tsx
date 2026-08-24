@@ -2,13 +2,14 @@
 
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import type { ChatSearchInfo } from '@/stores/chatStore';
 
 import { SearchStatusBar } from './SearchStatusBar';
 
 const base = {
   status: 'searching' as const,
   rewrittenQuery: null as string | null,
-  searchInfo: null as { candidates: number; afterRerank: number } | null,
+  searchInfo: null as ChatSearchInfo | null,
   retries: 0,
   retryReason: null as string | null,
   lowConfidence: false,
@@ -32,7 +33,9 @@ describe('SearchStatusBar', () => {
   });
 
   it('renders candidate and after-rerank counts', () => {
-    render(<SearchStatusBar {...base} searchInfo={{ candidates: 40, afterRerank: 5 }} />);
+    render(
+      <SearchStatusBar {...base} searchInfo={{ candidates: 40, afterRerank: 5, sources: [] }} />,
+    );
     expect(screen.getByText(/检索到 40 个候选 · 重排后 5 条/)).toBeInTheDocument();
   });
 
