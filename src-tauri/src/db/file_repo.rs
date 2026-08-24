@@ -529,16 +529,18 @@ mod tests {
 
     /// 超过单条 SQL 900 参数上限（T10.1 分块），验证 `upsert_batch` /
     /// `load_snapshots_by_paths` / `get_categories_by_paths` 三条分块路径。
+    /// 2000 << 2^63，usize→i64 饱和转换恒安全，测试内允许 cast。
+    #[allow(clippy::cast_possible_wrap)]
     #[test]
     fn test_upsert_batch_chunked() -> Result<(), Box<dyn std::error::Error>> {
-        let db = setup_db()?;
         const COUNT: usize = 2000;
+
+        let db = setup_db()?;
 
         let records: Vec<FileRecord> = (0..COUNT)
             .map(|i| {
                 mk_record(
                     &format!("/tmp/big/{i:05}.txt"),
-                    // COUNT 上限 2000 << 2^63，usize→i64 饱和转换恒安全
                     i as i64,
                     Some("h"),
                     Some("2026-01-01 00:00:00"),
@@ -589,10 +591,11 @@ mod tests {
             Some("2026-01-01 00:00:00"),
         );
 
-        let first = FileRepo::upsert_batch(db.conn(), &[rec.clone()])?;
+        let first = FileRepo::upsert_batch(db.conn(), std::slice::from_ref(&rec))?;
         assert_eq!(first.added, 1);
 
-        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &[rec.path.clone()])?;
+        let snapshots =
+            FileRepo::load_snapshots_by_paths(db.conn(), std::slice::from_ref(&rec.path))?;
         let second = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec], &snapshots)?;
         assert_eq!(second.skipped, 1);
         assert_eq!(second.updated, 0);
@@ -617,7 +620,8 @@ mod tests {
             Some("deadbeef"),
             Some("2026-01-05 00:00:00"),
         );
-        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &[rec2.path.clone()])?;
+        let snapshots =
+            FileRepo::load_snapshots_by_paths(db.conn(), std::slice::from_ref(&rec2.path))?;
         let result = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec2], &snapshots)?;
         assert_eq!(result.updated, 1);
 

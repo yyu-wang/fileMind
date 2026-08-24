@@ -44,7 +44,7 @@ pub fn scan_directory(
 
     // —— SQLite 写入：非关键路径，失败只记 warn —— //
     // （扫描是高频 UI 操作，不能因 DB 短暂不可用而阻塞返回）
-    match persist_scan_files(&state, &mut files) {
+    match persist_scan_files(&state.db, &mut files) {
         Ok(()) => {}
         Err(e) => log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}"),
     }
@@ -53,6 +53,9 @@ pub fn scan_directory(
 }
 
 /// 把扫描结果写入 SQLite，并把 `files` 中的 id 覆盖为入库后的真实 id。
+///
+/// 参数取 `&Mutex<Database>` 而非 `&AppState`：命令层拆锁传入，基准/集成测试
+/// （T10.5 `scan_perf.rs`）可直接构造临时库调用，无需依赖 `tauri::State`。
 ///
 /// 阶段化（短锁 + 锁外并行 hash，T10.1 增量扫描核心）：
 ///   1. **短锁**：`load_snapshots_by_paths` 一条批量 `IN` 查询加载全部既有快照
@@ -72,10 +75,13 @@ pub fn scan_directory(
 /// # Errors
 ///
 /// 落库失败时返回 `AppError`。
-fn persist_scan_files(state: &AppState, files: &mut [FileInfo]) -> AppResult<()> {
+fn persist_scan_files(
+    db: &std::sync::Mutex<crate::db::Database>,
+    files: &mut [FileInfo],
+) -> AppResult<()> {
     // 阶段 1：短锁批量读快照（锁在该作用域结束自动释放）
     let snapshots = {
-        let guard = state.db.lock().map_err(|poisoned| {
+        let guard = db.lock().map_err(|poisoned| {
             AppError::Internal(format!(
                 "scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}"
             ))
@@ -107,7 +113,7 @@ fn persist_scan_files(state: &AppState, files: &mut [FileInfo]) -> AppResult<()>
     compute_hashes_parallel(files, &needs_hash);
 
     // 阶段 3：短锁批量落库 + 回写 id + 回显分类
-    let guard = state.db.lock().map_err(|poisoned| {
+    let guard = db.lock().map_err(|poisoned| {
         AppError::Internal(format!(
             "scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}"
         ))
@@ -131,6 +137,25 @@ fn persist_scan_files(state: &AppState, files: &mut [FileInfo]) -> AppResult<()>
     // 阶段 3 的锁用到最后一次查询即释放，避免长持锁（锁外后续无 DB 操作）
     drop(guard);
     Ok(())
+}
+
+/// T10.5：扫描 + 增量落库全流程（基准 / 集成测试入口）。
+///
+/// 与 `scan_directory` 命令同路径（`scan_files_on_disk` → `persist_scan_files`），
+/// 但去掉 `tauri::State` 与路径安全校验依赖，供 `src-tauri/tests/scan_perf.rs`
+/// 直接构造临时库 + 临时目录度量全量 / 增量扫描耗时。
+///
+/// # Errors
+///
+/// 扫描或落库失败时返回 `AppError`。
+#[doc(hidden)]
+pub fn scan_and_persist(
+    db: &std::sync::Mutex<crate::db::Database>,
+    root: &Path,
+) -> AppResult<Vec<FileInfo>> {
+    let mut files = scan_files_on_disk(root)?;
+    persist_scan_files(db, &mut files)?;
+    Ok(files)
 }
 
 /// 把 IPC 视图 `FileInfo` → 持久化视图 `FileRecord`。
@@ -1370,7 +1395,7 @@ mod tests {
         //    hash 由 persist_scan_files 在锁外并行计算）
         let mut files = scan_files_on_disk(scan_root.path())?;
         assert_eq!(files.len(), 3);
-        persist_scan_files(&state, &mut files)?;
+        persist_scan_files(&state.db, &mut files)?;
 
         // 4. 验证：查 files 表，存在 3 条记录且 hash 非空
         let db = state.db.lock().unwrap();
@@ -1402,10 +1427,10 @@ mod tests {
 
         let mut first = scan_files_on_disk(scan_root.path())?;
         assert_eq!(first.len(), 2);
-        persist_scan_files(&state, &mut first)?;
+        persist_scan_files(&state.db, &mut first)?;
 
         let mut second = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut second)?;
+        persist_scan_files(&state.db, &mut second)?;
 
         // 第二次扫描的临时 id 应回写为第一次入库的 id（同路径同 hash → skip）
         let first_ids: HashSet<&str> = first.iter().map(|f| f.id.as_str()).collect();
@@ -1438,7 +1463,7 @@ mod tests {
 
         // 第一次扫描落库，然后模拟已整理：给文件打上分类标签
         let mut first = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut first)?;
+        persist_scan_files(&state.db, &mut first)?;
         {
             let conn_guard = state.db.lock().unwrap();
             FileRepo::update_category(conn_guard.conn(), &first[0].id, "文档")?;
@@ -1446,7 +1471,7 @@ mod tests {
 
         // 重新扫描：内容未变 → upsert 跳过（保留分类），persist 应把分类回显到返回值
         let mut second = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut second)?;
+        persist_scan_files(&state.db, &mut second)?;
 
         assert_eq!(
             second[0].category.as_deref(),
@@ -1465,9 +1490,9 @@ mod tests {
         let state = make_test_app_state(tmp_db.path());
 
         let mut first = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut first)?;
+        persist_scan_files(&state.db, &mut first)?;
         let mut second = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut second)?;
+        persist_scan_files(&state.db, &mut second)?;
 
         assert!(
             second[0].category.is_none(),
@@ -1485,12 +1510,12 @@ mod tests {
         let state = make_test_app_state(tmp_db.path());
 
         let mut first = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut first)?;
+        persist_scan_files(&state.db, &mut first)?;
         let original_id = first[0].id.clone();
 
         std::fs::write(scan_root.path().join("a.txt"), b"v2")?;
         let mut second = scan_files_on_disk(scan_root.path())?;
-        persist_scan_files(&state, &mut second)?;
+        persist_scan_files(&state.db, &mut second)?;
         assert_eq!(second[0].id, original_id, "内容变化时仍应复用原 id");
 
         let conn_guard = state.db.lock().unwrap();

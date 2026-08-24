@@ -70,3 +70,6 @@ npm-debug.log*
 filemind/binaries/*
 !filemind/binaries/.gitkeep
 
+
+# T10.5 基准产物（生成的数据/中间 JSON，不入库；报告 docs/e10-bench-report.json 单独提交）
+.bench/
