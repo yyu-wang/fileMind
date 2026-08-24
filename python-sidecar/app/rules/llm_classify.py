@@ -40,10 +40,37 @@ CONTENT_SUMMARY_MAX = 500
 LLM_MODEL = os.environ.get("FILEMIND_LLM_MODEL", "qwen3.8-27b")
 #: Ollama 服务地址（env 可覆盖）
 OLLAMA_HOST = os.environ.get("FILEMIND_OLLAMA_URL", "http://127.0.0.1:11434")
+#: Ollama 模型 keep_alive（常驻时间，`30m` 让会话间复用已加载权重，
+#: 避免 RAG 重复问句首 token 的二次冷加载；T10.2「keep_alive 缓解首 token」）。
+OLLAMA_KEEP_ALIVE = os.environ.get("FILEMIND_OLLAMA_KEEP_ALIVE", "30m")
+#: 生成上下文窗口（token）；默认 8192 覆盖 RAG Top-5 片段 + 回答空间。
+OLLAMA_NUM_CTX = int(os.environ.get("FILEMIND_OLLAMA_NUM_CTX", "8192") or "8192")
 
 
 class LLMUnavailableError(Exception):
     """Ollama 服务不可用（连接失败 / HTTP 错误）→ 整个第 3 层跳过。"""
+
+
+#: 模块级惰性单例 AsyncClient（httpx 连接池复用，避免每次调用重建连接；
+#: P-01 分类 / P-02 改写都在 RAG 首 token 关键路径上）。
+_client: AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client() -> AsyncClient:
+    """返回模块级 AsyncClient 单例（并发安全，双重检查 + asyncio.Lock）。"""
+    global _client
+    if _client is None:
+        async with _client_lock:
+            if _client is None:
+                _client = AsyncClient(host=OLLAMA_HOST)
+    return _client
+
+
+def reset_clients() -> None:
+    """重置客户端单例（仅测试用）。"""
+    global _client
+    _client = None
 
 
 # pydantic mypy 插件为 BaseModel 子类生成的 __init__/__eq__ 等成员带显式 Any，
@@ -270,7 +297,7 @@ async def call_ollama_json(system: str, user: str) -> str:
     ``think=False`` 关闭 Qwen3 系列模型的思维链：思考 token 计入
     ``num_predict`` 预算，未关闭时 JSON 会被截断/报 502（非思维模型忽略此参数）。
     """
-    client = AsyncClient(host=OLLAMA_HOST)
+    client = await _get_client()
     try:
         resp = await client.chat(
             model=LLM_MODEL,
@@ -280,7 +307,9 @@ async def call_ollama_json(system: str, user: str) -> str:
             ],
             format="json",
             think=False,
-            options=Options(num_predict=256, temperature=0.0),
+            # keep_alive 是 chat 顶层参数（模型常驻），num_ctx 在 Options 里
+            keep_alive=OLLAMA_KEEP_ALIVE,
+            options=Options(num_predict=256, temperature=0.0, num_ctx=OLLAMA_NUM_CTX),
         )
     except (httpx.HTTPError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc

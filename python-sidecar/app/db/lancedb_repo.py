@@ -20,7 +20,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import lancedb
@@ -65,6 +65,9 @@ class LanceDBManager:
 
     db_path: Path
     _db: lancedb.DBConnection | None = None  # noqa: F821 - lancedb 动态属性
+    #: 表句柄缓存：open_table 命中后跳过列目录/读元数据（T10.2 检索首 token 优化）。
+    #: 表被删除重建时须调 invalidate_table/invalidate_all 使旧句柄失效。
+    _table_cache: dict[str, LanceTable] = field(default_factory=dict, init=False)
 
     # ------------------------------------------------------------------
     # 连接 / 初始化
@@ -213,15 +216,34 @@ class LanceDBManager:
         # 立即把锚点行删除：真实索引开始时，第一行应该是真实 chunk
         tbl = self._db.open_table(tname)
         tbl.delete("chunk_id = '__schema_anchor__'")
+        # 建表可能覆盖同名旧表（外部重建场景），丢弃可能存在的过期句柄
+        self.invalidate_table(tname)
         return tname
 
     def open_table(self, table_name: str) -> LanceTable:
-        """打开已存在的表（返回 LanceDB Table，调用方负责写入/检索）。"""
+        """打开已存在的表，命中句柄缓存则直接返回（LanceDB 表操作每次读最新版本）。
+
+        表句柄在 LanceDB 中可跨版本复用，缓存避免每次检索重复列目录/读元数据。
+        表被删除重建时调用 :meth:`invalidate_table` 使旧句柄失效。
+        """
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
+        cached = self._table_cache.get(table_name)
+        if cached is not None:
+            return cached
         if not self.is_table_exists(table_name):
             raise KeyError(f"LanceDB 表不存在: {table_name}")
-        return self._db.open_table(table_name)
+        tbl = self._db.open_table(table_name)
+        self._table_cache[table_name] = tbl
+        return tbl
+
+    def invalidate_table(self, table_name: str) -> None:
+        """丢弃某表的句柄缓存（表被删除/重建后调用，避免操作失效句柄）。"""
+        self._table_cache.pop(table_name, None)
+
+    def invalidate_all(self) -> None:
+        """丢弃全部表句柄缓存（整体重建索引时调用）。"""
+        self._table_cache.clear()
 
     def add_chunks(self, table_name: str, chunks: Iterable[DocumentChunk]) -> int:
         """批量写入文档分块向量。
@@ -269,9 +291,13 @@ class LanceDBManager:
         """
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
-        if not self.is_table_exists(table_name):
+        # 表不存在（尚未建索引）→ 返回空列表，混合检索退化为纯 FTS 排序。
+        # 走 try-except 而非显式 is_table_exists：命中句柄缓存时零元数据开销
+        # （T10.2）；open_table 内部仅在冷启动时列一次目录。
+        try:
+            tbl = self.open_table(table_name)
+        except KeyError:
             return []
-        tbl = self.open_table(table_name)
         rows = tbl.search(query_vector).limit(top_k).to_list()
         return [
             VectorHit(

@@ -63,6 +63,9 @@ async def test_generate_returns_content(client: mock.AsyncMock) -> None:
     assert call["think"] is False
     assert call["options"].temperature == 0.2
     assert call["options"].num_predict is None
+    # T10.2：keep_alive 顶层参数（常驻权重）+ num_ctx 覆盖 RAG 上下文窗口
+    assert call["keep_alive"] == "30m"
+    assert call["options"].num_ctx == 8192
 
 
 async def test_generate_json_mode_and_max_tokens(client: mock.AsyncMock) -> None:
@@ -154,7 +157,9 @@ async def test_embed_resolves_model_alias(client: mock.AsyncMock) -> None:
     client.embed.return_value = SimpleNamespace(embeddings=[[1.0]])
     provider = OllamaProvider(embed_model="bge-large-zh-v1.5")
     await provider.embed(["x"])
-    assert client.embed.await_args.kwargs["model"] == "qllama/bge-large-zh-v1.5"
+    kwargs = client.embed.await_args.kwargs
+    assert kwargs["model"] == "qllama/bge-large-zh-v1.5"
+    assert kwargs["keep_alive"] == "30m"
 
 
 async def test_embed_404_maps_model_not_pulled(client: mock.AsyncMock) -> None:

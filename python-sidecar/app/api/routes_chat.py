@@ -39,6 +39,7 @@ from app.services.generation_service import (
 )
 from app.services.hybrid_search import hybrid_search
 from app.services.provider_factory import resolve_cloud_provider
+from app.services.query_cache import get_query_cache
 from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
 from app.services.rewrite_service import ConversationTurn, rewrite_query
 from app.services.self_correct_service import validate_answer
@@ -68,6 +69,23 @@ def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
     return [ConversationTurn(user=turn.user, assistant=turn.assistant) for turn in history]
 
 
+def _cache_key(request: ChatStreamRequest) -> tuple[object, ...]:
+    """检索缓存 key：覆盖影响检索结果的输入。
+
+    FTS 命中（``fts_chunks``）由同一 query 在 Rust 侧确定性产生，不入 key；
+    ``llm_model`` 只影响生成阶段，不影响检索结果。
+    """
+    history = tuple((turn.user, turn.assistant) for turn in request.history)
+    return (
+        request.query,
+        history,
+        request.table_name,
+        request.embedding_model,
+        request.top_k,
+        request.rerank_top_k,
+    )
+
+
 async def _retrieve(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
@@ -90,9 +108,20 @@ async def _retrieve(
         LLMUnavailableError / EmbeddingUnavailableError / RerankUnavailableError:
             推理（改写 / 向量化 / 重排）不可用。
     """
+    # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
+    cache = get_query_cache()
+    cache_key = _cache_key(request)
+    cached = await cache.get(cache_key)
+    if cached is not None:
+        logger.info("chat.retrieve.cache_hit")
+        return cached
+
+    t_stage = time.monotonic()
     rewritten = await rewrite_query(request.query, _to_turns(request.history), provider=provider)
     rewritten_query = rewritten.rewritten_query
+    logger.info("chat.retrieve.rewrite", ms=_elapsed_ms(t_stage))
 
+    t_stage = time.monotonic()
     fused = await hybrid_search(
         rewritten_query,
         [c.chunk_id for c in request.fts_chunks],
@@ -101,6 +130,7 @@ async def _retrieve(
         model=request.embedding_model,
         top_k=request.top_k,
     )
+    logger.info("chat.retrieve.hybrid_search", ms=_elapsed_ms(t_stage))
 
     # FTS-only 命中的原文在 Rust 侧（SQLite），用请求 fts_chunks 补全
     text_by_id = {c.chunk_id: c.text for c in request.fts_chunks}
@@ -114,22 +144,36 @@ async def _retrieve(
         for hit in enriched
         if hit.chunk_text
     ]
+    t_stage = time.monotonic()
     reranked = await rerank(rewritten_query, candidates, top_k=request.rerank_top_k)
+    logger.info("chat.retrieve.rerank", ms=_elapsed_ms(t_stage))
 
     hit_by_id = {h.chunk_id: h for h in enriched}
     sources: list[dict[str, object]] = []
     chunks: list[SourceChunk] = []
-    for idx, result in enumerate(reranked, start=1):
-        hit = hit_by_id.get(result.chunk_id)
+    for idx, reranked_hit in enumerate(reranked, start=1):
+        hit = hit_by_id.get(reranked_hit.chunk_id)
         text = hit.chunk_text if hit else ""
-        file_name = Path(result.file_path).name if result.file_path else ""
+        file_name = Path(reranked_hit.file_path).name if reranked_hit.file_path else ""
         sources.append(
-            {"id": idx, "file_name": file_name, "page": result.page, "score": result.score}
+            {
+                "id": idx,
+                "file_name": file_name,
+                "page": reranked_hit.page,
+                "score": reranked_hit.score,
+            }
         )
         chunks.append(
-            SourceChunk(citation_id=idx, file_name=file_name, page=result.page, text=text)
+            SourceChunk(
+                citation_id=idx,
+                file_name=file_name,
+                page=reranked_hit.page,
+                text=text,
+            )
         )
-    return rewritten_query, len(candidates), sources, chunks
+    retrieved = (rewritten_query, len(candidates), sources, chunks)
+    await cache.set(cache_key, retrieved)
+    return retrieved
 
 
 def _sse(event: str, data: dict[str, object]) -> str:
@@ -161,12 +205,15 @@ async def _rag_event_stream(
     provider = resolve_cloud_provider(request.llm_model)
     version = provider.version if provider is not None else "local"
 
+    retrieve_started = time.monotonic()
     try:
         rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
     except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
         logger.warning("chat.retrieve_failed", error=str(exc))
         yield ("error", {"code": "OLLAMA_UNAVAILABLE", "message": str(exc)})
         return
+    retrieve_ms = _elapsed_ms(retrieve_started)
+    logger.info("chat.retrieve.done", ms=retrieve_ms)
 
     yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
     yield (
@@ -178,7 +225,12 @@ async def _rag_event_stream(
         yield ("token", {"content": NOT_FOUND_ANSWER})
         yield (
             "done",
-            {"session_id": session_id, "total_tokens": 1, "duration_ms": _elapsed_ms(started)},
+            {
+                "session_id": session_id,
+                "total_tokens": 1,
+                "duration_ms": _elapsed_ms(started),
+                "retrieve_ms": retrieve_ms,
+            },
         )
         return
 
@@ -189,10 +241,14 @@ async def _rag_event_stream(
     total_tokens = 0
     cited: list[int] = []
     answer_parts: list[str] = []
+    first_token_ms: int | None = None
     try:
         token_stream = stream_generate(system, user, model=request.llm_model, provider=provider)
         async for event in stream_with_citations(token_stream, valid_ids):
             if event[0] == "text":
+                if first_token_ms is None:
+                    first_token_ms = _elapsed_ms(started)
+                    logger.info("chat.first_token", ttft_ms=first_token_ms)
                 yield ("token", {"content": event[1]})
                 answer_parts.append(event[1])
                 total_tokens += 1
@@ -265,7 +321,11 @@ async def _rag_event_stream(
         "session_id": session_id,
         "total_tokens": total_tokens,
         "duration_ms": _elapsed_ms(started),
+        "retrieve_ms": retrieve_ms,
     }
+    # T10.2 TTFT 指标：首 token 相对请求开始的耗时（未生成 token 的路径不输出）
+    if first_token_ms is not None:
+        done_data["first_token_ms"] = first_token_ms
     if low_confidence:
         done_data["low_confidence"] = True
     yield ("done", done_data)

@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import httpx
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
@@ -25,7 +29,16 @@ from app.rules.llm_classify import (  # noqa: E402
     call_ollama_json,
     classify_file_with_llm,
     parse_classify_response,
+    reset_clients,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_clients() -> Generator[None, None, None]:
+    """每个用例前后重置模块级客户端单例（避免跨用例复用上例的 fake）。"""
+    reset_clients()
+    yield
+    reset_clients()
 
 
 def make_item(
@@ -184,15 +197,23 @@ def test_human_size() -> None:
 
 
 async def testcall_ollama_json_returns_content() -> None:
-    """正常响应 → 返回 message.content。"""
+    """正常响应 → 返回 message.content；携带 keep_alive/num_ctx（T10.2）。"""
+    captured: dict[str, object] = {}
 
     async def fake_chat(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
         return {"message": {"content": '{"category":"文档"}'}}
 
     fake_client = mock.MagicMock()
     fake_client.chat = fake_chat
     with mock.patch("app.rules.llm_classify.AsyncClient", return_value=fake_client):
         assert await call_ollama_json("sys", "user") == '{"category":"文档"}'
+
+    options = captured["options"]
+    assert options.num_predict == 256  # type: ignore[attr-defined]
+    assert options.temperature == 0.0  # type: ignore[attr-defined]
+    assert options.num_ctx == 8192  # type: ignore[attr-defined]
+    assert captured["keep_alive"] == "30m"  # keep_alive 是 chat 顶层参数
 
 
 async def testcall_ollama_json_conn_error_raises_unavailable() -> None:
