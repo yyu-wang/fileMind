@@ -1,0 +1,103 @@
+// ClassifyStatsPanel 单元测试：统计条占比、AI 判断计数、根目录名与目标结构树。
+
+import { beforeEach, describe, expect, it } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import type { ClassifyPreview } from '@/types/ipc';
+import { useFileStore } from '@/stores/fileStore';
+
+import { ClassifyStatsPanel } from './ClassifyStatsPanel';
+
+function item(
+  overrides: Partial<{ category_name: string | null; status: string; rule_source: string }>,
+) {
+  return {
+    file_id: 'f1',
+    file_name: 'a.pdf',
+    original_path: '/root/a.pdf',
+    target_path: '/root/文档/a.pdf',
+    category_name: '文档',
+    rule_source: 'rule:PDF',
+    status: 'Ok',
+    conflict_type: null,
+    ...overrides,
+  };
+}
+
+const preview: ClassifyPreview = {
+  batch_id: 'b1',
+  stats: { total: 10, categorized: 8, pending: 3, by_rule: 5, by_heuristic: 2 },
+  items: [
+    item({ category_name: '文档', rule_source: 'rule:PDF' }),
+    item({ category_name: '文档', rule_source: 'heuristic' }),
+    item({ category_name: '图片', rule_source: 'llm', file_id: 'f2', file_name: 'b.png' }),
+    item({ category_name: null, status: 'Ok' }),
+    item({ category_name: '文档', status: 'Conflict' }),
+  ],
+};
+
+beforeEach(() => {
+  localStorage.clear();
+  useFileStore.setState({ scanPath: null });
+});
+
+describe('ClassifyStatsPanel', () => {
+  it('renders stat bars with rule/heuristic/llm/pending counts and percentages', () => {
+    render(<ClassifyStatsPanel preview={preview} />);
+    // by_rule=5 / total=10 → 50%
+    expect(screen.getByText('规则命中')).toBeInTheDocument();
+    expect(screen.getByText('5 (50%)')).toBeInTheDocument();
+    // by_heuristic=2 → 20%
+    expect(screen.getByText('按类型识别')).toBeInTheDocument();
+    expect(screen.getByText('2 (20%)')).toBeInTheDocument();
+    // llm = items 中 rule_source==='llm' → 1 → 10%
+    expect(screen.getByText('AI 判断')).toBeInTheDocument();
+    expect(screen.getByText('1 (10%)')).toBeInTheDocument();
+    // pending=3 → 30%
+    expect(screen.getByText('待确认')).toBeInTheDocument();
+    expect(screen.getByText('3 (30%)')).toBeInTheDocument();
+  });
+
+  it('shows fallback root name when scanPath is empty', () => {
+    render(<ClassifyStatsPanel preview={preview} />);
+    expect(screen.getByText(/文件库\/$/)).toBeInTheDocument();
+  });
+
+  it('derives root name from scanPath', () => {
+    useFileStore.setState({ scanPath: '/Users/test/我的文档' });
+    render(<ClassifyStatsPanel preview={preview} />);
+    expect(screen.getByText(/我的文档\/$/)).toBeInTheDocument();
+  });
+
+  it('renders deduplicated target tree excluding conflicts and uncategorized', () => {
+    render(<ClassifyStatsPanel preview={preview} />);
+    // 文档 ×2 去重为 1，图片 1，Conflict 与 null 排除 → 共 2 个子节点
+    expect(screen.getAllByText(/^├── 📁 /)).toHaveLength(2);
+    expect(screen.getByText(/文档\/$/)).toBeInTheDocument();
+    expect(screen.getByText(/图片\/$/)).toBeInTheDocument();
+  });
+
+  it('sorts target tree zh-Hans-CN', () => {
+    const mixed: ClassifyPreview = {
+      ...preview,
+      items: [
+        item({ category_name: 'b', rule_source: 'llm' }),
+        item({ category_name: 'a', rule_source: 'llm', file_id: 'f2' }),
+      ],
+    };
+    render(<ClassifyStatsPanel preview={mixed} />);
+    const children = screen
+      .getAllByText(/^├── 📁 /)
+      .map((el) => el.textContent?.replace('├── 📁 ', '').replace('/', ''));
+    expect(children).toEqual(['a', 'b']);
+  });
+
+  it('shows empty tree hint when nothing classifiable', () => {
+    const empty: ClassifyPreview = {
+      ...preview,
+      stats: { total: 0, categorized: 0, pending: 0, by_rule: 0, by_heuristic: 0 },
+      items: [item({ category_name: null })],
+    };
+    render(<ClassifyStatsPanel preview={empty} />);
+    expect(screen.getByText('├── （无可分类文件）')).toBeInTheDocument();
+  });
+});
