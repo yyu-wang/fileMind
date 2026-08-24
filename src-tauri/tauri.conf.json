@@ -13,17 +13,29 @@
     "withGlobalTauri": false,
     "windows": [
       {
+        "label": "main",
         "title": "FileMind",
         "width": 1200,
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "visible": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' asset: https://data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$HOME/**"]
+      }
+    },
+    "trayIcon": {
+      "iconPath": "icons/32x32.png",
+      "iconAsTemplate": true,
+      "tooltip": "FileMind",
+      "menuOnLeftClick": false
     }
   },
   "bundle": {
@@ -36,7 +48,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/filemind-sidecar"],
+    "externalBin": [],
     "resources": []
   }
 }

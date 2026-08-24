@@ -22,13 +22,18 @@ export default [
         crypto: 'readonly',
         localStorage: 'readonly',
         sessionStorage: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
         URL: 'readonly',
         Blob: 'readonly',
         File: 'readonly',
         FileReader: 'readonly',
         HTMLElement: 'readonly',
+        HTMLDivElement: 'readonly',
+        HTMLInputElement: 'readonly',
         Event: 'readonly',
         CustomEvent: 'readonly',
+        __dirname: 'readonly',
       },
     },
     plugins: {
@@ -60,7 +65,34 @@ export default [
       react: { version: 'detect' },
     },
   },
+  // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
+  // 不需要也不能显式 import；仅声明防止 no-undef 误报）。
   {
-    ignores: ['node_modules/', 'dist/', 'src-tauri/', 'python-sidecar/', 'src/types/ipc.ts'],
+    files: ['e2e/**/*.{ts,tsx}'],
+    languageOptions: {
+      globals: {
+        browser: 'readonly',
+        $: 'readonly',
+        $$: 'readonly',
+        describe: 'readonly',
+        it: 'readonly',
+        before: 'readonly',
+        after: 'readonly',
+        beforeEach: 'readonly',
+        afterEach: 'readonly',
+        process: 'readonly', // spec/助手读 env（FILEMIND_* 隔离路径）
+      },
+    },
+  },
+  {
+    ignores: [
+      'node_modules/',
+      '.venv/',
+      'dist/',
+      'src-tauri/',
+      'python-sidecar/',
+      'src/types/ipc.ts',
+      '.bench/',
+    ],
   },
 ];

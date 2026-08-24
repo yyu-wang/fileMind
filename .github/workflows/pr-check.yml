@@ -12,12 +12,24 @@ jobs:
   frontend-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
+      # ipc.ts 是 specta 生成的类型文件（gitignored），tsc/lint/vitest 都依赖它；
+      # 需要 Rust 工具链跑 `gen:ipc` 生成，否则全新检出报 Cannot find module '@/types/ipc'。
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
       - run: npm ci
+      - name: Generate IPC types
+        run: npm run gen:ipc
       - run: npm run format:check
       - run: npm run lint
       - run: npm run type-check
@@ -27,7 +39,7 @@ jobs:
   rust-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -41,16 +53,27 @@ jobs:
   python-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: pip install ruff mypy
       - run: pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
-      - run: ruff check python-sidecar/
-      - run: ruff format --check python-sidecar/
-      - run: mypy python-sidecar/app/
-      - run: pytest python-sidecar/tests/
+      # 以下步骤统一 working-directory=python-sidecar，让 ruff/mypy/pytest
+      # 自然发现 sidecar 的 pyproject.toml；从仓库根调用会绕过配置导致假绿。
+      - name: Ruff lint
+        working-directory: python-sidecar
+        run: ruff check .
+      - name: Ruff format check
+        working-directory: python-sidecar
+        run: ruff format --check .
+      - name: mypy (strict)
+        working-directory: python-sidecar
+        run: mypy --strict app/
+      - name: pytest (unit + coverage gate)
+        working-directory: python-sidecar
+        # 排除需真实 Ollama/LanceDB 的 e2e；--cov 门禁 fail_under=80 生效
+        run: pytest tests/ -q --ignore=tests/e2e
 
   build-check:
     needs: [frontend-check, rust-check]
@@ -59,10 +82,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

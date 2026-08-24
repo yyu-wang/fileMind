@@ -1,16 +1,27 @@
+//! 推理模式切换安全阀：自动切换云端必须先获得用户同意。
+
 use crate::error::{AppError, AppResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static CONSENT_GIVEN: AtomicBool = AtomicBool::new(false);
 
+/// 设置用户是否同意数据上云。
 pub fn set_consent(given: bool) {
     CONSENT_GIVEN.store(given, Ordering::SeqCst);
 }
 
+/// 查询用户是否已同意上云。
+#[must_use]
 pub fn has_consent() -> bool {
     CONSENT_GIVEN.load(Ordering::SeqCst)
 }
 
+/// 校验一次模式切换是否被允许。
+///
+/// # Errors
+///
+/// 以下情形返回 `ModeSwitchForbidden`：自动切换但无用户同意、
+/// 目标与当前模式相同、目标为云端但无用户同意。
 pub fn validate_mode_switch(current: &str, target: &str, source: &str) -> AppResult<()> {
     if source == "auto" && !has_consent() {
         return Err(AppError::ModeSwitchForbidden {

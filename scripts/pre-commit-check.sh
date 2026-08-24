@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# rustup 默认安装到 ~/.cargo/bin，且无法写入 ~/.profile 时需在此补全 PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
 echo "=== Pre-commit 自检 ==="
 
 # 1. TypeScript lint + format check
@@ -21,9 +24,10 @@ fi
 if git diff --cached --name-only | grep -qE '^python-sidecar/.*\.py$'; then
   echo "[3/4] Python ruff + mypy..."
   source .venv/bin/activate 2>/dev/null || true
-  ruff check python-sidecar/
-  ruff format --check python-sidecar/
-  mypy python-sidecar/app/
+  # mypy 配置发现基于 CWD（非目标路径）：从仓库根跑会绕过 sidecar 的
+  # pyproject.toml 导致假绿/漏报，故在子 shell 中 cd 进 sidecar 目录
+  # 跑权威命令（与 pr-check.yml 的 python-check job 对齐）
+  (cd python-sidecar && ruff check . && ruff format --check . && mypy --strict app/)
 fi
 
 # 4. Commit message 规范检查

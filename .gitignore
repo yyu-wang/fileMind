@@ -24,6 +24,9 @@ __pycache__/
 htmlcov/
 .coverage
 coverage.xml
+coverage/
+src-tauri/coverage/
+.cache/
 
 # IDE
 .idea/
@@ -45,6 +48,9 @@ Thumbs.db
 src-tauri/target/
 src-tauri/gen/
 
+# Local cargo mirror config (network acceleration, not for CI)
+src-tauri/.cargo/
+
 # Generated files
 src/types/ipc.ts
 
@@ -56,3 +62,14 @@ npm-debug.log*
 *.db
 *.db-journal
 *.sqlite
+
+# 本地开发数据目录（开发环境把 SQLite + LanceDB 迁到项目内，绕过沙箱限制目录）
+.filemind-local/
+
+# Sidecar onefile binaries (PyInstaller 产物，每平台 23-60MB，构建时生成；只保留 .gitkeep 占位)
+filemind/binaries/*
+!filemind/binaries/.gitkeep
+
+
+# T10.5 基准产物（生成的数据/中间 JSON，不入库；报告 docs/e10-bench-report.json 单独提交）
+.bench/

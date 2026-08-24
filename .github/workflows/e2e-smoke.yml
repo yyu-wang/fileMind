@@ -1,0 +1,62 @@
+# T9.5 E2E 冒烟：真实 debug 二进制 + 嵌入式 wdio driver（tauri-plugin-wdio-webdriver）
+# 驱动真实 WebKitGTK WebView，跑 E2E-001 首次引导 + E2E-002 扫描分类撤销。
+#
+# 为什么在 PR 上跑：macOS 本地已验证（shim 修复后全绿），但嵌入式驱动在 Linux
+# WebKitGTK 上的行为只有 CI 能实测；作为 lean 冒烟 job，不阻塞 build-check。
+#
+# sidecar：CI 用 HMAC 合规 stub（e2e/fixtures/sidecar_stub.py）顶替真实 PyInstaller
+# 二进制，省 5-10min 构建。这是对「不 Mock 后端」的 CI-only 偏离，仅限确定性冒烟
+# （E2E-001/002 不触发 /classify，/index/* best-effort 静默失败）。
+
+name: E2E Smoke
+
+on:
+  pull_request:
+    branches: [main, release/*]
+  workflow_dispatch:          # 手动触发：单独验证 E2E
+
+concurrency:
+  group: e2e-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux deps (WebKitGTK + Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            xvfb
+
+      - run: npm ci
+
+      # ipc.ts 是 specta 生成的类型文件（gitignored），tsc/vite 都依赖它，先生成
+      - name: Generate IPC types
+        run: npm run gen:ipc
+
+      # E2E 用 debug 二进制：嵌入式 wdio driver 仅 debug_assertions 注册；
+      # --no-bundle 跳过 deb/appimage，省时间也避免 bundle 工具缺失
+      - name: Build Tauri (debug, no bundle)
+        run: npx tauri build --debug --no-bundle
+
+      # Rust `Command::new($FILEMIND_SIDECAR_BINARY)` 无参数启动 sidecar；
+      # 文件已带 +x（git 保留执行位），保险再 chmod 一次
+      - name: Run E2E smoke (E2E-001/002)
+        env:
+          FILEMIND_SIDECAR_BINARY: ${{ github.workspace }}/scripts/e2e-sidecar-wrapper.sh
+        run: xvfb-run -a npm run test:e2e:ci

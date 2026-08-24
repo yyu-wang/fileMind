@@ -5,7 +5,7 @@
   "description": "Desktop file organizer with RAG Q&A — powered by Tauri + React + Python Sidecar",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "dev": "vite",
@@ -21,39 +21,61 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "playwright test",
+    "test:e2e": "bash scripts/e2e-run.sh",
+    "test:e2e:rag": "RUN_E2E=1 bash scripts/e2e-run.sh --rag",
+    "test:e2e:ci": "RUN_E2E= bash scripts/e2e-run.sh --ci",
     "gen:ipc": "cargo run --bin export-specta --manifest-path src-tauri/Cargo.toml -- --output src/types/ipc.ts",
     "prepare": "husky"
   },
   "dependencies": {
-    "@tanstack/react-virtual": "^3.10.0",
-    "@tauri-apps/api": "^2.1.0",
-    "@tauri-apps/plugin-shell": "^2.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-router-dom": "^7.0.0",
+    "@tanstack/react-virtual": "^3.14.0",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-shell": "^2.3.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-pdf": "^10.4.1",
+    "react-router-dom": "^7.18.0",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "@vitejs/plugin-react": "^4.3.0",
-    "@vitest/coverage-v8": "^2.1.0",
+    "@tauri-apps/cli": "^2.11.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "@wdio/cli": "^9.31.2",
+    "@wdio/globals": "^9.31.1",
+    "@wdio/local-runner": "^9.31.2",
+    "@wdio/mocha-framework": "^9.31.2",
+    "@wdio/spec-reporter": "^9.31.2",
+    "@wdio/tauri-service": "^1.3.0",
+    "@wdio/types": "^9.31.2",
+    "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
-    "eslint-plugin-react": "^7.35.0",
-    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react": "^7.37.0",
+    "eslint-plugin-react-hooks": "^7.1.0",
     "husky": "^9.1.0",
-    "lint-staged": "^15.2.0",
-    "prettier": "^3.3.0",
-    "typescript": "^5.6.0",
-    "vite": "^6.0.0",
-    "vitest": "^2.1.0"
+    "jsdom": "^30.0.1",
+    "lint-staged": "^17.0.0",
+    "prettier": "^3.9.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.0",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.0"
   },
   "lint-staged": {
-    "*.{ts,tsx}": ["eslint --fix --max-warnings 0", "prettier --write"],
-    "*.{css,md}": ["prettier --write"]
+    "*.{ts,tsx}": [
+      "eslint --fix --max-warnings 0",
+      "prettier --write"
+    ],
+    "*.{css,md}": [
+      "prettier --write"
+    ]
   }
 }

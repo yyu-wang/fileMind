@@ -3,34 +3,56 @@ name: Merge Build
 on:
   push:
     branches: [main]
+  workflow_dispatch:        # 手动触发：合并到 main 前验证（PR 不会触发 merge-build）
+
+concurrency:
+  group: merge-build-${{ github.ref }}
+  cancel-in-progress: true  # 新 push 覆盖旧构建，省 runner 分钟
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false      # 单平台失败不取消其余平台，便于并排查错
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
+            bundles: dmg
+            artifacts: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - os: macos-latest
             target: x86_64-apple-darwin
             label: macos-x64
+            bundles: dmg
+            artifacts: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x64
+            bundles: msi
+            artifacts: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             label: linux-x64
+            bundles: deb,appimage
+            artifacts: |
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }}   # 装对应 target，交叉编译才可用
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -39,16 +61,23 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
 
       - run: npm ci
-      - name: Build Tauri
-        run: npm run build:tauri
+
+      # src/types/ipc.ts 是 specta 生成的类型文件（gitignored），CI 全新检出没有它；
+      # 必须先生成，否则 tsc 报 Cannot find module '@/types/ipc' 全崩。
+      - name: Generate IPC types
+        run: npm run gen:ipc
+
+      # 真实交叉编译：--target 决定产物 triple，--bundles 限定安装包格式
+      # （Linux 排除 rpm 防缺 rpmbuild 红；macOS x64 由 arm64 runner 交叉产出）
+      - name: Build Tauri (${{ matrix.label }})
+        run: npm run build:tauri -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: filemind-${{ matrix.label }}
-          path: |
-            src-tauri/target/release/bundle/
-            !src-tauri/target/release/bundle/**/*.dSYM
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error        # 该平台应有产物却没产出 → 显式失败

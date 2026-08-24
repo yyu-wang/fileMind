@@ -4,45 +4,70 @@ version = "0.1.0"
 description = "Desktop file organizer with RAG Q&A"
 authors = ["FileMind"]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.97"
+# 存在 src/bin/export-specta 工具二进制，默认跑主应用（tauri dev 的 cargo run 需要）
+default-run = "filemind"
 
 [lib]
 name = "filemind_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.1", features = ["protocol-asset"] }
-tauri-plugin-shell = "2.0"
-tauri-plugin-dialog = "2.0"
-tauri-plugin-fs = "2.0"
-specta = { version = "2.0", features = ["derive"] }
-specta-typescript = "0.0.7"
-tauri-specta = { version = "2.0", features = ["javascript", "typescript"] }
+# `test` feature：提供 `tauri::test::mock_app`（MockRuntime），供 `tests/tray.rs`
+# 在无真实窗口/Wry 环境下注入测试 `handle_tray_menu_event`；不影响生产构建。
+tauri = { version = "2.11", features = ["protocol-asset", "tray-icon", "test"] }
+tauri-plugin-shell = "2.3"
+tauri-plugin-dialog = "2.7"
+tauri-plugin-fs = "2.5"
+# T6.1：单实例插件，防止二次启动产生孤儿 sidecar（第二个进程会抢端口）
+tauri-plugin-single-instance = "2.3"
+specta = { version = "=2.0.0-rc.25", features = ["serde_json"] }
+specta-typescript = "0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["javascript", "typescript"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.40", features = ["full"] }
-thiserror = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
-refinery = { version = "0.8", features = ["rusqlite-bundled"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
-uuid = { version = "1.10", features = ["v4"] }
-sha2 = "0.10"
+tokio = { version = "1.53", features = ["full"] }
+thiserror = "2.0"
+rusqlite = { version = "0.39", features = ["bundled"] }
+refinery = { version = "0.9", features = ["rusqlite-bundled"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+# T6.6 SSE 流式代理：迭代 bytes_stream 逐块喂给 SseParser
+futures-util = "0.3"
+uuid = { version = "1.24", features = ["v4"] }
+sha2 = "0.11"
 hex = "0.4"
+# T6.4 文件预览：图片/PDF 内容 base64 编码传输
+base64 = "0.22"
+# T1.4 握手协议：HMAC-SHA256 签名与随机数生成
+hmac = "0.13"
+rand = "0.10"
+# T6.5 分类规则引擎：rule_type=regex 规则匹配（已是传递依赖，显式声明）
+regex = "1.13"
+chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"
-keyring = "3.0"
+keyring = "4.1"
+# T7.4 云端代理本地 HTTP 服务端：最小特性集（tokio 运行时 + http1 + Path 提取）
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1", "matched-path"] }
+# T7.4 Key 内存清零（unsafe_code=deny，须用零化 crate 的安全 API）
+zeroize = "1"
+tauri-plugin-wdio-webdriver = "1.3.0"
 
 [dev-dependencies]
-tempfile = "3.12"
-mockall = "0.13"
+tempfile = "3.27"
+mockall = "0.15"
 
 [lints.clippy]
-all = "deny"
-pedantic = "warn"
-nursery = "warn"
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Tauri IPC 命令参数必须按值反序列化（String/State 等），无法改为引用；
+# 函数体内以引用转发给 repo 层是正确设计，此 lint 对命令层是框架性误报。
+# 仅此一项豁免，不得扩展到其他 lint。
+needless_pass_by_value = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"

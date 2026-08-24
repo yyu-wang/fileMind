@@ -1,0 +1,109 @@
+// 分类统计面板（对齐交互原型 §智能分类 右侧 stats-panel）。
+//
+// 三张卡片：
+//   1. 分类统计：规则/启发式/LLM/待确认 数量 + 占比进度条
+//   2. 安全提示：撤销恢复说明
+//   3. 目标结构：本次分类将生成的目录树
+
+import { useMemo } from 'react';
+
+import { useFileStore } from '@/stores/fileStore';
+import type { ClassifyPreview } from '@/types/ipc';
+
+interface ClassifyStatsPanelProps {
+  /** 分类预览结果（含 stats 与逐项数据） */
+  preview: ClassifyPreview;
+}
+
+interface StatRow {
+  label: string;
+  count: number;
+  color: string;
+}
+
+/** 分类统计行 + 进度条。 */
+function StatBar({ label, count, total, color }: StatRow & { total: number }) {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+  return (
+    <>
+      <div className="stat-row">
+        <span className="label">{label}</span>
+        <span className="value" style={{ color }}>
+          {count} ({pct}%)
+        </span>
+      </div>
+      <div className="stat-bar">
+        <div className="stat-bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+    </>
+  );
+}
+
+export function ClassifyStatsPanel({ preview }: ClassifyStatsPanelProps) {
+  const scanPath = useFileStore((s) => s.scanPath);
+  const total = preview.stats.total;
+
+  // LLM 兜底命中数（rule_source === 'llm' 的已分类项）
+  const llmCount = useMemo(
+    () => preview.items.filter((i) => i.rule_source === 'llm').length,
+    [preview.items],
+  );
+
+  // 目标结构：分类名去重（排除冲突项与未分类）
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of preview.items) {
+      if (item.category_name != null && item.status !== 'Conflict') {
+        set.add(item.category_name);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
+  }, [preview.items]);
+
+  const rows: (StatRow & { key: string })[] = [
+    { key: 'rule', label: '规则命中', count: preview.stats.by_rule, color: 'var(--success)' },
+    {
+      key: 'heuristic',
+      label: '按类型识别',
+      count: preview.stats.by_heuristic,
+      color: 'var(--accent2)',
+    },
+    { key: 'llm', label: 'AI 判断', count: llmCount, color: 'var(--accent)' },
+    { key: 'pending', label: '待确认', count: preview.stats.pending, color: 'var(--warn)' },
+  ];
+
+  const rootName = scanPath ? scanPath.split('/').filter(Boolean).pop() : '文件库';
+
+  return (
+    <div className="stats-panel">
+      <div className="stats-card">
+        <h4>分类统计</h4>
+        {rows.map((row) => (
+          <div key={row.key} className="stats-card__row">
+            <StatBar {...row} total={total} />
+          </div>
+        ))}
+      </div>
+
+      <div className="stats-card stats-card--tip">
+        <div className="stats-card__tip-title">安全提示</div>
+        <div className="stats-card__tip-text">
+          执行后所有操作可通过「撤销」恢复。删除走系统回收站。
+        </div>
+      </div>
+
+      <div className="stats-card">
+        <h4>目标结构</h4>
+        <div className="stats-tree">
+          <div className="stats-tree__root">📂 {rootName}/</div>
+          {categories.map((name) => (
+            <div key={name} className="stats-tree__child">
+              ├── 📁 {name}/
+            </div>
+          ))}
+          {categories.length === 0 && <div className="stats-tree__child">├── （无可分类文件）</div>}
+        </div>
+      </div>
+    </div>
+  );
+}

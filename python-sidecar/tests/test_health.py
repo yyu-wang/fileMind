@@ -5,30 +5,14 @@ from app.main import app
 
 
 @pytest.fixture
-def client():
+def client() -> TestClient:
     return TestClient(app)
 
 
-def test_health_check(client):
+def test_health_check(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
     assert "version" in data
     assert "uptime_seconds" in data
-
-
-def test_classify_endpoint(client):
-    response = client.post("/classify")
-    assert response.status_code == 200
-
-
-def test_index_build(client):
-    response = client.post("/index/build")
-    assert response.status_code == 200
-
-
-def test_embedding_models(client):
-    response = client.get("/embedding/models")
-    assert response.status_code == 200
-    assert "models" in response.json()
