@@ -40,6 +40,12 @@ from app.middleware.hmac_auth import HMACMiddleware
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+# T10.3：OMP 线程帽 —— 必须在任何 import torch 之前 setdefault。
+# rerank 首次加载时 torch 默认占用全部逻辑核心，与 Tauri 主进程争抢 CPU；
+# 默认 cap 到 (核心数 - 1)，用户可用 OMP_NUM_THREADS 显式覆盖（setdefault 不覆盖）。
+# 全仓 torch 仅在 ``rerank_service._load_cross_encoder`` 惰性导入（已 grep 验证）。
+os.environ.setdefault("OMP_NUM_THREADS", str(max(1, (os.cpu_count() or 1) - 1)))
+
 logger = getLogger()
 
 # 默认 Embedding 模型：bge-large-zh-v1.5（1024 维，中文场景下语义向量 SOTA）

@@ -183,7 +183,7 @@ class ShutdownResponse(BaseModel):
 
 
 class MetricsResponse(BaseModel):
-    """Sidecar 进程内存监控响应：Go/No-Go 第 7 项（<300MB）的判定依据。"""
+    """Sidecar 进程内存监控响应：Go/No-Go 第 7 项（<500MB）的判定依据。"""
 
     rss_mb: float
     vms_mb: float
