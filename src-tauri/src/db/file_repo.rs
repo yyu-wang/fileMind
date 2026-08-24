@@ -9,20 +9,43 @@ use crate::db::models::FileRecord;
 use crate::error::{AppError, AppResult};
 
 const INSERT_FILE_SQL: &str = "
-    INSERT INTO files (id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, datetime('now'), datetime('now'))
+    INSERT INTO files (id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, datetime('now'), datetime('now'), ?7)
     ON CONFLICT(path) DO UPDATE SET
         file_name = excluded.file_name,
         file_size = excluded.file_size,
         content_hash = excluded.content_hash,
         is_deleted = 0,
-        updated_at = datetime('now')
+        updated_at = datetime('now'),
+        mtime = excluded.mtime
 ";
 
 const GET_BY_PATH_SQL: &str = "
-    SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+    SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
     FROM files WHERE path = ?1 AND is_deleted = 0
 ";
+
+/// 单条 SQL 的 `IN (...)` 分块阈值。SQLite 绑定变量上限为 999，留安全余量取 900
+/// （T10.1：十万文件扫描时逐条反查是主要瓶颈，改为 900/批的批量快照）。
+const CHUNK_IN_PATHS: usize = 900;
+
+/// 增量扫描快照：磁盘元信息与库内既有记录的比对基准（T10.1）。
+///
+/// 供 [`FileRepo::load_snapshots_by_paths`] 加载后，在锁外做
+/// 「(size, mtime) 未变 → 复用 `content_hash`、跳过重算」的增量判定。
+#[derive(Debug, Clone)]
+pub struct FileSnapshot {
+    /// 库内既有 id（`upsert_batch` 需回写 `id_map`，避免扫描生成的新 uuid 与旧 id 不一致）。
+    pub id: String,
+    /// 软删除标记（软删记录需复活，不能直接跳过）。
+    pub is_deleted: bool,
+    /// 既有内容哈希（`None` 表示未计算过，需重算）。
+    pub content_hash: Option<String>,
+    /// 既有文件大小（字节）。
+    pub file_size: i64,
+    /// 既有磁盘修改时间（UTC `YYYY-MM-DD HH:MM:SS`；旧迁移行可能为 `None`）。
+    pub mtime: Option<String>,
+}
 
 /// `files` 表仓库：全部方法接收外部连接，便于事务组合。
 pub struct FileRepo;
@@ -47,6 +70,7 @@ impl FileRepo {
                     file.file_size,
                     file.content_hash,
                     file.category,
+                    file.mtime,
                 ],
             )?;
             count += 1;
@@ -79,7 +103,7 @@ impl FileRepo {
     /// 查询失败时返回错误；不存在时返回 `None`。
     pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Option<FileRecord>> {
         let result = conn.query_row(
-            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
              FROM files WHERE id = ?1 AND is_deleted = 0",
             params![id],
             map_file_record,
@@ -110,7 +134,7 @@ impl FileRepo {
 
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
              FROM files WHERE id IN ({placeholders}) AND is_deleted = 0"
         );
 
@@ -143,12 +167,12 @@ impl FileRepo {
     ) -> AppResult<Vec<FileRecord>> {
         let sql = match category {
             Some(_) => {
-                "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+                "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
                  FROM files WHERE is_deleted = 0 AND category = ?1
                  ORDER BY updated_at DESC LIMIT ?2 OFFSET ?3"
             }
             None => {
-                "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+                "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
                  FROM files WHERE is_deleted = 0
                  ORDER BY updated_at DESC LIMIT ?1 OFFSET ?2"
             }
@@ -232,53 +256,54 @@ impl FileRepo {
 
     /// 批量增量写入：内容哈希未变化的跳过，变化的更新，新路径插入。
     ///
+    /// 内部先批量加载快照（一条 `IN (...)` 查询替代逐条 `SELECT`，T10.1），
+    /// 再交给 [`Self::upsert_batch_with_snapshots`] 决策。调用方若已在短锁阶段
+    /// 预载过快照（`scan_directory`），应直接调 `with_snapshots` 避免二次查询。
+    ///
     /// # Errors
     ///
     /// 事务开启、查询、写入或提交失败时返回错误。
     pub fn upsert_batch(conn: &Connection, files: &[FileRecord]) -> AppResult<UpsertResult> {
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let snapshots = Self::load_snapshots_by_paths(conn, &paths)?;
+        Self::upsert_batch_with_snapshots(conn, files, &snapshots)
+    }
+
+    /// 批量增量写入（快照预载版）：`snapshots` 必须已由 [`Self::load_snapshots_by_paths`]
+    /// 加载并覆盖 `files` 的全部路径。
+    ///
+    /// 跳过判定（T10.1 增量扫描核心）：
+    ///   - 未软删、`content_hash` 相同、且 `(size, mtime)` 均一致 → `skipped`（不写库）
+    ///   - `mtime` 为 `None` 的调用方（非扫描路径，如分类/恢复）退化为仅按 hash 比较，
+    ///     保持既有跳过语义；扫描路径 `mtime` 恒有值，可精确跳过未变化文件
+    ///   - 变化/新路径 → `INSERT ... ON CONFLICT(path)` 刷新元数据、复活软删记录并保留旧 id
+    ///
+    /// # Errors
+    ///
+    /// 事务开启、写入或提交失败时返回错误。
+    pub fn upsert_batch_with_snapshots(
+        conn: &Connection,
+        files: &[FileRecord],
+        snapshots: &HashMap<String, FileSnapshot>,
+    ) -> AppResult<UpsertResult> {
         let tx = conn.unchecked_transaction()?;
         let mut result = UpsertResult::default();
 
         for file in files {
-            // 按 path 反查已存在记录（含软删除行）：
-            // INSERT_FILE_SQL 的 ON CONFLICT(path) 只会更新元数据、保留旧 id，
-            // 若扫描生成的 id 不等于旧 id，后续按 id 反查（classify/preview/execute）会落空，
-            // 必须把「传入 id → 入库 id」记入 id_map 供 scan_directory 回写。
-            let existing = tx.query_row(
-                "SELECT id, is_deleted, content_hash FROM files WHERE path = ?1",
-                params![file.path],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
-            );
-
-            match existing {
-                Ok((existing_id, is_deleted, existing_hash)) => {
-                    result.id_map.insert(file.id.clone(), existing_id);
-                    if is_deleted == 0 && file.content_hash.as_ref() == existing_hash.as_ref() {
-                        result.skipped += 1;
-                    } else {
-                        // 路径已存在但内容/软删状态变化：复用 INSERT_FILE_SQL 的
-                        // ON CONFLICT(path) DO UPDATE 刷新元数据并复活记录（保留旧 id）
-                        tx.execute(
-                            INSERT_FILE_SQL,
-                            params![
-                                file.id,
-                                file.path,
-                                file.file_name,
-                                file.file_size,
-                                file.content_hash,
-                                file.category,
-                            ],
-                        )?;
-                        result.updated += 1;
-                    }
-                }
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
+            if let Some(snapshot) = snapshots.get(&file.path) {
+                // 已存在记录（含软删除行）：必须回写 id_map（ON CONFLICT 保留旧 id，
+                // 扫描生成的新 id 若不回写，后续按 id 反查会落空）
+                result.id_map.insert(file.id.clone(), snapshot.id.clone());
+                let mtime_matches = file.mtime.is_none()
+                    || (file.file_size == snapshot.file_size
+                        && file.mtime.as_deref() == snapshot.mtime.as_deref());
+                let unchanged = !snapshot.is_deleted
+                    && file.content_hash.as_ref() == snapshot.content_hash.as_ref()
+                    && mtime_matches;
+                if unchanged {
+                    result.skipped += 1;
+                } else {
+                    // 路径已存在但内容/元信息/软删状态变化：刷新并复活记录（保留旧 id）
                     tx.execute(
                         INSERT_FILE_SQL,
                         params![
@@ -288,12 +313,26 @@ impl FileRepo {
                             file.file_size,
                             file.content_hash,
                             file.category,
+                            file.mtime,
                         ],
                     )?;
-                    result.id_map.insert(file.id.clone(), file.id.clone());
-                    result.added += 1;
+                    result.updated += 1;
                 }
-                Err(e) => return Err(e.into()),
+            } else {
+                tx.execute(
+                    INSERT_FILE_SQL,
+                    params![
+                        file.id,
+                        file.path,
+                        file.file_name,
+                        file.file_size,
+                        file.content_hash,
+                        file.category,
+                        file.mtime,
+                    ],
+                )?;
+                result.id_map.insert(file.id.clone(), file.id.clone());
+                result.added += 1;
             }
         }
 
@@ -324,6 +363,8 @@ impl FileRepo {
     /// `scan_directory` 扫描到的文件 category 恒为 `None`，但同一路径此前若被整理过，
     /// DB 里已存有分类；这里按 path 回查后覆盖回返回结果，前端才能正确标记。
     ///
+    /// 路径数超过单条 SQL 变量上限时按 [`CHUNK_IN_PATHS`] 分块（T10.1）。
+    ///
     /// # Errors
     ///
     /// 语句准备或行读取失败时返回数据库错误。
@@ -335,25 +376,70 @@ impl FileRepo {
             return Ok(HashMap::new());
         }
 
-        let placeholders = paths.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT path, category FROM files
-             WHERE path IN ({placeholders}) AND is_deleted = 0 AND category IS NOT NULL"
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> =
-            paths.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params.as_slice(), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-
         let mut categories = HashMap::new();
-        for row in rows {
-            let (path, category) = row?;
-            categories.insert(path, category);
+        for chunk in paths.chunks(CHUNK_IN_PATHS) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT path, category FROM files
+                 WHERE path IN ({placeholders}) AND is_deleted = 0 AND category IS NOT NULL"
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            for row in rows {
+                let (path, category) = row?;
+                categories.insert(path, category);
+            }
         }
         Ok(categories)
+    }
+
+    /// 批量加载增量扫描快照（T10.1）。
+    ///
+    /// 返回 `path → FileSnapshot`，**包含软删除行**（与 `get_categories_by_paths` 不同，
+    /// 软删记录需复活，不能过滤）。路径数超过单条 SQL 变量上限时按 [`CHUNK_IN_PATHS`]
+    /// 分块，替代旧的逐条 `SELECT ... WHERE path=?1`（`upsert_batch` 曾每文件一条查询）。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回数据库错误。
+    pub fn load_snapshots_by_paths(
+        conn: &Connection,
+        paths: &[String],
+    ) -> AppResult<HashMap<String, FileSnapshot>> {
+        let mut snapshots = HashMap::with_capacity(paths.len());
+        for chunk in paths.chunks(CHUNK_IN_PATHS) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT path, id, is_deleted, content_hash, file_size, mtime
+                 FROM files WHERE path IN ({placeholders})"
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|p| p as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    FileSnapshot {
+                        id: row.get(1)?,
+                        is_deleted: row.get::<_, i64>(2)? != 0,
+                        content_hash: row.get(3)?,
+                        file_size: row.get(4)?,
+                        mtime: row.get(5)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (path, snapshot) = row?;
+                snapshots.insert(path, snapshot);
+            }
+        }
+        Ok(snapshots)
     }
 
     /// 按内容哈希查找所有未删除文件（用于重复文件分组）。
@@ -363,7 +449,7 @@ impl FileRepo {
     /// 语句准备或行读取失败时返回错误。
     pub fn get_by_hash(conn: &Connection, content_hash: &str) -> AppResult<Vec<FileRecord>> {
         let mut stmt = conn.prepare(
-            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at
+            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
              FROM files WHERE content_hash = ?1 AND is_deleted = 0"
         )?;
 
@@ -404,5 +490,158 @@ fn map_file_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileRecord> {
         is_deleted: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+        mtime: row.get(9)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::db::database::Database;
+    use tempfile::NamedTempFile;
+
+    fn setup_db() -> Result<Database, Box<dyn std::error::Error>> {
+        let tmp = NamedTempFile::new()?;
+        Ok(Database::open(tmp.path())?)
+    }
+
+    fn mk_record(
+        path: &str,
+        file_size: i64,
+        hash: Option<&str>,
+        mtime: Option<&str>,
+    ) -> FileRecord {
+        FileRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            path: path.to_string(),
+            file_name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            file_size,
+            content_hash: hash.map(str::to_string),
+            category: None,
+            is_deleted: false,
+            created_at: "2026-01-01 00:00:00".to_string(),
+            updated_at: "2026-01-01 00:00:00".to_string(),
+            mtime: mtime.map(str::to_string),
+        }
+    }
+
+    /// 超过单条 SQL 900 参数上限（T10.1 分块），验证 `upsert_batch` /
+    /// `load_snapshots_by_paths` / `get_categories_by_paths` 三条分块路径。
+    #[test]
+    fn test_upsert_batch_chunked() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        const COUNT: usize = 2000;
+
+        let records: Vec<FileRecord> = (0..COUNT)
+            .map(|i| {
+                mk_record(
+                    &format!("/tmp/big/{i:05}.txt"),
+                    // COUNT 上限 2000 << 2^63，usize→i64 饱和转换恒安全
+                    i as i64,
+                    Some("h"),
+                    Some("2026-01-01 00:00:00"),
+                )
+            })
+            .collect();
+
+        let first = FileRepo::upsert_batch(db.conn(), &records)?;
+        assert_eq!(usize::try_from(first.added)?, COUNT);
+        assert_eq!(first.skipped, 0);
+        assert_eq!(first.id_map.len(), COUNT);
+
+        // 快照批量加载同样分块
+        let paths: Vec<String> = records.iter().map(|r| r.path.clone()).collect();
+        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &paths)?;
+        assert_eq!(snapshots.len(), COUNT);
+
+        // 重扫（内容 + size + mtime 均未变）→ 全部跳过，不写库
+        let second = FileRepo::upsert_batch_with_snapshots(db.conn(), &records, &snapshots)?;
+        assert_eq!(second.skipped, u32::try_from(COUNT)?);
+        assert_eq!(second.updated, 0);
+
+        // 分类回查分块：给半数路径打分类（用 UPDATE —— upsert 的 ON CONFLICT
+        // DO UPDATE 刻意不写 category，避免重扫抹掉既有分类）→ 回查应精确命中半数
+        for path in paths.iter().step_by(2) {
+            db.conn().execute(
+                "UPDATE files SET category = '财务' WHERE path = ?1",
+                rusqlite::params![path],
+            )?;
+        }
+        let categories = FileRepo::get_categories_by_paths(db.conn(), &paths)?;
+        assert_eq!(categories.len(), COUNT / 2);
+        assert_eq!(
+            categories.get("/tmp/big/00000.txt").map(String::as_str),
+            Some("财务")
+        );
+        Ok(())
+    }
+
+    /// 增量扫描：未变化文件（hash/size/mtime 全一致）重扫 → skipped，不写库。
+    #[test]
+    fn test_incremental_skip_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let rec = mk_record(
+            "/tmp/incr/a.txt",
+            10,
+            Some("deadbeef"),
+            Some("2026-01-01 00:00:00"),
+        );
+
+        let first = FileRepo::upsert_batch(db.conn(), &[rec.clone()])?;
+        assert_eq!(first.added, 1);
+
+        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &[rec.path.clone()])?;
+        let second = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec], &snapshots)?;
+        assert_eq!(second.skipped, 1);
+        assert_eq!(second.updated, 0);
+        Ok(())
+    }
+
+    /// mtime 变化但内容相同（touch 场景）→ 重新落库刷新 mtime，供下次扫描跳过。
+    #[test]
+    fn test_mtime_mismatch_rehash() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let rec1 = mk_record(
+            "/tmp/incr/b.txt",
+            10,
+            Some("deadbeef"),
+            Some("2026-01-01 00:00:00"),
+        );
+        FileRepo::upsert_batch(db.conn(), &[rec1])?;
+
+        let rec2 = mk_record(
+            "/tmp/incr/b.txt",
+            10,
+            Some("deadbeef"),
+            Some("2026-01-05 00:00:00"),
+        );
+        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &[rec2.path.clone()])?;
+        let result = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec2], &snapshots)?;
+        assert_eq!(result.updated, 1);
+
+        let stored: Option<String> = db.conn().query_row(
+            "SELECT mtime FROM files WHERE path = '/tmp/incr/b.txt'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(stored.as_deref(), Some("2026-01-05 00:00:00"));
+        Ok(())
+    }
+
+    /// 非扫描调用方 `mtime` 为 `None`（分类/恢复路径）→ 退化为仅 hash 比较，
+    /// 保持既有跳过语义：size 变化但 hash 相同仍跳过。
+    #[test]
+    fn test_mtime_none_falls_back_to_hash_only() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let mut rec = mk_record("/tmp/incr/c.txt", 10, Some("deadbeef"), None);
+        FileRepo::upsert_batch(db.conn(), &[rec.clone()])?;
+
+        let snapshots = FileRepo::load_snapshots_by_paths(db.conn(), &[rec.path.clone()])?;
+        rec.file_size = 20;
+        let result = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec], &snapshots)?;
+        assert_eq!(result.skipped, 1);
+        Ok(())
+    }
 }

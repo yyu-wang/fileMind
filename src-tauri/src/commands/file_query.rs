@@ -391,6 +391,7 @@ mod tests {
                 is_deleted: false,
                 created_at: format!("2026-08-{i:02} 00:00:00"),
                 updated_at: format!("2026-08-{i:02} 00:00:00"),
+                mtime: None,
             };
             paths.push(path);
             records.push(rec);

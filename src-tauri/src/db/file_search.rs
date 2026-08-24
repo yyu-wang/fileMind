@@ -25,7 +25,7 @@ impl FileSearch {
 
         let mut stmt = conn.prepare(
             "SELECT f.id, f.path, f.file_name, f.file_size, f.content_hash,
-                    f.category, f.is_deleted, f.created_at, f.updated_at,
+                    f.category, f.is_deleted, f.created_at, f.updated_at, f.mtime,
                     bm25(file_fts) as score
              FROM file_fts
              JOIN files f ON f.id = file_fts.file_id
@@ -46,8 +46,9 @@ impl FileSearch {
                     is_deleted: row.get(6)?,
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    mtime: row.get(9)?,
                 },
-                score: row.get(9)?,
+                score: row.get(10)?,
             })
         })?;
 
@@ -72,7 +73,7 @@ impl FileSearch {
 
         let mut stmt = conn.prepare(
             "SELECT id, path, file_name, file_size, content_hash,
-                    category, is_deleted, created_at, updated_at
+                    category, is_deleted, created_at, updated_at, mtime
              FROM files
              WHERE is_deleted = 0 AND file_name LIKE ?1
              ORDER BY updated_at DESC
@@ -90,6 +91,7 @@ impl FileSearch {
                 is_deleted: row.get(6)?,
                 created_at: row.get(7)?,
                 updated_at: row.get(8)?,
+                mtime: row.get(9)?,
             })
         })?;
 
@@ -149,6 +151,7 @@ mod tests {
                 is_deleted: false,
                 created_at: "2026-01-01".to_string(),
                 updated_at: "2026-01-01".to_string(),
+                mtime: None,
             },
             FileRecord {
                 id: "f002".to_string(),
@@ -160,6 +163,7 @@ mod tests {
                 is_deleted: false,
                 created_at: "2026-01-02".to_string(),
                 updated_at: "2026-01-02".to_string(),
+                mtime: None,
             },
         ];
 

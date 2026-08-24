@@ -51,6 +51,7 @@ fn mk_file(id: &str, name: &str, root: &Path) -> FileRecord {
         is_deleted: false,
         created_at: "2026-01-01 00:00:00".to_string(),
         updated_at: "2026-01-01 00:00:00".to_string(),
+        mtime: None,
     }
 }
 

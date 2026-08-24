@@ -63,6 +63,10 @@ pub enum AppError {
     #[error("网络请求失败: {0}")]
     Network(#[from] reqwest::Error),
 
+    /// 内部状态错误（如 DB 锁中毒、不变量被破坏）。不向用户暴露实现细节。
+    #[error("内部错误: {0}")]
+    Internal(String),
+
     /// JSON 序列化/反序列化错误。
     #[error("序列化错误: {0}")]
     Serialize(#[from] serde_json::Error),

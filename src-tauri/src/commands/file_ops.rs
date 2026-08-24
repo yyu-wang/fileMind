@@ -8,7 +8,7 @@ use crate::db::{ConfigRepo, FileRepo, OperationRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
-use crate::services::hash_service::compute_file_hash;
+use crate::services::hash_service::compute_hashes_parallel;
 use crate::services::operation_executor;
 use crate::services::undo_executor;
 use crate::sidecar::proxy;
@@ -23,10 +23,11 @@ const MAX_SCAN_DEPTH: u32 = 10;
 
 /// 递归扫描目录并返回文件元信息列表（含 `content_hash`），并 `upsert` 到 `SQLite`。
 ///
-/// 行为：
+/// 行为（T10.1 增量扫描重构后）：
 ///   1. 路径安全校验（`security::validate`）
-///   2. 递归扫描目录 + 读取元信息 + 计算 SHA-256 hash（单文件失败退化为 None，不阻塞全量扫描）
-///   3. 把扫描结果 `upsert` 到 `SQLite`（`FileRepo::upsert_batch`，按 `path` 去重）
+///   2. 递归扫描目录 + 读取元信息（**不含 hash**，hash 计算移出锁外并行进行）
+///   3. `persist_scan_files`：短锁批量读快照 → 释放锁 → 锁外标记未变化文件并并行重算
+///      变化文件的 SHA-256（`compute_hashes_parallel`）→ 短锁批量 `upsert`
 ///   4. `SQLite` 写入失败只记 `warn` 日志，不影响返回给前端的扫描结果（`UI` 优先）
 ///
 /// # Errors
@@ -43,15 +44,9 @@ pub fn scan_directory(
 
     // —— SQLite 写入：非关键路径，失败只记 warn —— //
     // （扫描是高频 UI 操作，不能因 DB 短暂不可用而阻塞返回）
-    match state.db.lock() {
-        Ok(conn_guard) => {
-            if let Err(e) = persist_scan_files(conn_guard.conn(), &mut files) {
-                log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}");
-            }
-        }
-        Err(poisoned) => {
-            log::warn!("scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}");
-        }
+    match persist_scan_files(&state, &mut files) {
+        Ok(()) => {}
+        Err(e) => log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}"),
     }
 
     Ok(files)
@@ -59,9 +54,16 @@ pub fn scan_directory(
 
 /// 把扫描结果写入 SQLite，并把 `files` 中的 id 覆盖为入库后的真实 id。
 ///
-/// 扫描生成的 id 是全新 uuid，而同一路径再次扫描时 INSERT 的 `ON CONFLICT(path)`
-/// 会保留库内旧 id——若不回写，前端拿到的是库中不存在的 id，后续按 id 反查
-/// （`classify_preview` / `preview_operations` / `execute_operations`）会报"文件不存在"。
+/// 阶段化（短锁 + 锁外并行 hash，T10.1 增量扫描核心）：
+///   1. **短锁**：`load_snapshots_by_paths` 一条批量 `IN` 查询加载全部既有快照
+///   2. **锁外**：`(size, mtime)` 与快照一致 → 复用 `content_hash` 跳过重算；
+///      仅对变化文件 `compute_hashes_parallel` 并行重算
+///   3. **短锁**：`upsert_batch_with_snapshots` 批量落库（跳过/更新/插入一次完成）
+///
+/// 回写说明：扫描生成的 id 是全新 uuid，而同一路径再次扫描时 INSERT 的
+/// `ON CONFLICT(path)` 会保留库内旧 id——若不回写，前端拿到的是库中不存在的 id，
+/// 后续按 id 反查（`classify_preview` / `preview_operations` / `execute_operations`）
+/// 会报"文件不存在"。
 ///
 /// 同时回显既存分类：`scan_files_on_disk` 把 category 置为 `None`，但同一路径此前
 /// 若被整理过，DB 里已有分类。这里按 path 回查并覆盖回结果，前端才能正确标记
@@ -70,9 +72,48 @@ pub fn scan_directory(
 /// # Errors
 ///
 /// 落库失败时返回 `AppError`。
-fn persist_scan_files(conn: &rusqlite::Connection, files: &mut [FileInfo]) -> AppResult<()> {
+fn persist_scan_files(state: &AppState, files: &mut [FileInfo]) -> AppResult<()> {
+    // 阶段 1：短锁批量读快照（锁在该作用域结束自动释放）
+    let snapshots = {
+        let guard = state.db.lock().map_err(|poisoned| {
+            AppError::Internal(format!(
+                "scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}"
+            ))
+        })?;
+        let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        FileRepo::load_snapshots_by_paths(guard.conn(), &paths)?
+    };
+
+    // 阶段 2：锁外 —— 未变化文件复用既有 hash，仅变化文件并行重算
+    let needs_hash: Vec<bool> = files
+        .iter_mut()
+        .map(|f| {
+            // 磁盘 (size, mtime) 与快照一致且既有 hash 可用 → 复用，跳过重算
+            let reusable = match snapshots.get(&f.path) {
+                Some(s)
+                    if !s.is_deleted
+                        && s.content_hash.is_some()
+                        && s.file_size == f.file_size.cast_signed()
+                        && s.mtime.as_deref() == Some(f.updated_at.as_str()) =>
+                {
+                    f.content_hash = s.content_hash.clone();
+                    true
+                }
+                _ => false,
+            };
+            !reusable
+        })
+        .collect();
+    compute_hashes_parallel(files, &needs_hash);
+
+    // 阶段 3：短锁批量落库 + 回写 id + 回显分类
+    let guard = state.db.lock().map_err(|poisoned| {
+        AppError::Internal(format!(
+            "scan_directory 获取 DB 锁中毒（Mutex poison）: {poisoned}"
+        ))
+    })?;
     let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
-    let result = FileRepo::upsert_batch(conn, &records)?;
+    let result = FileRepo::upsert_batch_with_snapshots(guard.conn(), &records, &snapshots)?;
     for f in &mut *files {
         if let Some(real_id) = result.id_map.get(&f.id) {
             f.id.clone_from(real_id);
@@ -81,12 +122,14 @@ fn persist_scan_files(conn: &rusqlite::Connection, files: &mut [FileInfo]) -> Ap
 
     // 回显既有分类（DB 中无该路径或未分类的保持 `None`）
     let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    let categories = FileRepo::get_categories_by_paths(conn, &paths)?;
+    let categories = FileRepo::get_categories_by_paths(guard.conn(), &paths)?;
     for f in &mut *files {
         if let Some(category) = categories.get(&f.path) {
             f.category = Some(category.clone());
         }
     }
+    // 阶段 3 的锁用到最后一次查询即释放，避免长持锁（锁外后续无 DB 操作）
+    drop(guard);
     Ok(())
 }
 
@@ -96,6 +139,9 @@ fn persist_scan_files(conn: &rusqlite::Connection, files: &mut [FileInfo]) -> Ap
 /// 由 `SQLite` `datetime('now')` 触发，但 `FileRecord` 字段不允许空，这里
 /// 用 `FileInfo` 已有的时间戳占位（Upsert SQL 实际覆盖写入 `datetime('now')`，
 /// 所以占位值不会持久化到表中，只是满足字段非空）。
+///
+/// `mtime` 取自 `FileInfo.updated_at`（T10.1：扫描阶段该字段就是磁盘真实 mtime，
+/// 尚未被 `datetime('now')` 覆盖），用于增量跳过判定。
 impl From<&FileInfo> for FileRecord {
     fn from(f: &FileInfo) -> Self {
         Self {
@@ -110,6 +156,7 @@ impl From<&FileInfo> for FileRecord {
             // 占位：Upsert SQL 实际会覆盖为 datetime('now')，参考 file_repo.rs 第 10-18 行
             created_at: f.created_at.clone(),
             updated_at: f.updated_at.clone(),
+            mtime: Some(f.updated_at.clone()),
         }
     }
 }
@@ -760,16 +807,15 @@ fn scan_dir_recursive(dir: &Path, files: &mut Vec<FileInfo>, depth: u32) -> AppR
                 .map(format_system_time)
                 .unwrap_or_default();
 
-            // content_hash 计算失败（权限/IO）退化为 None，不阻塞整次扫描
-            // （避免 1 个不可读文件导致整个扫描目录命令失败）
-            let content_hash = compute_file_hash(&path).ok();
-
+            // hash 不在收集阶段计算（T10.1）：collection 只收元信息，
+            // 之后在锁外对「变化文件」并行重算（persist_scan_files 阶段 2）。
+            // 单文件 hash 失败同样退化为 None，不阻塞整次扫描。
             files.push(FileInfo {
                 id: uuid::Uuid::new_v4().to_string(),
                 path: path.to_string_lossy().to_string(),
                 file_name: entry.file_name().to_string_lossy().to_string(),
                 file_size: metadata.len(),
-                content_hash,
+                content_hash: None,
                 category: None,
                 created_at,
                 updated_at,
@@ -1003,8 +1049,12 @@ mod tests {
         create_temp_file(tmp.path(), "a.txt", "hello")?;
         create_temp_file(tmp.path(), "b.md", "world")?;
 
-        let files = scan_files_on_disk(tmp.path())?;
+        // T10.1 重构后 collection 阶段不含 hash；hash 在持久化前并行计算，
+        // 这里用同一路径（scan → compute_hashes_parallel）验证 hash 正确性
+        let mut files = scan_files_on_disk(tmp.path())?;
         assert_eq!(files.len(), 2);
+        let needs_hash: Vec<bool> = files.iter().map(|_| true).collect();
+        compute_hashes_parallel(&mut files, &needs_hash);
         for f in &files {
             let hash = f.content_hash.as_deref().ok_or("hash 未计算")?;
             assert_eq!(hash.len(), 64, "hash 长度应为 64 hex: {hash}");
@@ -1024,10 +1074,12 @@ mod tests {
         create_temp_file(tmp.path(), "top.txt", "top")?;
         create_temp_file(&subdir, "nested.txt", "nested")?;
 
-        let files = scan_files_on_disk(tmp.path())?;
+        let mut files = scan_files_on_disk(tmp.path())?;
         assert_eq!(files.len(), 2);
         assert!(files.iter().any(|f| f.file_name == "nested.txt"));
         // 两个不同内容 hash 不同
+        let needs_hash: Vec<bool> = files.iter().map(|_| true).collect();
+        compute_hashes_parallel(&mut files, &needs_hash);
         let mut hashes: Vec<String> = files
             .iter()
             .map(|f| f.content_hash.clone().expect("hash not none"))
@@ -1313,19 +1365,12 @@ mod tests {
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
 
-        // 3. 执行：scan_directory（通过包装态调用）
-        //    用 tauri State 很难在 test 下构造，这里直接复用内部流程：
-        //    先拿 files（等同于扫描），然后走 SQLite upsert 代码段，
-        //    保证与 scan_directory 实现的写库逻辑一致
-        let files = scan_files_on_disk(scan_root.path())?;
+        // 3. 执行：scan_directory 的写库路径（tauri State 不便在 test 下构造，
+        //    直接调用与 scan_directory 相同的 persist_scan_files，保证写库逻辑一致；
+        //    hash 由 persist_scan_files 在锁外并行计算）
+        let mut files = scan_files_on_disk(scan_root.path())?;
         assert_eq!(files.len(), 3);
-
-        {
-            let conn_guard = state.db.lock().unwrap();
-            let records: Vec<FileRecord> = files.iter().map(Into::into).collect();
-            FileRepo::upsert_batch(conn_guard.conn(), &records)
-                .map_err(|e| format!("upsert 失败: {e}"))?;
-        }
+        persist_scan_files(&state, &mut files)?;
 
         // 4. 验证：查 files 表，存在 3 条记录且 hash 非空
         let db = state.db.lock().unwrap();
@@ -1357,34 +1402,29 @@ mod tests {
 
         let mut first = scan_files_on_disk(scan_root.path())?;
         assert_eq!(first.len(), 2);
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut first)?;
-        }
+        persist_scan_files(&state, &mut first)?;
 
         let mut second = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut second)?;
+        persist_scan_files(&state, &mut second)?;
 
-            // 第二次扫描的临时 id 应回写为第一次入库的 id（同路径同 hash → skip）
-            let first_ids: HashSet<&str> = first.iter().map(|f| f.id.as_str()).collect();
-            let second_ids: HashSet<&str> = second.iter().map(|f| f.id.as_str()).collect();
-            assert_eq!(first_ids, second_ids, "同一目录重复扫描 id 应保持一致");
+        // 第二次扫描的临时 id 应回写为第一次入库的 id（同路径同 hash → skip）
+        let first_ids: HashSet<&str> = first.iter().map(|f| f.id.as_str()).collect();
+        let second_ids: HashSet<&str> = second.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(first_ids, second_ids, "同一目录重复扫描 id 应保持一致");
 
-            // 扫描返回的 id 必须全部可被反查（修复前会落空触发"文件不存在"）
-            let ids: Vec<String> = second.iter().map(|f| f.id.clone()).collect();
-            let records = FileRepo::get_by_ids(conn_guard.conn(), &ids)?;
-            assert_eq!(records.len(), 2, "按扫描返回的 id 反查应全部命中");
+        // 扫描返回的 id 必须全部可被反查（修复前会落空触发"文件不存在"）
+        let ids: Vec<String> = second.iter().map(|f| f.id.clone()).collect();
+        let conn_guard = state.db.lock().unwrap();
+        let records = FileRepo::get_by_ids(conn_guard.conn(), &ids)?;
+        assert_eq!(records.len(), 2, "按扫描返回的 id 反查应全部命中");
 
-            // 库中不应因重复扫描产生重复行
-            let count: i64 = conn_guard.conn().query_row(
-                "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
-                [],
-                |row| row.get(0),
-            )?;
-            assert_eq!(count, 2, "重复扫描不应新增记录");
-        }
+        // 库中不应因重复扫描产生重复行
+        let count: i64 = conn_guard.conn().query_row(
+            "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 2, "重复扫描不应新增记录");
         Ok(())
     }
 
@@ -1398,18 +1438,15 @@ mod tests {
 
         // 第一次扫描落库，然后模拟已整理：给文件打上分类标签
         let mut first = scan_files_on_disk(scan_root.path())?;
+        persist_scan_files(&state, &mut first)?;
         {
             let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut first)?;
             FileRepo::update_category(conn_guard.conn(), &first[0].id, "文档")?;
         }
 
         // 重新扫描：内容未变 → upsert 跳过（保留分类），persist 应把分类回显到返回值
         let mut second = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut second)?;
-        }
+        persist_scan_files(&state, &mut second)?;
 
         assert_eq!(
             second[0].category.as_deref(),
@@ -1428,15 +1465,9 @@ mod tests {
         let state = make_test_app_state(tmp_db.path());
 
         let mut first = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut first)?;
-        }
+        persist_scan_files(&state, &mut first)?;
         let mut second = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut second)?;
-        }
+        persist_scan_files(&state, &mut second)?;
 
         assert!(
             second[0].category.is_none(),
@@ -1454,26 +1485,21 @@ mod tests {
         let state = make_test_app_state(tmp_db.path());
 
         let mut first = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut first)?;
-        }
+        persist_scan_files(&state, &mut first)?;
         let original_id = first[0].id.clone();
 
         std::fs::write(scan_root.path().join("a.txt"), b"v2")?;
         let mut second = scan_files_on_disk(scan_root.path())?;
-        {
-            let conn_guard = state.db.lock().unwrap();
-            persist_scan_files(conn_guard.conn(), &mut second)?;
-            assert_eq!(second[0].id, original_id, "内容变化时仍应复用原 id");
+        persist_scan_files(&state, &mut second)?;
+        assert_eq!(second[0].id, original_id, "内容变化时仍应复用原 id");
 
-            let count: i64 = conn_guard.conn().query_row(
-                "SELECT COUNT(*) FROM files WHERE path = ?1 AND is_deleted = 0",
-                rusqlite::params![second[0].path],
-                |row| row.get(0),
-            )?;
-            assert_eq!(count, 1, "内容变化应更新而非新增记录");
-        }
+        let conn_guard = state.db.lock().unwrap();
+        let count: i64 = conn_guard.conn().query_row(
+            "SELECT COUNT(*) FROM files WHERE path = ?1 AND is_deleted = 0",
+            rusqlite::params![second[0].path],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1, "内容变化应更新而非新增记录");
         Ok(())
     }
 
@@ -1496,6 +1522,11 @@ mod tests {
         assert_eq!(rec.content_hash.as_deref(), Some("abc"));
         assert_eq!(rec.category.as_deref(), Some("cat"));
         assert!(!rec.is_deleted);
+        assert_eq!(
+            rec.mtime.as_deref(),
+            Some("2025-01-02"),
+            "mtime 应取自 FileInfo.updated_at（扫描阶段仍是磁盘真实 mtime）"
+        );
         Ok(())
     }
 
@@ -1529,6 +1560,7 @@ mod tests {
                 is_deleted: false,
                 created_at: "2025-01-01".into(),
                 updated_at: "2025-01-01".into(),
+                mtime: None,
             });
         }
         let guard = state
