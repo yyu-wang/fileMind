@@ -3,7 +3,7 @@
 // props 全部受控：数据、选中、排序状态均由父级（FilesPage）持有，
 // 本组件只负责渲染与事件上报，不直接读写 store。
 
-import { useEffect, useRef, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { formatDateTime, formatFileSize, getFileTypeMeta } from '@/lib/format';
@@ -63,8 +63,16 @@ export function FileListTable({
   });
 
   // 软排除：表头「全选」只圈选未整理文件；已整理文件可手动勾选重分类，但不进批量。
-  const selectableIds = files.filter((file) => !isOrganized(file)).map((file) => file.id);
-  const selectedSelectableCount = selectableIds.filter((id) => selectedIds.includes(id)).length;
+  // T10.4：万级文件下这两个派生量是 O(N)，用 useMemo 缓存避免每次渲染重算
+  //（重排/勾选改变才重算，与父级持有的受控状态变更频率一致）。
+  const selectableIds = useMemo(
+    () => files.filter((file) => !isOrganized(file)).map((file) => file.id),
+    [files],
+  );
+  const selectedSelectableCount = useMemo(
+    () => selectableIds.filter((id) => selectedIds.includes(id)).length,
+    [selectableIds, selectedIds],
+  );
   const allSelectableSelected =
     selectableIds.length > 0 && selectedSelectableCount === selectableIds.length;
   const someSelectableSelected = selectedSelectableCount > 0;
