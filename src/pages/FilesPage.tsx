@@ -9,6 +9,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FileListTable } from '@/components/file/FileListTable';
 import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
 import { useHotkeys } from '@/hooks/useHotkeys';
+import { getE2eTestDir } from '@/lib/e2e';
 import {
   filterByName,
   filterFiles,
@@ -76,7 +77,13 @@ export function FilesPage() {
     return sortFiles(filterByName(filtered, searchQuery), sort.key, sort.dir);
   }, [files, categoryFilter, statusFilter, searchQuery, sort]);
 
+  // T9.5 E2E：测试目录存在时跳过原生对话框（原生 open() 无法被 WebDriver 点击）。
   const handleScan = async () => {
+    const testDir = await getE2eTestDir();
+    if (testDir) {
+      await scanFiles(testDir);
+      return;
+    }
     const selected = await open({ directory: true, multiple: false, title: '选择要管理的目录' });
     if (typeof selected === 'string') {
       await scanFiles(selected);
@@ -121,6 +128,7 @@ export function FilesPage() {
           <button
             type="button"
             className="btn btn--primary"
+            data-testid="files-scan"
             onClick={() => void handleScan()}
             disabled={isScanning}
           >

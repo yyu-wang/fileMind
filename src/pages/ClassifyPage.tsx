@@ -142,6 +142,7 @@ export function ClassifyPage() {
             <button
               type="button"
               className="btn btn--primary"
+              data-testid="classify-execute"
               onClick={() => handleExecuteClick(true)}
             >
               ✓ 确认执行全部
@@ -250,6 +251,7 @@ export function ClassifyPage() {
             <button
               type="button"
               className="btn btn--primary"
+              data-testid="classify-start"
               onClick={handleStart}
               disabled={!hasFiles || noUnorganizedTargets}
             >

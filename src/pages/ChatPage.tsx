@@ -99,6 +99,7 @@ export function ChatPage() {
           <button
             type="button"
             className="btn btn--ghost"
+            data-testid="build-index"
             onClick={() => void handleBuildIndex()}
             disabled={building}
           >

@@ -29,7 +29,12 @@ export function ClassifyModeDialog({ onChoose, onCancel }: ClassifyModeDialogPro
           分类会自动创建子文件夹整理文件。两种方式都会对文件打上分类标签。
         </p>
         <div className="mode-dialog__options">
-          <button type="button" className="mode-dialog__option" onClick={() => onChoose('move')}>
+          <button
+            type="button"
+            className="mode-dialog__option"
+            data-testid="classify-mode-move"
+            onClick={() => onChoose('move')}
+          >
             <span className="mode-dialog__option-title">移动分类</span>
             <span className="mode-dialog__option-desc">
               把文件移入分类子文件夹（原文件离开原目录）

@@ -53,6 +53,8 @@ fn main() {
             commands::config::update_config,
             commands::config::sign_cloud_consent,
             commands::config::revoke_cloud_consent,
+            // T9.5 E2E 测试专用命令（注册于 main.rs 仅 debug；此处恒导出供前端类型引用）
+            commands::e2e::e2e_get_test_dir,
             // T7.3 云端 API Key 存取（只存 Keychain、不回传完整 Key）
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,

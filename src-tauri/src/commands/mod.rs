@@ -8,6 +8,8 @@ pub mod chat;
 pub mod classify;
 /// 应用配置读写命令。
 pub mod config;
+/// (T9.5) E2E 测试专用命令（函数常编译；注册在 main.rs 仅 debug，release 不可调用）。
+pub mod e2e;
 /// 文件扫描与批量文件操作命令。
 pub mod file_ops;
 /// 文件内容预览命令（文本 / 图片 / PDF）。

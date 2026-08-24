@@ -122,6 +122,7 @@ export function StepModeSelect({ onNext }: StepModeSelectProps) {
         <button
           type="button"
           className="btn btn--primary"
+          data-testid="onboarding-next"
           onClick={() => {
             // Hybrid 是禁用占位，不会进入此分支；narrowing 为 InferenceMode
             if (selected === 'Local' || selected === 'Cloud') {

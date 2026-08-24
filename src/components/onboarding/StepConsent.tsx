@@ -47,6 +47,7 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
       <label className="onboarding__consent-check">
         <input
           type="checkbox"
+          data-testid="onboarding-consent-check"
           checked={agreed}
           onChange={(e) => setAgreed(e.target.checked)}
           className="onboarding__checkbox-input"
@@ -62,6 +63,7 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
         <button
           type="button"
           className="btn btn--primary"
+          data-testid="onboarding-consent-confirm"
           disabled={!agreed || !bottomReached}
           onClick={() => onConfirm(provider)}
         >

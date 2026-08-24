@@ -9,6 +9,31 @@ import { useFileStore } from './stores/fileStore';
 import { useSettingsStore } from './stores/settingsStore';
 import './styles/globals.css';
 
+// T9.5：@wdio/tauri-service 在 macOS 上依赖 `window.__wdio_original_core__` 做每个命令的
+// window-state focus-check。但 tauri-plugin-wdio-webdriver 1.3.0 在 macOS 走原生 DirectEval
+// 通道、从不注入该 guest-js 全局 → 每次 focus-check 干等 5s 后失败，E2E 全部超时
+// （spike 只是恰好卡在预算内）。这里把 Tauri v2 的 `__TAURI_INTERNALS__`（含 `.invoke`）
+// 别名为该全局，让 focus-check 毫秒级解析。生产无副作用：本就是这个语义别名。
+declare global {
+  interface Window {
+    /** @wdio/tauri-service 的 macOS core 别名（见上方 shim 注释） */
+    __wdio_original_core__?:
+      | {
+          invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+        }
+      | undefined;
+  }
+}
+
+const tauriInternals = (
+  window as unknown as {
+    __TAURI_INTERNALS__?: {
+      invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+    };
+  }
+).__TAURI_INTERNALS__;
+window.__wdio_original_core__ ||= tauriInternals;
+
 // T6.9：渲染前应用持久化的主题偏好（避免首帧闪烁）
 // zustand persist 对 localStorage 同步 rehydrate，getState().theme 已是持久化值
 applyTheme(useSettingsStore.getState().theme);

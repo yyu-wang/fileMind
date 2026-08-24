@@ -241,6 +241,28 @@ fn main() {
         Err(e) => log::warn!("内置分类种子失败（不影响启动）: {e}"),
     }
 
+    // T9.5 E2E：`FILEMIND_E2E_SKIP_ONBOARDING=1` 时预置配置，让应用直达文件页。
+    // 安全：仅 debug 构建生效；写入的是本次 E2E 的临时 SQLite（FILEMIND_DATA_HOME
+    // 隔离），不影响真实用户配置；release 不编译此分支。
+    #[cfg(debug_assertions)]
+    if std::env::var("FILEMIND_E2E_SKIP_ONBOARDING").is_ok_and(|v| v == "1") {
+        let mut config = ConfigRepo::get(database.conn()).unwrap_or_default();
+        config.onboarding_completed = true;
+        config.inference_mode = "local".to_string();
+        if let Some(dir) = std::env::var("FILEMIND_E2E_DATA_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            config.data_directory = dir;
+        }
+        match ConfigRepo::upsert(database.conn(), &config) {
+            Ok(()) => log::info!(
+                "T9.5 E2E：FILEMIND_E2E_SKIP_ONBOARDING=1 已预置 onboarding_completed=true"
+            ),
+            Err(e) => log::error!("T9.5 E2E：预置配置失败: {e}"),
+        }
+    }
+
     // T3.5：启动时校验操作日志链式哈希完整性，检测到篡改仅告警、不阻断启动
     match OperationRepo::verify_chain(database.conn()) {
         Ok(None) => log::info!("操作日志链式哈希校验通过"),
@@ -322,7 +344,13 @@ fn main() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+    // T9.5 E2E：嵌入式 WebDriver server 仅 debug 构建注册（release 不携带自动化入口）。
+    // 由 @wdio/tauri-service 以 driverProvider:'embedded' 连接 127.0.0.1:4445。
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+
+    let builder = builder
         .manage(AppState {
             db: Mutex::new(database),
             sidecar_manager: Mutex::new(sidecar_manager),
@@ -368,6 +396,9 @@ fn main() {
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,
             commands::api_key::delete_api_key,
+            // T9.5 E2E 测试专用命令（仅 debug 注册；release 不携带自动化入口）
+            #[cfg(debug_assertions)]
+            commands::e2e::e2e_get_test_dir,
         ])
         .setup(move |app| {
             // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖
@@ -438,6 +469,19 @@ fn main() {
                 }
             }
             spawn_watchdog(app.handle().clone());
+
+            // T9.5 E2E：`FILEMIND_E2E=1` 时强制显示主窗口（debug 构建专用，避免依赖
+            // 前端 main.tsx 的 show() 成功；release 不编译此分支）。
+            #[cfg(debug_assertions)]
+            if std::env::var("FILEMIND_E2E").is_ok_and(|v| v == "1") {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.show() {
+                        log::warn!("T9.5 E2E：强制显示主窗口失败: {e}");
+                    } else {
+                        log::info!("T9.5 E2E：FILEMIND_E2E=1 已强制显示主窗口");
+                    }
+                }
+            }
 
             // T6.1 系统托盘：菜单「显示主窗口 / 退出」+ 左键点击显示窗口
             let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;

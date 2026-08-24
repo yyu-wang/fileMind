@@ -1,0 +1,14 @@
+// T9.5 E2E 独立 tsconfig：wdio specs 在 Node 侧运行，用 @wdio/globals 类型；
+// 与根 tsconfig 隔离（根 build 不应 type-check 这些文件）。
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework"]
+  },
+  "include": ["./**/*.ts"]
+}

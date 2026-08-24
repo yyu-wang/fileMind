@@ -3,8 +3,9 @@
 // 调 @tauri-apps/plugin-dialog 的 open 选目录；
 // 拖拽接收留 T6.4。选定后触发 completeOnboarding + scanFiles。
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { getE2eTestDir } from '../../lib/e2e';
 import type { InferenceMode } from '../../types/ipc';
 
 interface StepDirectoryProps {
@@ -14,6 +15,20 @@ interface StepDirectoryProps {
 
 export function StepDirectory({ onComplete, mode }: StepDirectoryProps) {
   const [directory, setDirectory] = useState<string | null>(null);
+
+  // T9.5 E2E：存在测试目录时跳过原生对话框自动填充（原生 open() 无法被 WebDriver 点击）。
+  // 非 E2E 环境 getE2eTestDir() 返回 null，不影响正常选目录流程。
+  useEffect(() => {
+    let cancelled = false;
+    void getE2eTestDir().then((dir) => {
+      if (!cancelled && dir) {
+        setDirectory(dir);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /** 浏览选择目录 */
   const handleBrowse = async () => {
@@ -76,6 +91,7 @@ export function StepDirectory({ onComplete, mode }: StepDirectoryProps) {
         <button
           type="button"
           className="btn btn--primary"
+          data-testid="onboarding-start"
           disabled={!directory}
           onClick={handleStart}
         >

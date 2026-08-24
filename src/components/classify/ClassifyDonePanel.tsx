@@ -54,7 +54,7 @@ export function ClassifyDonePanel({
       </ul>
       <div className="classify-done__actions">
         {!cancelled && canUndo && (
-          <button type="button" className="btn" onClick={onUndo}>
+          <button type="button" className="btn" data-testid="classify-undo" onClick={onUndo}>
             撤销本批
           </button>
         )}
