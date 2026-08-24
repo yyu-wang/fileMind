@@ -16,7 +16,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-tauri = { version = "2.11", features = ["protocol-asset", "tray-icon"] }
+# `test` feature：提供 `tauri::test::mock_app`（MockRuntime），供 `tests/tray.rs`
+# 在无真实窗口/Wry 环境下注入测试 `handle_tray_menu_event`；不影响生产构建。
+tauri = { version = "2.11", features = ["protocol-asset", "tray-icon", "test"] }
 tauri-plugin-shell = "2.3"
 tauri-plugin-dialog = "2.7"
 tauri-plugin-fs = "2.5"

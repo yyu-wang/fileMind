@@ -32,6 +32,7 @@ export function OllamaStatusCard() {
         <button
           type="button"
           className="btn btn--ghost"
+          data-testid="ollama-redetect"
           onClick={() => void probeOllama()}
           disabled={ollamaProbing}
         >

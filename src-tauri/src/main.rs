@@ -18,7 +18,7 @@
 
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -31,6 +31,7 @@ use filemind_lib::sidecar::{
     resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv, SidecarManager,
     WatchdogAction,
 };
+use filemind_lib::tray::handle_tray_menu_event;
 use filemind_lib::AppState;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -41,12 +42,6 @@ use tauri::{
 ///
 /// 与 manager 内部 `HEALTH_POLL_INTERVAL_MS` 同值；集中到 main.rs 便于未来调优。
 const WATCHDOG_TICK_MS: u64 = 1000;
-
-/// 全局退出标志位：用于区分「X 关闭=最小化到托盘」与「托盘菜单退出=真退出」。
-///
-/// 默认 false → `CloseRequested` 走 hide 路径；托盘「退出」菜单先置 true 再触发关闭，
-/// 此时 `CloseRequested` 走 `stop_graceful` 真退出路径。
-static IS_QUITTING: AtomicBool = AtomicBool::new(false);
 
 fn get_db_path() -> PathBuf {
     // 数据目录优先读 FILEMIND_DATA_HOME（与 Python Sidecar 共用同一目录，保证
@@ -496,25 +491,7 @@ fn main() {
                 .tooltip("FileMind")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        // 置真退出标志 → 触发主窗口关闭 → CloseRequested 走 stop_graceful 路径
-                        IS_QUITTING.store(true, Ordering::SeqCst);
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.close();
-                        } else {
-                            // 无主窗口（极少）：直接退出 app
-                            app.exit(0);
-                        }
-                    }
-                    _ => {}
-                })
+                .on_menu_event(|app, event| handle_tray_menu_event(app, event.id.as_ref()))
                 .on_tray_icon_event(|tray, _event| {
                     // 点击托盘图标时显示主窗口（macOS 上 on_menu_event 的 show 已覆盖左键点击；
                     // 这里兜底 Windows/Linux 行为）
@@ -549,7 +526,7 @@ fn main() {
     let builder = builder.on_window_event(|window, event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             // T6.1：根据 IS_QUITTING 区分「最小化到托盘」与「真退出」
-            if IS_QUITTING.load(Ordering::SeqCst) {
+            if filemind_lib::tray::IS_QUITTING.load(Ordering::SeqCst) {
                 // 真退出路径：原 stop_graceful sidecar 流程
                 let app = window.app_handle();
                 let state = app.state::<AppState>();

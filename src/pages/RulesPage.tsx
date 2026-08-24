@@ -75,7 +75,12 @@ export function RulesPage() {
           <h1 className="rules-page__title">规则编辑</h1>
           <p className="rules-page__desc">管理分类规则：按优先级匹配，命中后归入目标分类。</p>
         </div>
-        <button type="button" className="btn btn--primary" onClick={handleNew}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          onClick={handleNew}
+          data-testid="rules-new"
+        >
           + 新建规则
         </button>
       </header>
