@@ -126,7 +126,9 @@ pub async fn perform_handshake(base_url: &str, psk: &[u8], nonce_hex: &str) -> A
     let body = serde_json::json!({ "nonce": nonce_hex }).to_string();
 
     let url = format!("{base_url}/handshake");
-    let resp = reqwest::Client::new()
+    // 握手发生在启动/重启的持锁路径上：用 3s 超时的探活 client，
+    // 避免挂死的 Sidecar 把调用方一起拖死（BE-C4）
+    let resp = crate::sidecar::proxy::probe_client()
         .post(&url)
         .header("Content-Type", "application/json")
         .header(SIGNATURE_HEADER, &signature)

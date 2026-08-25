@@ -2,6 +2,7 @@
 //!
 //! 单行表（id=1），所有方法直接操作该固定行，无需 WHERE 条件。
 
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
 use crate::commands::config::{AppConfig, CloudProvider};
@@ -147,7 +148,8 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
         cloud_consent_signed: int_to_bool(consent_int),
         cloud_consent_version: row.get(8)?,
         cloud_consent_provider: provider_str.as_deref().map(str_to_provider),
-        cloud_consent_signed_at: row.get(10)?,
+        // 旧版 epoch: 前缀兼容：读取时归一化为 RFC3339（BE-M2）
+        cloud_consent_signed_at: row.get::<_, Option<String>>(10)?.map(normalize_signed_at),
     })
 }
 
@@ -186,16 +188,28 @@ const fn str_to_provider(s: &str) -> CloudProvider {
     }
 }
 
-/// 当前时间（ISO 8601，本地时区）。
+/// 当前时间（RFC3339 UTC，如 `2026-08-24T12:34:56Z`）。
+///
+/// 前端 `new Date()` 可直接解析；与 `operations_log` 的时间语义一致（均 UTC）。
 fn now_iso8601() -> String {
-    // 简单实现：用系统时间格式化为 RFC3339
-    // 避免引入 chrono 依赖（项目其他模块也用 std::time）
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // 这里用最小实现：存 epoch 秒数的 ISO 字符串
-    // 完整 ISO 8601 格式化留待 T11 统一替换为 chrono
-    format!("epoch:{secs}")
+    Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// 兼容旧版 `epoch:` 前缀时间戳（BE-M2）：读取时转换为 RFC3339。
+///
+/// 历史版本 `now_iso8601` 写入的是 `epoch:{秒}`，破坏了 `cloud_consent_signed_at`
+/// 的 ISO 8601 字段契约。读取时识别前缀转换为新格式；下次 upsert 自然写回
+/// RFC3339 原值（自愈）。解析失败的旧值原样保留，不 panic、不丢数据。
+fn normalize_signed_at(s: String) -> String {
+    if let Some(converted) = s
+        .strip_prefix("epoch:")
+        .and_then(|secs| secs.parse::<i64>().ok())
+        .and_then(|secs| DateTime::from_timestamp(secs, 0))
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    {
+        return converted;
+    }
+    s
 }
 
 #[cfg(test)]
@@ -273,5 +287,53 @@ mod tests {
             Some(CloudProvider::Deepseek) => {}
             other => panic!("期望 Deepseek，实际 {other:?}"),
         }
+    }
+
+    /// BE-M2：签署时间必须是合法 RFC3339（前端 `new Date()` 可解析）。
+    #[test]
+    fn sign_consent_writes_rfc3339_timestamp() {
+        let db = open_test_db();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", CloudProvider::Openai).unwrap();
+        let config = ConfigRepo::get(db.conn()).unwrap();
+        let signed_at = config.cloud_consent_signed_at.expect("签署后必有时间");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&signed_at).is_ok(),
+            "signed_at 应为 RFC3339，实际: {signed_at}"
+        );
+        assert!(signed_at.ends_with('Z'), "应为 UTC（Z 结尾）: {signed_at}");
+    }
+
+    /// BE-M2 兼容：旧版 `epoch:` 前缀值读取时归一化为 RFC3339，语义不变。
+    #[test]
+    fn legacy_epoch_signed_at_normalized_on_read() {
+        let db = open_test_db();
+        // 直接预置旧版数据（模拟升级前已签署用户），绕过 sign_consent 的新写入路径
+        db.conn()
+            .execute(
+                "UPDATE app_config SET cloud_consent_signed = 1, cloud_consent_signed_at = 'epoch:1756000000' WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        let config = ConfigRepo::get(db.conn()).unwrap();
+        let signed_at = config.cloud_consent_signed_at.expect("旧值不应丢失");
+        let dt = chrono::DateTime::parse_from_rfc3339(&signed_at).expect("读取时应已转为 RFC3339");
+        assert_eq!(dt.timestamp(), 1_756_000_000, "时间语义不应改变");
+    }
+
+    /// BE-M2 兜底：非法 epoch 值（非数字）读取时原样保留，不 panic。
+    #[test]
+    fn malformed_epoch_value_preserved_as_is() {
+        let db = open_test_db();
+        db.conn()
+            .execute(
+                "UPDATE app_config SET cloud_consent_signed_at = 'epoch:not-a-number' WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        let config = ConfigRepo::get(db.conn()).unwrap();
+        assert_eq!(
+            config.cloud_consent_signed_at.as_deref(),
+            Some("epoch:not-a-number")
+        );
     }
 }

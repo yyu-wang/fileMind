@@ -10,7 +10,7 @@ use crate::security::mode_switch::validate_mode_switch;
 use crate::AppState;
 
 /// 推理模式。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub enum InferenceMode {
     /// 本地推理（Ollama）。
     Local,
@@ -18,16 +18,32 @@ pub enum InferenceMode {
     Cloud,
 }
 
-/// 获取当前推理模式。
+/// 获取当前推理模式（从 `app_config` 读取，BE-M1 修复：不再硬编码 Local）。
 ///
 /// # Errors
 ///
 /// 模式读取失败时返回错误。
 #[tauri::command]
 #[specta::specta]
-pub fn get_inference_mode() -> Result<InferenceMode, String> {
+pub fn get_inference_mode(state: State<'_, AppState>) -> Result<InferenceMode, String> {
     log::debug!("读取当前推理模式");
-    Ok(InferenceMode::Local)
+    let db = state
+        .db
+        .lock()
+        .map_err(|e| format!("DB-I-001:数据库读取失败，请重启应用 ({e})"))?;
+    get_inference_mode_inner(db.conn()).map_err(|e| e.to_string())
+}
+
+/// 读取推理模式的纯逻辑（不依赖 `tauri::State`，便于单元测试）。
+///
+/// `app_config.inference_mode` 存小写字符串（"local" / "cloud"）；
+/// 未知值一律按 Local 处理（保守降级，云端路径绝不因脏数据误开）。
+fn get_inference_mode_inner(conn: &Connection) -> AppResult<InferenceMode> {
+    let config = ConfigRepo::get(conn)?;
+    Ok(match config.inference_mode.as_str() {
+        "cloud" => InferenceMode::Cloud,
+        _ => InferenceMode::Local,
+    })
 }
 
 /// 切换推理模式，切换前经过安全阀校验并持久化到 `app_config`。
@@ -133,5 +149,54 @@ mod tests {
         let result = set_inference_mode_inner(db.conn(), InferenceMode::Local, "ui");
         assert!(result.is_ok());
         assert_eq!(ConfigRepo::get(db.conn()).unwrap().inference_mode, "local");
+    }
+
+    /// BE-M1：get 必须读 DB——签署同意书切到 cloud 后，get 返回 Cloud。
+    #[test]
+    fn get_inference_mode_reads_cloud_from_db() {
+        set_consent(false);
+        let db = open_test_db();
+        // 走 sign_consent 通道把模式切到 cloud（该命令本身会写 inference_mode）
+        ConfigRepo::sign_consent(
+            db.conn(),
+            "v1.0",
+            crate::commands::config::CloudProvider::Openai,
+        )
+        .unwrap();
+        assert_eq!(
+            ConfigRepo::get(db.conn()).unwrap().inference_mode,
+            "cloud",
+            "前置条件：sign_consent 应已切到 cloud"
+        );
+        assert_eq!(
+            get_inference_mode_inner(db.conn()).unwrap(),
+            InferenceMode::Cloud
+        );
+    }
+
+    /// BE-M1：默认（未签署/未切换）返回 Local。
+    #[test]
+    fn get_inference_mode_defaults_to_local() {
+        let db = open_test_db();
+        assert_eq!(
+            get_inference_mode_inner(db.conn()).unwrap(),
+            InferenceMode::Local
+        );
+    }
+
+    /// BE-M1：脏数据（未知模式字符串）保守降级为 Local，云端路径不因脏数据误开。
+    #[test]
+    fn get_inference_mode_falls_back_to_local_on_dirty_value() {
+        let db = open_test_db();
+        db.conn()
+            .execute(
+                "UPDATE app_config SET inference_mode = 'garbage' WHERE id = 1",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            get_inference_mode_inner(db.conn()).unwrap(),
+            InferenceMode::Local
+        );
     }
 }

@@ -4,18 +4,30 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, AppResult};
 
+/// 系统目录黑名单（BE-M8 扩充）。常量统一小写：匹配时路径同样转小写，
+/// 对齐 macOS 大小写不敏感文件系统语义（`/system` 与 `/System` 同路径）。
 const BLOCKED_PATTERNS: &[&str] = &[
-    "/System",
-    "/Library",
+    "/system",
+    "/library",
     "/usr",
     "/bin",
     "/sbin",
     "/dev",
     "/proc",
     "/sys",
-    "C:\\Windows\\System32",
-    "C:\\Program Files",
+    "/etc",
+    "/private/etc",
+    "/applications",
+    "/opt/homebrew",
+    "c:\\windows\\system32",
+    "c:\\program files",
 ];
+
+/// 每用户系统目录规则（无法用固定前缀表达，按分段匹配）：
+/// macOS `~` = `/Users/<name>`，故 `/Users/<name>/{Library,.ssh}` 拦截；
+/// Linux 家目录 `/home/<name>/.ssh` 拦截（home 下的 Library 是用户内容，不拦）。
+const PER_USER_RULE_LABEL: &str = "/Users/*/Library 或 ~/.ssh";
+const HOME_SSH_RULE_LABEL: &str = "/home/*/.ssh";
 
 /// 校验读路径：规范化并检查黑名单，返回规范化路径。
 ///
@@ -27,13 +39,7 @@ pub fn validate(path: &str) -> AppResult<PathBuf> {
         .canonicalize()
         .map_err(|_| AppError::UnsafePath(format!("路径不存在或无法解析: {path}")))?;
 
-    for pattern in BLOCKED_PATTERNS {
-        if canonical.starts_with(pattern) {
-            return Err(AppError::UnsafePath(format!(
-                "路径被安全策略阻止: {path} 匹配黑名单 {pattern}"
-            )));
-        }
-    }
+    ensure_not_blocked(path, &canonical)?;
 
     Ok(canonical)
 }
@@ -114,49 +120,95 @@ pub fn validate_write_target(target: &str) -> AppResult<PathBuf> {
 
     let target_path = Path::new(target);
 
-    check_blocked_patterns(&target_path.to_string_lossy(), target_path)?;
+    // 第一道：按原始路径字符串快查（拦截显式黑名单写法与大小写变体）。
+    ensure_not_blocked(target, target_path)?;
 
     if target_path.exists() {
         let canonical = target_path
             .canonicalize()
             .map_err(|_| AppError::UnsafePath(format!("目标路径无法解析: {target}")))?;
-        check_blocked_patterns_canonical(target, &canonical)?;
-    } else if let Some(parent) = target_path.parent() {
+        ensure_not_blocked(target, &canonical)?;
+        return Ok(target_path.to_path_buf());
+    }
+
+    // 第二道（BE-M4）：目标不存在时，沿路径逐级向上找最近存在的祖先目录
+    // canonicalize（解析路径中全部符号链接），拼回未创建段后重查黑名单。
+    // 否则 /tmp/link/newdir/f.txt（link → /System）这类「目标与父目录都不
+    // 存在」的写法只做字符串检查即可绕过，create_dir_all 会穿透符号链接
+    // 在黑名单目录内建目录落文件。
+    let mut remaining: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = target_path;
+    while let Some(parent) = current.parent() {
+        if parent.as_os_str().is_empty() {
+            // 相对路径走完所有上级（如 "foo.txt"），字符串校验已覆盖
+            break;
+        }
         if parent.exists() {
-            let parent_canonical = parent.canonicalize().map_err(|_| {
+            let canonical = parent.canonicalize().map_err(|_| {
                 AppError::UnsafePath(format!("目标父目录无法解析: {}", parent.display()))
             })?;
-            check_blocked_patterns_canonical(&parent.display().to_string(), &parent_canonical)?;
+            let mut resolved = canonical;
+            for seg in remaining.iter().rev() {
+                resolved.push(seg);
+            }
+            ensure_not_blocked(target, &resolved)?;
+            break;
         }
+        if let Some(name) = current.file_name() {
+            remaining.push(name.to_os_string());
+        }
+        current = parent;
     }
 
     Ok(target_path.to_path_buf())
 }
 
-fn check_blocked_patterns(display: &str, path: &Path) -> AppResult<()> {
-    for pattern in BLOCKED_PATTERNS {
-        if path.starts_with(pattern) {
-            return Err(AppError::UnsafePath(format!(
-                "路径被安全策略阻止: {display} 匹配黑名单 {pattern}"
-            )));
-        }
+/// 路径命中黑名单时返回 `UnsafePath`（display 用于错误信息展示原始写法）。
+fn ensure_not_blocked(display: &str, path: &Path) -> AppResult<()> {
+    if let Some(pattern) = blocked_match(path) {
+        return Err(AppError::UnsafePath(format!(
+            "路径被安全策略阻止: {display} 匹配黑名单 {pattern}"
+        )));
     }
     Ok(())
 }
 
-fn check_blocked_patterns_canonical(display: &str, canonical: &Path) -> AppResult<()> {
+/// 分段级黑名单匹配：返回命中的规则标签。
+///
+/// 比较统一小写（macOS 大小写不敏感语义），且要求段边界对齐——
+/// `/etc` 拦截 `/etc/hosts` 但不误伤 `/etcetera`。
+fn blocked_match(path: &Path) -> Option<&'static str> {
+    let lower = path.to_string_lossy().to_lowercase();
     for pattern in BLOCKED_PATTERNS {
-        if canonical.starts_with(pattern) {
-            return Err(AppError::UnsafePath(format!(
-                "路径被安全策略阻止: {display} 匹配黑名单 {pattern}"
-            )));
+        // 边界分隔符跟随规则本身的风格（Windows 规则用 '\'，其余用 '/'）
+        let boundary = if pattern.contains('\\') {
+            format!("{pattern}\\")
+        } else {
+            format!("{pattern}/")
+        };
+        if lower == *pattern || lower.starts_with(&boundary) {
+            return Some(pattern);
         }
     }
-    Ok(())
+
+    // 每用户系统目录规则：按分段判断（第 1 段 = users/home，第 3 段 = 目标名）
+    let segs: Vec<&str> = lower.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() >= 3 {
+        if segs[0] == "users" && (segs[2] == "library" || segs[2] == ".ssh") {
+            return Some(PER_USER_RULE_LABEL);
+        }
+        if segs[0] == "home" && segs[2] == ".ssh" {
+            return Some(HOME_SSH_RULE_LABEL);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
+    // 测试模块允许 expect/unwrap（项目惯例）
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use std::env;
 
@@ -233,6 +285,74 @@ mod tests {
     fn test_validate_write_target_blocked_parent() {
         let result = validate_write_target("/usr/local/new_file.txt");
         assert!(result.is_err());
+    }
+
+    // BE-M4 核心回归：目标与父目录都不存在 + 中间符号链接指向黑名单目录。
+    // 旧实现只做字符串前缀检查，/tmp/link/newdir/f.txt 可绕过；
+    // 新实现 canonicalize 最近存在祖先（/tmp/link → /etc）后拦截。
+    #[test]
+    fn test_validate_write_target_symlink_bypass_blocked() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink("/etc", &link)?;
+        // target 与其父目录 newdir 均不存在，只有 link 存在
+        let target = link.join("newdir").join("f.txt");
+        assert!(validate_write_target(target.to_str().expect("UTF-8 path")).is_err());
+        Ok(())
+    }
+
+    // macOS 大小写不敏感文件系统：/system 与 /System 是同一路径，字符串检查必须命中。
+    #[test]
+    fn test_blocked_case_insensitive() {
+        assert!(validate_write_target("/system/library/x").is_err());
+        assert!(validate_write_target("/ETC/hosts").is_err());
+        assert!(validate("/Applications").is_err());
+    }
+
+    // BE-M8：扩充黑名单逐项验证。
+    #[test]
+    fn test_blocked_expanded_patterns() {
+        for p in [
+            "/etc/hosts",
+            "/private/etc/hosts",
+            "/Applications/App.app",
+            "/opt/homebrew/bin/tool",
+            "/System/Library/CoreServices/x",
+        ] {
+            assert!(validate_write_target(p).is_err(), "{p} 应被拦截");
+        }
+    }
+
+    // BE-M8：每用户系统目录（Library / .ssh）。
+    #[test]
+    fn test_blocked_per_user_paths() {
+        assert!(validate_write_target("/Users/someone/Library/Preferences/x.plist").is_err());
+        assert!(validate_write_target("/Users/someone/.ssh/config").is_err());
+        assert!(validate_write_target("/home/dev/.ssh/authorized_keys").is_err());
+        // Linux 家目录下的 Library 是用户内容，不拦截。
+        // macOS 上 /home 是指向 /System/Volumes/Data/home 的符号链接，
+        // canonicalize 后命中 /system 前缀被拦——属预期安全行为，故仅 Linux 断言。
+        #[cfg(target_os = "linux")]
+        assert!(validate_write_target("/home/dev/Library/books").is_ok());
+    }
+
+    // 段边界对齐：相近前缀名不得误伤。
+    #[test]
+    fn test_no_false_positive_on_similar_names() {
+        assert!(validate_write_target("/etcetera/notes").is_ok());
+        assert!(validate_write_target("/usage.txt").is_ok());
+        assert!(validate_write_target("/binary/data").is_ok());
+    }
+
+    // 正常多级新建目录（祖先全不存在）仍放行。
+    #[test]
+    fn test_validate_write_target_deep_new_dirs_ok() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let target = tmp.path().join("a").join("b").join("c.txt");
+        let result = validate_write_target(target.to_str().ok_or("non-UTF8 path")?);
+        assert!(result.is_ok());
+        Ok(())
     }
 
     #[test]

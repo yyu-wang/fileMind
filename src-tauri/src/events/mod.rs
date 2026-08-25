@@ -11,10 +11,11 @@ pub mod types;
 /// [`types::ChatEventPayload`]，与 Sidecar SSE `data:` 行 JSON 一致。
 ///
 /// 推送失败仅记录日志（窗口关闭等场景），不中断后台流式任务。
-pub fn emit_chat_event(app: &tauri::AppHandle, event: &str, data: serde_json::Value) {
+pub fn emit_chat_event(app: &tauri::AppHandle, event: &str, data: serde_json::Value, seq: u64) {
     let payload = types::ChatEventPayload {
         event: event.to_string(),
         data,
+        request_seq: seq,
     };
     if let Err(e) = app.emit("chat://event", payload) {
         log::warn!("chat://event 推送失败: {e}");

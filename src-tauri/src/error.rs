@@ -39,6 +39,12 @@ pub enum AppError {
     #[error("数据库错误: {0}")]
     Database(#[from] rusqlite::Error),
 
+    /// 系统密钥链（Keychain / Credential Manager）读写失败。
+    /// 区别于 `SidecarUnavailable`：密钥链故障与 Sidecar 进程无关，
+    /// 且读失败时必须中止写入，防止聚合写回静默清空全部密钥。
+    #[error("密钥链访问失败: {0}")]
+    Keychain(String),
+
     /// 推理模式切换被安全阀拒绝。
     #[error("推理模式切换被拒绝: 当前 {current} 模式不可自动切换")]
     ModeSwitchForbidden {

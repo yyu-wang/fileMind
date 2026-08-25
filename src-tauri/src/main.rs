@@ -28,13 +28,13 @@ use filemind_lib::error::AppError;
 use filemind_lib::security::cloud_proxy::{self, CLOUD_PROXY_HOST, CLOUD_PROXY_PORT};
 use filemind_lib::security::{generate_token, log_redact};
 use filemind_lib::sidecar::{
-    resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv, SidecarManager,
-    WatchdogAction,
+    cleanup_orphan_sidecar, resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv,
+    SidecarManager, WatchdogAction, SIDECAR_PORT,
 };
 use filemind_lib::AppState;
 use tauri::{
     menu::{Menu, MenuItem},
-    Manager,
+    Emitter, Manager,
 };
 
 /// 健康看门狗基础轮询间隔（毫秒）。
@@ -52,10 +52,21 @@ fn get_db_path() -> PathBuf {
     // 数据目录优先读 FILEMIND_DATA_HOME（与 Python Sidecar 共用同一目录，保证
     // SQLite 与 LanceDB 落在同一根下）；未设置时回退到 ~/.filemind（生产默认位置）。
     let data_home = std::env::var("FILEMIND_DATA_HOME").unwrap_or_else(|_| {
+        // BE-m9：HOME/USERPROFILE 均缺失时用 dirs 解析（unix 走 getpwuid 仍可得
+        // 家目录）；彻底解析失败才退平台临时目录并显式告警——数据落临时目录
+        // 有丢失风险，不再静默硬编码 /tmp。
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".to_string());
-        format!("{home}/.filemind")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| {
+                log::error!(
+                    "无法解析用户家目录（HOME/USERPROFILE 均缺失且 dirs 解析失败），数据库回退平台临时目录，数据可能在清理时丢失"
+                );
+                std::env::temp_dir()
+            });
+        format!("{}/.filemind", home.display())
     });
     PathBuf::from(data_home).join("filemind.db")
 }
@@ -73,6 +84,26 @@ fn start_sidecar_with_handshake(manager: &mut SidecarManager) -> Result<Vec<u8>,
         .build()
         .map_err(|e| AppError::SidecarUnavailable(format!("tokio runtime 初始化失败: {e}")))?;
     runtime.block_on(async { manager.start_with_handshake().await })
+}
+
+/// 重启成功后同步新 PSK / seq / 重启计数到 `AppState`。
+///
+/// BE-M6：PSK 同步失败必须显式告警——此时实际进程用新 PSK 而 `AppState`
+/// 还是旧值，所有代理请求将持续 401。
+fn on_restart_success(state: &AppState, new_psk: Vec<u8>) {
+    match state.sidecar_psk.lock() {
+        Ok(mut psk_guard) => {
+            *psk_guard = Some(new_psk);
+        }
+        Err(_) => {
+            log::error!("重启后 PSK 同步 AppState 失败（Mutex 中毒），代理请求将持续 401");
+        }
+    }
+    // 新 Sidecar 端 seq 从 0 开始，Rust 端必须跟随重置
+    state.request_seq.store(0, Ordering::SeqCst);
+    // 累计重启计数（排障用）
+    let prev = state.sidecar_restart_count.fetch_add(1, Ordering::SeqCst);
+    log::info!("Sidecar 重启成功，累计重启次数 = {}", prev + 1);
 }
 
 /// 在独立线程中启动 Sidecar 健康看门狗循环。
@@ -154,17 +185,8 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                             };
                             match restart_result {
                                 Ok(new_psk) => {
-                                    let state = app_handle.state::<AppState>();
-                                    // 同步新 PSK 到 AppState 供 proxy.rs 后续签名使用
-                                    if let Ok(mut psk_guard) = state.sidecar_psk.lock() {
-                                        *psk_guard = Some(new_psk);
-                                    }
-                                    // 新 Sidecar 端 seq 从 0 开始，Rust 端必须跟随重置
-                                    state.request_seq.store(0, Ordering::SeqCst);
-                                    // 累计重启计数（排障用）
-                                    let prev =
-                                        state.sidecar_restart_count.fetch_add(1, Ordering::SeqCst);
-                                    log::info!("Sidecar 重启成功，累计重启次数 = {}", prev + 1);
+                                    // 同步新 PSK / seq / 计数（失败告警见函数注释）
+                                    on_restart_success(&app_handle.state::<AppState>(), new_psk);
                                 }
                                 Err(e) => {
                                     log::error!("Sidecar 重启失败: {e}");
@@ -181,6 +203,18 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                             log::error!(
                                 "Sidecar 进入 CrashLoop（{count}/{window_secs}s）：{message}"
                             );
+                            // BE-M7：通知前端展示「自动恢复已暂停」提示；
+                            // 本分支自带 60s sleep，事件至多每分钟一条不会刷屏
+                            if let Err(emit_err) = app_handle.emit(
+                                "sidecar-crash-loop",
+                                serde_json::json!({
+                                    "count": count,
+                                    "window_secs": window_secs,
+                                    "message": message,
+                                }),
+                            ) {
+                                log::warn!("sidecar-crash-loop 事件发送失败: {emit_err}");
+                            }
                             // CrashLoop：每分钟只告警一次，避免刷日志
                             tokio::time::sleep(Duration::from_mins(1)).await;
                         }
@@ -317,10 +351,22 @@ fn main() {
         masking_on,
     });
 
+    // BE-M3：启动前清理上次异常退出残留的孤儿 Sidecar（ppid==1 且名字匹配），
+    // 防止旧进程占住 8765 端口导致本次探活命中旧进程、新 PSK 握手必败死循环。
+    // 单实例插件在 run() 才生效、晚于 Sidecar 启动，此清理以「只杀真孤儿」
+    // 兜住该竞态：活实例的 Sidecar ppid 非孤，不会被误杀。
+    cleanup_orphan_sidecar(SIDECAR_PORT);
+
     let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
         Ok(psk) => Some(psk),
         Err(e) => {
             log::error!("Sidecar handshake failed: {e}");
+            // BE-M3：std::process::exit 跳过 Drop，必须显式杀掉子进程再退出，
+            // 否则留下孤儿进程占住端口（start_with_handshake 内部已清理一次，
+            // 这里对「错误发生在 start 之前」等残余路径再兜底）。
+            if let Err(kill_err) = sidecar_manager.stop_hard() {
+                log::error!("退出前清理 Sidecar 子进程失败: {kill_err}");
+            }
             std::process::exit(1);
         }
     };

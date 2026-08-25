@@ -5,6 +5,7 @@ pub mod proxy;
 pub mod sse;
 
 pub use manager::{
-    current_target_triple, resolve_bundle_binary_path, resolve_bundle_from_resources,
-    resolve_dev_binary_path, CloudSidecarEnv, SidecarManager, WatchdogAction,
+    cleanup_orphan_sidecar, current_target_triple, resolve_bundle_binary_path,
+    resolve_bundle_from_resources, resolve_dev_binary_path, CloudSidecarEnv, SidecarManager,
+    WatchdogAction, SIDECAR_PORT,
 };

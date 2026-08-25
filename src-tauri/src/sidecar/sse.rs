@@ -6,6 +6,9 @@ use serde_json::Value;
 
 /// 帧分隔符：sidecar `_sse()` 输出的 `event: x\ndata: y\n\n`。
 const FRAME_SEPARATOR: &[u8] = b"\n\n";
+/// 缓冲上限（BE-m7）：上游异常（持续输出但从不发帧分隔符）时防无界增长；
+/// 超限清空缓冲，后续帧解析不受影响。1MB 对单帧 token/citation 载荷绰绰有余。
+const MAX_BUFFER_LEN: usize = 1024 * 1024;
 /// `event:` 行前缀。
 const EVENT_PREFIX: &str = "event:";
 /// `data:` 行前缀。
@@ -39,6 +42,9 @@ impl SseParser {
     /// 不影响后续帧解析；未完成的字节保留在内部缓冲，等待后续块补齐。
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<SseFrame> {
         self.buffer.extend_from_slice(chunk);
+        // BE-m7：SSE 规范允许 CR / CRLF / LF 三种行尾，统一规范化为 \n 再切帧。
+        // \r 是 ASCII，不可能出现在 UTF-8 多字节序列中间，替换不破坏字符边界。
+        normalize_crlf(&mut self.buffer);
         let mut frames = Vec::new();
         while let Some(end) = find_frame_end(&self.buffer) {
             let raw = self.buffer.drain(..end).collect::<Vec<u8>>();
@@ -46,8 +52,37 @@ impl SseParser {
                 frames.push(frame);
             }
         }
+        // BE-m7：无分隔符的异常流防无界缓冲：超限清空（丢弃的是未成帧的垃圾，
+        // 正常帧在上方循环已全部取出，不受影响）
+        if self.buffer.len() > MAX_BUFFER_LEN {
+            self.buffer.clear();
+        }
         frames
     }
+}
+
+/// 缓冲内 `\r\n` / 孤立 `\r` 统一为 `\n`（BE-m7，SSE 规范三种行尾兼容）。
+///
+/// 末尾孤立的 `\r` 保留不转换：可能是跨网络块的 `\r\n` 前半，下一块到达后
+/// 整缓冲再次规范化时自然消歧（`\r\n` 合并为一个 `\n`；`\r`+其他字节则各自成行）。
+fn normalize_crlf(buffer: &mut Vec<u8>) {
+    let mut write = 0;
+    let mut read = 0;
+    let len = buffer.len();
+    while read < len {
+        let byte = buffer[read];
+        if byte == b'\r' && read + 1 < len {
+            // 非末尾 \r：\r\n 合并为一个 \n，孤立 \r 转为 \n
+            buffer[write] = b'\n';
+            read += if buffer[read + 1] == b'\n' { 2 } else { 1 };
+        } else {
+            // 普通字节或末尾孤立 \r（保留原样待下一块消歧）
+            buffer[write] = byte;
+            read += 1;
+        }
+        write += 1;
+    }
+    buffer.truncate(write);
 }
 
 /// 定位缓冲区中第一个帧分隔符 `\n\n`，返回分隔符之后的索引。
@@ -161,6 +196,66 @@ mod tests {
         let frames = parser.feed(b"event: msg\ndata: {\"a\":\ndata: 1}\n\n");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].data, serde_json::json!({ "a": 1 }));
+    }
+
+    #[test]
+    fn parses_crlf_separated_frames() {
+        // BE-m7：SSE 规范允许 \r\n 行尾，\r\n\r\n 规范化为 \n\n 后切帧
+        let mut parser = SseParser::default();
+        let frames = parser.feed(b"event: token\r\ndata: {\"content\":\"ok\"}\r\n\r\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "token");
+        assert_eq!(frames[0].data, serde_json::json!({ "content": "ok" }));
+    }
+
+    #[test]
+    fn parses_mixed_line_endings() {
+        // 混合行尾（CRLF + LF）均按行分隔处理
+        let mut parser = SseParser::default();
+        let frames = parser.feed(b"event: msg\r\ndata: {\"a\":\ndata: 1}\r\n\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "msg");
+        assert_eq!(frames[0].data, serde_json::json!({ "a": 1 }));
+    }
+
+    #[test]
+    fn lone_cr_treated_as_line_break() {
+        // 孤立 \r（SSE 规范允许的行尾之一）同样作为行分隔
+        let mut parser = SseParser::default();
+        let frames = parser.feed(b"event: done\rdata: {\"ok\":true}\n\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "done");
+    }
+
+    #[test]
+    fn crlf_separator_split_across_chunks() {
+        // \r\n 跨块分割：前块末尾孤立 \r 保留，后块首字节 \n 与其合并为 \n
+        let mut parser = SseParser::default();
+        assert!(parser
+            .feed(b"event: done\ndata: {\"ok\":true}\r")
+            .is_empty());
+        let frames = parser.feed(b"\n\r\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "done");
+    }
+
+    #[test]
+    fn oversized_buffer_without_separator_is_dropped() {
+        // BE-m7：垃圾 + 半帧超限后缓冲清空——再喂帧尾时，若缓冲未清会拼出完整帧；
+        // 已清空则帧尾独立无 event 行、不出帧
+        let mut parser = SseParser::default();
+        let junk = vec![b'x'; MAX_BUFFER_LEN - 10];
+        assert!(parser.feed(&junk).is_empty());
+        // 追加带换行的半帧（event/data 行完整但无帧分隔符）→ 总长超限触发清空
+        assert!(parser
+            .feed(b"\nevent: done\ndata: {\"ok\":true}")
+            .is_empty());
+        // 帧尾补分隔符：清空后半帧不存在，不应拼出帧
+        assert!(parser.feed(b"\n\n").is_empty());
+        // 后续完整帧正常解析（丢弃不影响新帧）
+        let frames = parser.feed(b"event: done\ndata: {\"ok\":true}\n\n");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "done");
     }
 
     #[test]

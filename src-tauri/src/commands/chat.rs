@@ -7,6 +7,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crate::error::{AppError, AppResult};
 use crate::events::emit_chat_event;
@@ -103,8 +104,17 @@ pub fn chat_stream(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     request: ChatStreamRequest,
-) -> Result<(), String> {
-    chat_stream_inner(app, &state, request).map_err(|e| e.to_string())
+) -> Result<f64, String> {
+    chat_stream_inner(app, &state, request)
+        .map(|seq| {
+            // specta 禁止导出 u64（BigInt 精度）；seq 是会话内单调计数器，
+            // 远小于 2^52，转 f64 无精度损失（JS 安全整数范围）
+            #[allow(clippy::cast_precision_loss)]
+            {
+                seq as f64
+            }
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// 对话流式命令的纯逻辑入口（便于单元测试，不依赖 `tauri::State`）。
@@ -112,7 +122,7 @@ fn chat_stream_inner(
     app: tauri::AppHandle,
     state: &AppState,
     request: ChatStreamRequest,
-) -> AppResult<()> {
+) -> AppResult<u64> {
     let psk = state
         .sidecar_psk
         .lock()
@@ -123,22 +133,77 @@ fn chat_stream_inner(
 
     tauri::async_runtime::spawn(async move {
         if let Err(e) = stream_chat(app.clone(), psk, seq, request).await {
-            emit_chat_event(
-                &app,
-                "error",
-                serde_json::json!({
-                    "code": "INTERNAL_ERROR",
-                    "message": e.to_string(),
-                }),
-            );
+            emit_chat_event(&app, "error", error_event_payload(&e), seq);
         }
     });
-    Ok(())
+    Ok(seq)
+}
+
+/// 后台流式任务失败时下发给前端的 error 事件载荷。
+///
+/// 独立成纯函数便于单测断言形状（code/message 契约）。
+fn error_event_payload(e: &AppError) -> serde_json::Value {
+    serde_json::json!({
+        "code": "INTERNAL_ERROR",
+        "message": e.to_string(),
+    })
+}
+
+/// 流式空闲超时：连续 90s 无任何数据块视为流挂起（BE-m8）。
+/// 与前端批次 7 看门狗（90s 空闲 + 600s 总量）数值对齐——后端先到先报
+/// 真实原因，前端看门狗退化为纯 UI 兜底。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// 流式总量上限（BE-m8）：防慢速滴流无限占用后台任务。
+const STREAM_TOTAL_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// 流超时类型（BE-m8）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamTimeout {
+    /// 空闲超时（长时间无任何数据块）。
+    Idle,
+    /// 总量超时（整体时间上限）。
+    Total,
+}
+
+/// 从流中取下一块，带空闲 + 总量双时限（BE-m8）。
+///
+/// - `Ok(Some(chunk))`：收到数据块（并重置空闲计时）
+/// - `Ok(None)`：流正常结束
+/// - `Err(timeout)`：空闲或总量超时
+///
+/// 网络错误经 `Ok(Some(Err(..)))` 原样透传，由调用方转 `AppError`。
+/// 独立成泛型函数便于用 `#[tokio::test(start_paused = true)]` 单测超时行为。
+async fn next_stream_chunk<S, T, E>(
+    stream: &mut S,
+    idle_deadline: &mut tokio::time::Instant,
+    total_deadline: tokio::time::Instant,
+) -> Result<Option<std::result::Result<T, E>>, StreamTimeout>
+where
+    S: futures_util::Stream<Item = std::result::Result<T, E>> + Unpin,
+{
+    let wake = (*idle_deadline).min(total_deadline);
+    match tokio::time::timeout_at(wake, stream.next()).await {
+        Ok(Some(chunk)) => {
+            // 收到任意数据块（含 Err 块）都证明流仍活跃，重置空闲计时
+            *idle_deadline = tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT;
+            Ok(Some(chunk))
+        }
+        Ok(None) => Ok(None),
+        Err(_) => {
+            // timeout_at 在两个 deadline 中更早者到点；显式比较区分超时类型
+            if total_deadline <= tokio::time::Instant::now() {
+                Err(StreamTimeout::Total)
+            } else {
+                Err(StreamTimeout::Idle)
+            }
+        }
+    }
 }
 
 /// 迭代 Sidecar SSE 响应体，逐帧解析并推送 `chat://event`。
 ///
-/// 流中途网络错误时返回 `Network`，由调用方补发 `error` 帧。
+/// 非 2xx 响应在 [`proxy::forward_post_stream`] 内已转为 Err（BE-C5），
+/// 由调用方补发 error 帧；流中途网络错误同样返回 `Network`。
 async fn stream_chat(
     app: tauri::AppHandle,
     psk: Vec<u8>,
@@ -150,10 +215,28 @@ async fn stream_chat(
     let resp = proxy::forward_post_stream(PATH, &body, &psk, seq).await?;
     let mut stream = resp.bytes_stream();
     let mut parser = SseParser::default();
-    while let Some(chunk) = stream.next().await {
+    // BE-m8：双时限看门狗——挂起的流不再让后台任务永驻；超时返回 Err，
+    // 经 spawn 包装器发 error 事件（前端按 seq 匹配正常收尾复位）
+    let total_deadline = tokio::time::Instant::now() + STREAM_TOTAL_TIMEOUT;
+    let mut idle_deadline = tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT;
+    loop {
+        let chunk = match next_stream_chunk(&mut stream, &mut idle_deadline, total_deadline).await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break, // 流正常结束
+            Err(StreamTimeout::Idle) => {
+                return Err(AppError::SidecarUnavailable(
+                    "流式响应空闲超时（90s 无数据），已中止".to_string(),
+                ));
+            }
+            Err(StreamTimeout::Total) => {
+                return Err(AppError::SidecarUnavailable(
+                    "流式响应总量超时（600s 上限），已中止".to_string(),
+                ));
+            }
+        };
         let bytes = chunk.map_err(AppError::Network)?;
         for frame in parser.feed(&bytes) {
-            emit_chat_event(&app, &frame.event, frame.data);
+            emit_chat_event(&app, &frame.event, frame.data, seq);
         }
     }
     Ok(())
@@ -166,6 +249,72 @@ mod tests {
     use super::*;
 
     /// 反序列化缺省字段 → 填充 Sidecar 端默认值（对齐 `ChatStreamRequest`）。
+    /// BE-m8：pending 流在空闲 deadline 到点返回 Idle 超时。
+    #[tokio::test(start_paused = true)]
+    async fn stream_chunk_idle_timeout_fires() {
+        let mut stream =
+            futures_util::stream::pending::<std::result::Result<&'static [u8], reqwest::Error>>();
+        let mut idle = tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT;
+        let total = tokio::time::Instant::now() + STREAM_TOTAL_TIMEOUT;
+        let err = next_stream_chunk(&mut stream, &mut idle, total)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StreamTimeout::Idle);
+    }
+
+    /// BE-m8：收到数据块重置空闲计时——数据后挂起在新的空闲 deadline 超时。
+    #[tokio::test(start_paused = true)]
+    async fn stream_chunk_data_resets_idle_deadline() {
+        use futures_util::stream::{pending, StreamExt};
+        let stream =
+            futures_util::stream::iter(vec![Ok::<&'static [u8], reqwest::Error>(&b"data"[..])])
+                .chain(pending::<std::result::Result<&'static [u8], reqwest::Error>>());
+        tokio::pin!(stream);
+        let mut idle = tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT;
+        let total = tokio::time::Instant::now() + STREAM_TOTAL_TIMEOUT;
+        // 第一块立即到达
+        let first = next_stream_chunk(&mut stream, &mut idle, total)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, &b"data"[..]);
+        // 之后挂起：在重置后的空闲 deadline 超时（而非旧 deadline）
+        let err = next_stream_chunk(&mut stream, &mut idle, total)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StreamTimeout::Idle);
+    }
+
+    /// BE-m8：总量 deadline 先于空闲到点时返回 Total 超时。
+    #[tokio::test(start_paused = true)]
+    async fn stream_chunk_total_timeout_fires() {
+        let mut stream =
+            futures_util::stream::pending::<std::result::Result<&'static [u8], reqwest::Error>>();
+        let now = tokio::time::Instant::now();
+        // 构造 idle > total：更早的总量 deadline 先到
+        let mut idle = now + STREAM_TOTAL_TIMEOUT * 2;
+        let total = now + STREAM_IDLE_TIMEOUT;
+        let err = next_stream_chunk(&mut stream, &mut idle, total)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StreamTimeout::Total);
+    }
+
+    /// BE-m8：流正常结束返回 Ok(None)，不触发超时。
+    #[tokio::test(start_paused = true)]
+    async fn stream_chunk_returns_none_on_end() {
+        let mut stream = futures_util::stream::iter(Vec::<
+            std::result::Result<&'static [u8], reqwest::Error>,
+        >::new());
+        let mut idle = tokio::time::Instant::now() + STREAM_IDLE_TIMEOUT;
+        let total = tokio::time::Instant::now() + STREAM_TOTAL_TIMEOUT;
+        assert!(next_stream_chunk(&mut stream, &mut idle, total)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
     #[test]
     fn deserialize_fills_sidecar_defaults() {
         let req: ChatStreamRequest = serde_json::from_str(
@@ -211,5 +360,15 @@ mod tests {
             serde_json::from_str(r#"{"chunk_id":"c1","text":"你好"}"#).unwrap();
         assert_eq!(chunk.file_path, "");
         assert_eq!(chunk.page, 0);
+    }
+
+    /// error 事件载荷形状：code/message 契约（前端 error 分支依赖）。
+    #[test]
+    fn error_event_payload_shape() {
+        let payload = error_event_payload(&AppError::SidecarUnavailable("连接中断".to_string()));
+        assert_eq!(payload["code"], "INTERNAL_ERROR");
+        assert!(payload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("连接中断")));
     }
 }

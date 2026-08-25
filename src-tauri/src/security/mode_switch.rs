@@ -47,9 +47,18 @@ pub fn validate_mode_switch(current: &str, target: &str, source: &str) -> AppRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// BE-m5：测试并行共享 static `CONSENT_GIVEN` 会互相污染（且原恢复在断言后，
+    /// 失败时泄漏状态到下一测）；模块级锁强制串行 + 每测开头显式复位，
+    /// 正确性不再依赖收尾时机。
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_switch_without_consent_fails() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_consent(false);
         let result = validate_mode_switch("local", "cloud", "auto");
         assert!(result.is_err());
@@ -57,6 +66,9 @@ mod tests {
 
     #[test]
     fn test_switch_with_consent_succeeds() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_consent(true);
         let result = validate_mode_switch("local", "cloud", "auto");
         assert!(result.is_ok());
@@ -65,6 +77,9 @@ mod tests {
 
     #[test]
     fn test_same_mode_fails() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_consent(true);
         let result = validate_mode_switch("local", "local", "auto");
         assert!(result.is_err());

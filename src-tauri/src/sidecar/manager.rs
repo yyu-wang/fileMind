@@ -28,7 +28,8 @@ use crate::sidecar::proxy;
 use std::process::Child;
 use tauri::Manager as _;
 
-const SIDECAR_PORT: u16 = 8765;
+/// Sidecar 固定监听端口（本机回环）。
+pub const SIDECAR_PORT: u16 = 8765;
 /// Sidecar 就绪轮询最大尝试次数。
 /// 打包态 Sidecar 现包含 lancedb / numpy / pyarrow 等重依赖，冷启动实测约 39s，
 /// 放宽到 60s 窗口（600 × 100ms），避免重依赖场景下握手超时。
@@ -178,6 +179,11 @@ impl SidecarManager {
                 if cloud.masking_on { "1" } else { "0" },
             );
         }
+        // 本地服务（Ollama / Sidecar 自身）必须绕过系统代理（Clash 等），
+        // 否则 httpx 读 http_proxy 走代理 → 本地 127.0.0.1 被代理拦截返回 502。
+        // httpx 同时检查 NO_PROXY 与 no_proxy，双写最稳妥（不同系统读法不一）。
+        cmd.env("NO_PROXY", "127.0.0.1,localhost,::1");
+        cmd.env("no_proxy", "127.0.0.1,localhost,::1");
         cmd.stdin(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| {
             AppError::SidecarUnavailable(format!(
@@ -188,13 +194,24 @@ impl SidecarManager {
 
         // 通过 stdin 注入 PSK（hex 字符串 + 换行），随后关闭管道
         // 安全：stdin 管道仅在父子进程间可见，比 env 更稳妥（防同用户进程 ps 读取）
+        // BE-M3：任一步写失败都必须先 kill 再返回 Err——局部 child 直接 drop
+        // 不会杀进程（std Child 无 kill_on_drop），否则泄漏的孤儿进程占住
+        // 8765 端口，后续启动探活命中旧进程导致握手死循环。
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(psk_hex.as_bytes())
-                .map_err(|e| AppError::SidecarUnavailable(format!("stdin 写入 PSK 失败: {e}")))?;
-            stdin
-                .write_all(b"\n")
-                .map_err(|e| AppError::SidecarUnavailable(format!("stdin 写入换行失败: {e}")))?;
+            if let Err(e) = stdin.write_all(psk_hex.as_bytes()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::SidecarUnavailable(format!(
+                    "stdin 写入 PSK 失败: {e}"
+                )));
+            }
+            if let Err(e) = stdin.write_all(b"\n") {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::SidecarUnavailable(format!(
+                    "stdin 写入换行失败: {e}"
+                )));
+            }
             // stdin 在此处 drop，关闭管道让 Python 端 readline 返回
         }
 
@@ -214,7 +231,11 @@ impl SidecarManager {
     pub async fn wait_ready(&self) -> AppResult<()> {
         let url = format!("http://127.0.0.1:{}/health", self.port);
         for attempt in 0..MAX_READY_ATTEMPTS {
-            let ready = reqwest::get(&url)
+            // 用 3s 超时的探活 client：Sidecar「接受连接但不响应」的挂死态
+            // 下，无超时的请求会无限挂起，导致整个启动流程卡死（BE-C4）
+            let ready = proxy::probe_client()
+                .get(&url)
+                .send()
                 .await
                 .is_ok_and(|resp| resp.status().is_success());
             if ready {
@@ -250,19 +271,41 @@ impl SidecarManager {
     /// - 记录一次重启到窗口队列（便于后续 `CrashLoop` 判定，首次启动也计入
     ///   不影响，因为 `CRASH_LOOP_MAX_RESTARTS` 足够大）
     ///
+    /// 失败时（BE-M6）：统一走 [`Self::abort_failed_start`]——杀掉刚拉起的
+    /// 进程并清除未验证的 PSK。不允许出现「进程活着但未完成握手」的中间
+    /// 态：否则 watchdog /health 探活成功判 Idle 永不重启，而 `AppState`
+    /// 里没有匹配 PSK → 所有代理请求永久 401。
+    ///
     /// # Errors
     ///
-    /// 任何启动或握手步骤失败时返回对应错误，**不会**清除进程：
-    /// 调用方应决定是否再次尝试重试（`restart`/指数退避）。
+    /// 任何启动或握手步骤失败时返回对应错误（进程已被清理）。
     pub async fn start_with_handshake(&mut self) -> AppResult<Vec<u8>> {
         let psk = self.start()?;
-        self.wait_ready().await?;
-        self.handshake(&psk).await?;
+        // 就绪轮询 / 握手任一失败：杀进程 + 清未验证 PSK，让下一轮重启走完整流程
+        if let Err(e) = self.wait_ready().await {
+            self.abort_failed_start();
+            return Err(e);
+        }
+        if let Err(e) = self.handshake(&psk).await {
+            self.abort_failed_start();
+            return Err(e);
+        }
         // 握手成功：记一次 restart 窗口事件 + 清零相关计数
         self.record_restart();
         self.consecutive_failures = 0;
         log::info!("Sidecar 握手成功");
         Ok(psk)
+    }
+
+    /// 启动/握手失败的统一清理：杀掉未完成握手的子进程并清除 PSK。
+    ///
+    /// 不置 `stopped` 标志：那是「应用主动优雅关闭」语义，置位会让 watchdog
+    /// 判定已停止而永久退出，重启退避循环失效。`stop_hard` 已把 `process`
+    /// 置 None，Drop 兜底重跑是无害 no-op。
+    fn abort_failed_start(&mut self) {
+        log::warn!("Sidecar 启动/握手失败，清理未验证的子进程");
+        let _ = self.stop_hard();
+        self.psk = None;
     }
 
     /// 尝试非阻塞 wait：若子进程已退出则立即返回 `Some(ExitStatus)`。
@@ -278,7 +321,10 @@ impl SidecarManager {
     /// 请求本身异常（而非 HTTP 状态码）时返回错误。
     pub async fn health_check(&self) -> AppResult<bool> {
         let url = format!("http://127.0.0.1:{}/health", self.port);
-        Ok(reqwest::get(&url)
+        // watchdog 持锁调用本方法：3s 超时把持锁窗口从「无限」收敛到有界（BE-C4）
+        Ok(proxy::probe_client()
+            .get(&url)
+            .send()
             .await
             .is_ok_and(|resp| resp.status().is_success()))
     }
@@ -355,7 +401,12 @@ impl SidecarManager {
     /// 重启 Sidecar：`stop()`（硬杀，不走 shutdown 因为已崩溃）→
     /// `start_with_handshake()`；返回新 PSK。
     ///
-    /// 重启失败会递增 `consecutive_failures` 以推动下一次更长退避。
+    /// 失败会递增 `consecutive_failures` 推动更长退避，并计入 `CrashLoop`
+    /// 窗口（BE-M7）：`record_restart` 原本只在握手成功时调用，持续握手
+    /// 失败时窗口永不增长 → 退避封顶 8s 后无限重试，「1 分钟 10 次暂停」
+    /// 失效。现在每次重启尝试恰好计一次——成功在 `start_with_handshake`
+    /// 记、失败在此记（`abort_failed_start` 不计：首次启动失败不该混入
+    /// 「重启窗口」）。
     ///
     /// # Errors
     ///
@@ -363,8 +414,14 @@ impl SidecarManager {
     pub async fn restart(&mut self) -> AppResult<Vec<u8>> {
         let _ = self.stop_hard();
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        let psk = self.start_with_handshake().await?;
-        Ok(psk)
+        match self.start_with_handshake().await {
+            Ok(psk) => Ok(psk),
+            Err(e) => {
+                // 失败的重启尝试同样占用 CrashLoop 窗口名额
+                self.record_restart();
+                Err(e)
+            }
+        }
     }
 
     /// 优雅停止 Sidecar：
@@ -721,6 +778,86 @@ impl Drop for SidecarManager {
         {
             let _ = self.stop_hard();
         }
+    }
+}
+
+// ---------- 孤儿 Sidecar 清理（BE-M3） ----------
+
+/// 启动新 Sidecar 前清理上次异常退出残留的孤儿进程。
+///
+/// 场景：上次运行握手失败 / 崩溃路径 `std::process::exit(1)` 跳过 Drop，
+/// 子进程被 launchd 收养（ppid=1）继续占住 8765 端口 → 本次启动探活命中
+/// 旧进程（/health 无鉴权），新 PSK 握手必败 401 → 死循环只能手工杀进程。
+///
+/// 双重防误杀：
+/// 1. `ps -o comm=` 进程名必须包含 `filemind-sidecar`（不杀无关程序）；
+/// 2. `ps -o ppid=` 必须为 1（真孤儿，父进程已死被 init 收养）。
+///    活着的应用实例其 Sidecar ppid 是该实例主进程，不会被误杀——因此
+///    「第二实例先于单实例插件启动 Sidecar」的竞态也是安全的：第二实例
+///    不清掉第一实例的 Sidecar，自己 spawn 失败/握手失败后自我清理退出。
+///
+/// 仅 Unix 实现；非 Unix 平台记日志跳过。工具（lsof/ps）缺失视为无可清理。
+pub fn cleanup_orphan_sidecar(port: u16) {
+    // 安全注释：kill 的目标经过「监听指定端口 + 名字匹配 + ppid==1」三重
+    // 校验，均为本应用残留 Sidecar；不涉及其他进程。
+    #[cfg(unix)]
+    {
+        let lsof = std::process::Command::new("lsof")
+            .args(["-ti", &format!("tcp:{port}")])
+            .output();
+        let Ok(out) = lsof else {
+            log::info!("孤儿清理跳过：lsof 不可用");
+            return;
+        };
+        if !out.status.success() {
+            return; // 无进程监听该端口（lsof 非零退出）——正常情况
+        }
+        let pids = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect::<Vec<u32>>();
+        for pid in pids {
+            // 校验 1：进程名包含 filemind-sidecar
+            let comm = std::process::Command::new("ps")
+                .args(["-o", "comm=", "-p", &pid.to_string()])
+                .output();
+            let name_matches = comm.is_ok_and(|c| {
+                c.status.success()
+                    && String::from_utf8_lossy(&c.stdout).contains("filemind-sidecar")
+            });
+            if !name_matches {
+                log::info!("孤儿清理跳过 pid={pid}：进程名不匹配");
+                continue;
+            }
+            // 校验 2：ppid == 1（父进程已死，被 init 收养的真孤儿）
+            let ppid = std::process::Command::new("ps")
+                .args(["-o", "ppid=", "-p", &pid.to_string()])
+                .output();
+            let is_orphan = ppid.is_ok_and(|c| {
+                c.status.success() && String::from_utf8_lossy(&c.stdout).trim() == "1"
+            });
+            if !is_orphan {
+                log::info!("孤儿清理跳过 pid={pid}：父进程仍存活（非孤儿）");
+                continue;
+            }
+            // SIGTERM 温和终止；失败打日志即可，不阻断启动
+            let kill = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .output();
+            match kill {
+                Ok(s) if s.status.success() => {
+                    log::warn!("已清理孤儿 Sidecar 进程 pid={pid}（占用端口 {port}）");
+                }
+                _ => {
+                    log::error!("清理孤儿 Sidecar pid={pid} 失败，可能需要手工处理");
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = port;
+        log::info!("孤儿清理跳过：当前平台未实现（非 Unix）");
     }
 }
 

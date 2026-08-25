@@ -36,6 +36,9 @@ pub struct ChatEventPayload {
     pub event: String,
     /// 事件载荷（与 Sidecar `data:` 行 JSON 一致）。
     pub data: serde_json::Value,
+    /// 本次流式请求序号（FE-C2）：前端按它过滤旧流残余事件，
+    /// 与 `chat_stream` 命令返回值同源（`AppState.request_seq`）。
+    pub request_seq: u64,
 }
 
 /// Sidecar 状态变更事件。

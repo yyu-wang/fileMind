@@ -11,6 +11,9 @@
 //! - Key 仅作局部变量，使用后经 `zeroize` 清零再 drop（`unsafe_code=deny`）
 //! - 审计日志只记 provider 与是否流式，不记 Key、不记内容（T7.1 二次兜底）
 
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -31,6 +34,41 @@ pub const CLOUD_PROXY_PORT: u16 = 8766;
 
 /// 调用方鉴权请求头；Sidecar 经 `FILEMIND_CLOUD_PROXY_TOKEN` env 取值。
 const TOKEN_HEADER: &str = "x-filemind-token";
+
+/// 共享 HTTP Client 单例（BE-m3）：连接池/TLS 会话复用，避免每请求新建 Client。
+/// 不设总超时——JSON 与 SSE 流式共用此 Client，总超时会掐断长流；
+/// 非流式请求在 `RequestBuilder` 级单独设超时（见 [`forward_provider_call`]）。
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// 返回共享 `reqwest::Client`（连接超时 10s，首次访问惰性初始化）。
+fn client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        // build 失败仅理论上可能（TLS 后端初始化异常），退回默认 Client 保可用
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|e| {
+                log::warn!("云端代理 Client 构建失败，退回默认 Client: {e}");
+                reqwest::Client::new()
+            })
+    })
+}
+
+/// 常量时间字符串比较（BE-m4）：逐字节异或累积，不因首个不匹配字节提前返回，
+/// 避免逐字节计时侧信道猜测 token。长度差折叠进同一累积值，长度信息也不泄漏。
+/// 回环 + 256bit 随机 token 下实际风险极低，顺手加固。
+#[must_use]
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    // 先累计长度差：长度不等时仍完整跑完字节比较，总耗时与内容无关
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let byte_a = a.get(i).copied().unwrap_or(0);
+        let byte_b = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(byte_a ^ byte_b);
+    }
+    diff == 0
+}
 
 /// 云端代理状态（启动时构造，随 axum 路由共享）。
 #[derive(Clone)]
@@ -68,13 +106,13 @@ impl CloudProxyState {
         }
     }
 
-    /// 校验请求头中的共享 token。
+    /// 校验请求头中的共享 token（常量时间比较，BE-m4）。
     #[must_use]
     fn token_matches(&self, headers: &HeaderMap) -> bool {
         headers
             .get(TOKEN_HEADER)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v == self.token)
+            .is_some_and(|v| constant_time_eq(v, &self.token))
     }
 
     /// 目标上游 URL：测试覆盖优先，否则走白名单。
@@ -113,22 +151,30 @@ pub fn generate_token() -> AppResult<String> {
 
 /// 转发云端请求：注入 `Authorization: Bearer` 后透传 body。
 ///
+/// 非流式请求（`streaming=false`）设 120s 整体超时；流式不设——
+/// 共享 Client 的总超时会掐断 SSE 长流（BE-m3）。
+///
 /// # Errors
 ///
 /// 上游网络错误时返回 `Network`。
 async fn forward_provider_call(
-    client: &reqwest::Client,
     upstream: &str,
     key: &str,
     body: Value,
+    streaming: bool,
 ) -> AppResult<reqwest::Response> {
-    client
+    // Bearer 串含 Key：reqwest 内部会拷贝走自己那份，这里持有的明文副本
+    // 用后清零（BE-m3，与 handler 中 key.zeroize() 同层级的内存卫生）
+    let mut auth_header = format!("Bearer {key}");
+    let mut request = client()
         .post(upstream)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {key}"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(AppError::Network)
+        .header(reqwest::header::AUTHORIZATION, &auth_header);
+    if !streaming {
+        request = request.timeout(Duration::from_mins(2));
+    }
+    let result = request.json(&body).send().await.map_err(AppError::Network);
+    auth_header.zeroize();
+    result
 }
 
 /// 云端代理端点：`POST /cloud-proxy/{provider}/chat/completions`。
@@ -165,9 +211,8 @@ async fn proxy_chat_completions(
         .unwrap_or(false);
     log::info!("cloud.proxy: provider={provider}, stream={streaming}");
 
-    // 5. 转发到云端
-    let client = reqwest::Client::new();
-    let upstream_resp = match forward_provider_call(&client, &upstream, &key, body_json).await {
+    // 5. 转发到云端（共享 Client，BE-m3）
+    let upstream_resp = match forward_provider_call(&upstream, &key, body_json, streaming).await {
         Ok(resp) => resp,
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e.to_string()),
     };
@@ -209,6 +254,14 @@ pub fn spawn_proxy_server(state: CloudProxyState) -> AppResult<()> {
         std::net::TcpListener::bind((CLOUD_PROXY_HOST, CLOUD_PROXY_PORT)).map_err(|e| {
             AppError::SidecarUnavailable(format!("云端代理端口 {CLOUD_PROXY_PORT} 绑定失败: {e}"))
         })?;
+    // tokio `TcpListener::from_std` 要求 socket 已处于非阻塞模式（debug_assert 强制）。
+    // 若沿用 std 默认的阻塞模式，debug 构建会在运行时内注册阻塞 fd 时 panic（tokio#7172）。
+    // 保持同步绑定契约不变：此处 set_nonblocking 失败同样按 SidecarUnavailable 退出。
+    listener.set_nonblocking(true).map_err(|e| {
+        AppError::SidecarUnavailable(format!(
+            "云端代理端口 {CLOUD_PROXY_PORT} 设为非阻塞失败: {e}"
+        ))
+    })?;
     let router = Router::new()
         .route(
             "/cloud-proxy/{provider}/chat/completions",
@@ -331,6 +384,16 @@ mod tests {
     }
 
     #[test]
+    fn constant_time_eq_matches_and_mismatches() {
+        assert!(constant_time_eq("tok-123", "tok-123"));
+        assert!(!constant_time_eq("tok-123", "tok-124"));
+        // 长度不等必须判否（长度差折叠进累积值）
+        assert!(!constant_time_eq("tok-123", "tok-1234"));
+        assert!(!constant_time_eq("", "a"));
+        assert!(constant_time_eq("", ""));
+    }
+
+    #[test]
     fn generate_token_is_hex_and_unique() {
         let a = generate_token().unwrap();
         let b = generate_token().unwrap();
@@ -342,9 +405,8 @@ mod tests {
     #[tokio::test]
     async fn forward_injects_auth_and_passes_body() {
         let (upstream, mut rx) = spawn_fake_upstream().await;
-        let client = reqwest::Client::new();
         let body = serde_json::json!({ "model": "deepseek-chat", "messages": [] });
-        let resp = forward_provider_call(&client, &upstream, "sk-abc", body.clone())
+        let resp = forward_provider_call(&upstream, "sk-abc", body.clone(), false)
             .await
             .unwrap();
         assert_eq!(resp.status(), 200);
