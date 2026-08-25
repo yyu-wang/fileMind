@@ -31,6 +31,10 @@ export type ChatEventData =
         session_id: string;
         total_tokens: number;
         duration_ms: number;
+        /** T10.2：检索阶段（改写+向量化+重排）耗时 ms。 */
+        retrieve_ms?: number;
+        /** T10.2：请求开始到首个 token 的耗时 ms（TTFT）。 */
+        first_token_ms?: number;
         low_confidence?: boolean;
       };
     }

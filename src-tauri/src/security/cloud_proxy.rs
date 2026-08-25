@@ -412,10 +412,13 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let (head, req_body) = rx.recv().await.unwrap();
         assert!(
-            head.contains("authorization: Bearer sk-abc"),
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-abc"),
             "应注入 Authorization 头: {head}"
         );
-        assert!(head.contains("content-type: application/json"));
+        assert!(head
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"));
         let parsed: Value = serde_json::from_str(&req_body).unwrap();
         assert_eq!(parsed["model"], "deepseek-chat");
     }
@@ -437,7 +440,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let (head, req_body) = rx.recv().await.unwrap();
         assert!(
-            head.contains("authorization: Bearer sk-test-key-abcdefghijklmnop"),
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer sk-test-key-abcdefghijklmnop"),
             "应注入 Keychain 读取的 Key: {head}"
         );
         assert!(req_body.contains("gpt-4o"));

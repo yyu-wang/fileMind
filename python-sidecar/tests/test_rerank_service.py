@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -31,6 +32,7 @@ def _reset_pipeline() -> None:
     """重置懒加载单例全局，隔离测试。"""
     rerank_service._pipeline = None
     rerank_service._pipeline_lock = asyncio.Lock()
+    rerank_service._last_used_monotonic = None
 
 
 class _FakeCrossEncoder:
@@ -106,6 +108,59 @@ async def test_pipeline_lazy_singleton_constructed_once() -> None:
         await rerank("q", candidates)
 
     assert constructs == ["BAAI/bge-reranker-v2-m3"]
+
+
+# ------------------------------------------------------------------
+# T10.3 空闲卸载（内存优先兜底）
+# ------------------------------------------------------------------
+
+
+async def test_idle_below_threshold_keeps_pipeline() -> None:
+    """空闲未超阈值 → 复用已加载 pipeline，不重建。"""
+    _reset_pipeline()
+    fake = _FakeCrossEncoder("m")
+    rerank_service._pipeline = fake
+    rerank_service._last_used_monotonic = time.monotonic() - 1  # 1s 前刚用过
+
+    def fail_if_reload(model: str) -> object:
+        raise AssertionError("不应触发重建")
+
+    with mock.patch.object(rerank_service, "_load_cross_encoder", fail_if_reload):
+        pipeline = await _get_pipeline("BAAI/bge-reranker-v2-m3")
+
+    assert pipeline is fake
+
+
+async def test_idle_over_threshold_reloads_pipeline() -> None:
+    """空闲超阈值 → 下次取用触发卸载并重建（懒加载语义保持）。"""
+    _reset_pipeline()
+    stale = _FakeCrossEncoder("stale")
+    rerank_service._pipeline = stale
+    rerank_service._last_used_monotonic = time.monotonic() - rerank_service.RERANK_IDLE_UNLOAD - 1
+    constructs: list[str] = []
+
+    def fake_load(model: str) -> _FakeCrossEncoder:
+        constructs.append(model)
+        return _FakeCrossEncoder(model)
+
+    with mock.patch.object(rerank_service, "_load_cross_encoder", fake_load):
+        pipeline = await _get_pipeline("BAAI/bge-reranker-v2-m3")
+
+    assert constructs == ["BAAI/bge-reranker-v2-m3"]  # 已重建
+    assert pipeline is not stale
+
+
+async def test_rerank_bumps_last_used_timestamp() -> None:
+    """成功推理后记录最后使用时间（空闲卸载判定的数据源）。"""
+    _reset_pipeline()
+    candidates = [RerankCandidate("c1", "文本", score=0.0)]
+    fake = _FakeCrossEncoder("m")
+
+    with mock.patch.object(rerank_service, "_get_pipeline", _pipeline_of(fake)):
+        await rerank("q", candidates)
+
+    assert rerank_service._last_used_monotonic is not None
+    assert time.monotonic() - rerank_service._last_used_monotonic < 5
 
 
 # ------------------------------------------------------------------

@@ -2,7 +2,7 @@
 """T1.6 Go/No-Go 决策 7 项自动化测试脚本（E1 Sidecar 打包验证 Epic 门控）。
 
 执行范围（阶段 1 = dev 模式下的 Sidecar，无需 PyInstaller）：
-  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <300MB（7）
+  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <500MB（7）
   * SKIP：崩溃重启（5，需 Tauri app + watchdog 线程）、三平台（6，需 T1.2+T1.3 产物）
 
 用法：
@@ -54,7 +54,7 @@ TEST_ITEMS: list[tuple[int, str, str]] = [
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
     (5, "崩溃重启", "SIGKILL 模拟崩溃 → 3s 内重启 → new_pid≠old_pid → 重新 HMAC 握手通过（打包态=Phase2，dev=SKIP）"),
     (6, "三平台", "PyInstaller --onefile 体积<80MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
-    (7, "内存<300MB", "冷启动 GET /metrics → rss_mb < 300 且 within_limit=True"),
+    (7, "内存<500MB", "冷启动 GET /metrics → rss_mb < 500 且 within_limit=True"),
 ]
 
 Verdict = Literal["PASS", "FAIL", "SKIP"]
@@ -746,15 +746,31 @@ def _classify_binary(head: bytes, system: str) -> str:
     return f"unknown(head={head[:4].hex()})"
 
 
+def _memory_limit_mb() -> int:
+    """与 Sidecar ``routes_metrics.memory_threshold_mb()`` 同源的门控阈值。
+
+    默认 500（T10.3 放宽），env ``FILEMIND_MEMORY_THRESHOLD_MB`` 覆盖；
+    非法值回落默认，保证脚本断言与 Sidecar 实际判定一致（subprocess 继承 env）。
+    """
+    raw = os.environ.get("FILEMIND_MEMORY_THRESHOLD_MB", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 500
+    return value if value > 0 else 500
+
+
 def run_t7_memory() -> TestResult:
     t0 = time.time()
+    limit = _memory_limit_mb()
+    name = f"内存<{limit}MB"
     # T6 三平台检查不会动 Sidecar，但 T5 会启动后又杀两次进程。如果此时 8765 没 Sidecar 在跑
     # （典型：T4 为了 T7 留活的进程被 T5 _cleanup_any_sidecar 提前清理），再 fallback 起一份。
     mode_label_used: str | None = None
     if _free_port():
         _mode, _resp, _sc = _start_and_wait_health()
         if _resp is None or _resp.status_code != 200:
-            return TestResult(7, "内存<300MB", "FAIL",
+            return TestResult(7, name, "FAIL",
                               "T7 前置：Sidecar 不可用且 fallback 启动失败", time.time() - t0)
         mode_label_used = _mode
         if _sc.proc is not None:
@@ -767,14 +783,14 @@ def run_t7_memory() -> TestResult:
     try:
         resp = httpx.get(f"{SIDECAR_BASE}/metrics", headers=hdrs, timeout=3)
     except httpx.HTTPError as e:
-        return TestResult(7, "内存<300MB", "FAIL", f"HTTP 异常: {e}", time.time() - t0)
+        return TestResult(7, name, "FAIL", f"HTTP 异常: {e}", time.time() - t0)
     if resp.status_code != 200:
-        return TestResult(7, "内存<300MB", "FAIL", f"响应 {resp.status_code}: {resp.text[:150]}", time.time() - t0)
+        return TestResult(7, name, "FAIL", f"响应 {resp.status_code}: {resp.text[:150]}", time.time() - t0)
     data = resp.json()
     rss = data.get("rss_mb")
     within = data.get("within_limit")
     if not isinstance(rss, (int, float)) or not isinstance(within, bool):
-        return TestResult(7, "内存<300MB", "FAIL",
+        return TestResult(7, name, "FAIL",
                           f"字段类型异常: rss={type(rss).__name__}, within_limit={type(within).__name__}",
                           time.time() - t0, {"body": data})
     fallback_note = ""
@@ -783,10 +799,10 @@ def run_t7_memory() -> TestResult:
     detail_mode = f" [{mode_label_used}]" if mode_label_used else ""
     return TestResult(
         7,
-        "内存<300MB",
+        name,
         "PASS" if within else "FAIL",
-        (f"RSS={rss:.2f}MB (<300MB){detail_mode}" if within
-         else f"RSS={rss:.2f}MB (≥300MB，未通过门控){detail_mode}")
+        (f"RSS={rss:.2f}MB (<{limit}MB){detail_mode}" if within
+         else f"RSS={rss:.2f}MB (≥{limit}MB，未通过门控){detail_mode}")
         + fallback_note,
         time.time() - t0,
         {"rss_mb": rss, "within_limit": within},

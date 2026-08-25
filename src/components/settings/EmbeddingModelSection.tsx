@@ -23,7 +23,11 @@ export function EmbeddingModelSection() {
       </p>
 
       <div className="settings-row">
-        <span className="settings-mode-badge" title="当前 Embedding 模型">
+        <span
+          className="settings-mode-badge"
+          title="当前 Embedding 模型"
+          data-testid="embedding-current"
+        >
           {embeddingModel}
           {current ? ` · dim ${current.dim} · v${current.version}` : ''}
         </span>

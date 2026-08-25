@@ -23,6 +23,8 @@ import os
 import httpx
 from ollama import AsyncClient, ResponseError
 
+from app.rules.llm_classify import OLLAMA_KEEP_ALIVE
+
 #: Ollama 服务地址（env 可覆盖，与 llm_classify.py 共用同一环境变量）
 OLLAMA_HOST = os.environ.get("FILEMIND_OLLAMA_URL", "http://127.0.0.1:11434")
 #: 默认 Embedding 模型（注册表标识；env 可覆盖为任意 Ollama 模型名）
@@ -40,6 +42,27 @@ _OLLAMA_MODEL_ALIASES: dict[str, str] = {
 
 class EmbeddingUnavailableError(Exception):
     """Ollama Embedding 服务不可用（连接失败 / HTTP 错误 / 超时 / 模型缺失）。"""
+
+
+#: 模块级惰性单例 AsyncClient（httpx 连接池复用，避免每次 embedding 重建连接）
+_client: AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client() -> AsyncClient:
+    """返回模块级 AsyncClient 单例（并发安全，双重检查 + asyncio.Lock）。"""
+    global _client
+    if _client is None:
+        async with _client_lock:
+            if _client is None:
+                _client = AsyncClient(host=OLLAMA_HOST)
+    return _client
+
+
+def reset_clients() -> None:
+    """重置客户端单例（仅测试用）。"""
+    global _client
+    _client = None
 
 
 def _ollama_model_name(model: str) -> str:
@@ -62,10 +85,16 @@ async def embed_texts(texts: list[str], model: str = EMBEDDING_MODEL) -> list[li
     """
     if not texts:
         return []
-    client = AsyncClient(host=OLLAMA_HOST)
+    client = await _get_client()
     try:
         resp = await asyncio.wait_for(
-            client.embed(model=_ollama_model_name(model), input=texts),
+            client.embed(
+                model=_ollama_model_name(model),
+                input=texts,
+                # keep_alive 是 embed 顶层参数（模型常驻避免重复冷加载）；
+                # embedding 模型无上下文窗口概念，不传 num_ctx。
+                keep_alive=OLLAMA_KEEP_ALIVE,
+            ),
             timeout=EMBED_TIMEOUT,
         )
     except ResponseError as exc:

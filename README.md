@@ -83,13 +83,13 @@ make dev
 | 命令               | 说明                                                   |
 | ------------------ | ------------------------------------------------------ |
 | `make dev`         | 启动完整应用（`npm run dev:tauri`）                    |
-| `make dev:web`     | 仅前端（Vite）                                         |
-| `make dev:sidecar` | 仅 Python Sidecar（uvicorn :8765）                     |
+| `make dev-web`     | 仅前端（Vite）                                         |
+| `make dev-sidecar` | 仅 Python Sidecar（uvicorn :8765）                     |
 | `make test`        | 前端 + Rust + Python 三层测试                          |
 | `make build`       | 生产打包（`tauri build`）                              |
 | `make lint`        | ESLint + Clippy + Ruff + mypy                          |
 | `make format`      | Prettier + rustfmt + ruff format                       |
-| `make gen:ipc`     | 从 Rust 重新生成 TypeScript 类型（`src/types/ipc.ts`） |
+| `make gen-ipc`     | 从 Rust 重新生成 TypeScript 类型（`src/types/ipc.ts`） |
 | `make install`     | 安装全部依赖                                           |
 | `make testdata`    | 生成演示数据（初始化 DB + 生成文件）                   |
 | `make clean`       | 清理构建产物                                           |
@@ -145,7 +145,7 @@ SQLite 是桌面端的唯一数据源。**Python Sidecar 永不访问数据库**
 IPC 类型通过 [tauri-specta](https://github.com/specy-build/tauri-specta) 从 Rust 自动生成：
 
 ```bash
-make gen:ipc   # → src/types/ipc.ts（禁止手改）
+make gen-ipc   # → src/types/ipc.ts（禁止手改）
 ```
 
 每个命令都标注 `#[specta::specta]` 并返回 `Result<T, String>`。前端通过薄类型封装（`src/lib/ipc/`）调用。

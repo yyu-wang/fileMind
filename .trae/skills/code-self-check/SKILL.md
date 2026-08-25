@@ -1,6 +1,6 @@
 ---
-name: "code-self-check"
-description: "Runs full self-check across TypeScript, Rust, and Python — lint, type-check, tests, and security scan. Invoke after completing any code change and before committing."
+name: 'code-self-check'
+description: 'Runs full self-check across TypeScript, Rust, and Python — lint, type-check, tests, and security scan. Invoke after completing any code change and before committing.'
 ---
 
 # Code Self-Check
@@ -105,7 +105,7 @@ If Rust IPC commands were modified:
 
 ```bash
 # Regenerate types
-make gen:ipc
+make gen-ipc
 
 # Verify no manual edits to generated file
 git diff --name-only | grep "src/types/ipc.ts" && echo "WARNING: ipc.ts has uncommitted changes — ensure it was regenerated, not manually edited"

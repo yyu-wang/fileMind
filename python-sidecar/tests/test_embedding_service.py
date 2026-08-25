@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import httpx
 import pytest
 from ollama import ResponseError
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
@@ -23,7 +27,16 @@ from app.services.embedding_service import (  # noqa: E402
     _ollama_model_name,
     embed_text,
     embed_texts,
+    reset_clients,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_clients() -> Generator[None, None, None]:
+    """每个用例前后重置模块级客户端单例（避免跨用例复用上例的 fake）。"""
+    reset_clients()
+    yield
+    reset_clients()
 
 
 class _FakeEmbedResponse:
@@ -155,3 +168,31 @@ def test_ollama_model_alias_resolution() -> None:
     assert _ollama_model_name("bge-large-zh-v1.5") == "qllama/bge-large-zh-v1.5"
     assert _ollama_model_name("custom-model") == "custom-model"
     assert EMBEDDING_MODEL == "bge-large-zh-v1.5"
+
+
+async def test_embed_sends_keep_alive() -> None:
+    """embed 调用携带 keep_alive（模型常驻，避免重复问句二次冷加载）。"""
+    captured: dict[str, object] = {}
+
+    async def fake_embed(**kwargs: object) -> _FakeEmbedResponse:
+        captured.update(kwargs)
+        return _FakeEmbedResponse([[1.0]])
+
+    client = mock.MagicMock()
+    client.embed = fake_embed
+    with mock.patch("app.services.embedding_service.AsyncClient", return_value=client):
+        await embed_texts(["x"])
+
+    assert captured["keep_alive"] == "30m"
+
+
+async def test_embed_texts_reuses_single_client() -> None:
+    """模块级单例：多次调用只构造一次 AsyncClient（httpx 连接池复用）。"""
+    embeddings = [[1.0]]
+    with mock.patch(
+        "app.services.embedding_service.AsyncClient",
+        return_value=_fake_client(embeddings),
+    ) as patched:
+        await embed_texts(["a"])
+        await embed_texts(["b"])
+    assert patched.call_count == 1

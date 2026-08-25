@@ -53,6 +53,7 @@ export function RuleList({
         <li
           key={rule.id}
           className={`rules-item ${dragId === rule.id ? 'rules-item--dragging' : ''}`}
+          data-testid="rule-item"
           draggable
           onDragStart={() => setDragId(rule.id)}
           onDragOver={(e) => e.preventDefault()}
@@ -86,6 +87,7 @@ export function RuleList({
             <input
               type="checkbox"
               className="rules-item__switch-input"
+              data-testid="rule-toggle"
               checked={rule.is_enabled}
               onChange={() => onToggle(rule)}
               disabled={disabledIds.includes(rule.id)}
@@ -94,13 +96,19 @@ export function RuleList({
             <span className="rules-item__switch-slider" aria-hidden />
           </label>
 
-          <button type="button" className="btn rules-item__btn" onClick={() => onEdit(rule)}>
+          <button
+            type="button"
+            className="btn rules-item__btn"
+            onClick={() => onEdit(rule)}
+            data-testid="rule-edit"
+          >
             编辑
           </button>
           <button
             type="button"
             className="btn rules-item__btn rules-item__btn--danger"
             onClick={() => onDelete(rule)}
+            data-testid="rule-delete"
           >
             删除
           </button>

@@ -20,6 +20,11 @@ pub struct FileRecord {
     pub category: Option<String>,
     /// 软删除标记。
     pub is_deleted: bool,
+    /// 磁盘文件修改时间（UTC `YYYY-MM-DD HH:MM:SS`），增量扫描跳过重算 hash 用
+    /// （T10.1）。仅扫描写入时填充；前端无需感知该字段，故 `serde`/`specta` 均跳过。
+    #[serde(skip)]
+    #[specta(skip)]
+    pub mtime: Option<String>,
     /// 入库时间。
     pub created_at: String,
     /// 最后更新时间。

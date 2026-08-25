@@ -68,7 +68,17 @@ UPSERT_CATEGORY_SQL = """
         updated_at = datetime('now')
 """
 
-NAME_SUFFIXES = ("", "-final", "_v2", "_v3", "-副本", "（新）", "-2024", "-draft", "-备份")
+NAME_SUFFIXES = (
+    "",
+    "-final",
+    "_v2",
+    "_v3",
+    "-副本",
+    "（新）",
+    "-2024",
+    "-draft",
+    "-备份",
+)
 
 
 @dataclass(frozen=True)
@@ -88,7 +98,18 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="文档",
         icon="📄",
         color="#3B82F6",
-        stems=("年度总结", "项目计划", "会议纪要", "合同草案", "产品需求文档", "财报", "invoice", "简历", "读书笔记", "周报"),
+        stems=(
+            "年度总结",
+            "项目计划",
+            "会议纪要",
+            "合同草案",
+            "产品需求文档",
+            "财报",
+            "invoice",
+            "简历",
+            "读书笔记",
+            "周报",
+        ),
         extensions=(".pdf", ".docx", ".md", ".txt", ".xlsx", ".pptx"),
         size_range=(2 * 1024, 128 * 1024),
     ),
@@ -96,7 +117,18 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="图片",
         icon="🖼️",
         color="#10B981",
-        stems=("旅行照片", "屏幕截图", "头像", "壁纸", "产品图", "family-photo", "banner", "证件照", "表情包", "杂拍"),
+        stems=(
+            "旅行照片",
+            "屏幕截图",
+            "头像",
+            "壁纸",
+            "产品图",
+            "family-photo",
+            "banner",
+            "证件照",
+            "表情包",
+            "杂拍",
+        ),
         extensions=(".jpg", ".png", ".gif", ".heic", ".webp"),
         size_range=(16 * 1024, 256 * 1024),
     ),
@@ -104,7 +136,16 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="视频",
         icon="🎬",
         color="#F59E0B",
-        stems=("屏幕录制", "生日聚会", "产品演示", "旅行vlog", "课程录像", "demo", "会议录屏", "宣传片"),
+        stems=(
+            "屏幕录制",
+            "生日聚会",
+            "产品演示",
+            "旅行vlog",
+            "课程录像",
+            "demo",
+            "会议录屏",
+            "宣传片",
+        ),
         extensions=(".mp4", ".mov", ".avi", ".mkv"),
         size_range=(64 * 1024, 256 * 1024),
     ),
@@ -112,7 +153,15 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="音频",
         icon="🎵",
         color="#8B5CF6",
-        stems=("会议录音", "播客", "练习曲", "录音备忘", "podcast", "白噪音", "试听片段"),
+        stems=(
+            "会议录音",
+            "播客",
+            "练习曲",
+            "录音备忘",
+            "podcast",
+            "白噪音",
+            "试听片段",
+        ),
         extensions=(".mp3", ".wav", ".m4a", ".flac"),
         size_range=(32 * 1024, 256 * 1024),
     ),
@@ -120,7 +169,16 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="代码",
         icon="💻",
         color="#06B6D4",
-        stems=("main", "utils", "parser", "算法练习", "爬虫脚本", "test_case", "实验代码", "leetcode"),
+        stems=(
+            "main",
+            "utils",
+            "parser",
+            "算法练习",
+            "爬虫脚本",
+            "test_case",
+            "实验代码",
+            "leetcode",
+        ),
         extensions=(".rs", ".py", ".ts", ".js", ".html", ".css", ".sh"),
         size_range=(256, 32 * 1024),
     ),
@@ -128,7 +186,15 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="压缩包",
         icon="🗂️",
         color="#6B7280",
-        stems=("项目备份", "照片归档", "安装包", "资源合集", "backup", "素材包", "旧电脑迁移"),
+        stems=(
+            "项目备份",
+            "照片归档",
+            "安装包",
+            "资源合集",
+            "backup",
+            "素材包",
+            "旧电脑迁移",
+        ),
         extensions=(".zip", ".tar.gz", ".rar", ".7z"),
         size_range=(32 * 1024, 256 * 1024),
     ),
@@ -136,7 +202,15 @@ BUILTIN_CATEGORIES: tuple[CategorySpec, ...] = (
         name="设计",
         icon="🎨",
         color="#EC4899",
-        stems=("首页设计稿", "Logo草案", "图标集", "原型图", "mockup", "海报设计", "品牌规范"),
+        stems=(
+            "首页设计稿",
+            "Logo草案",
+            "图标集",
+            "原型图",
+            "mockup",
+            "海报设计",
+            "品牌规范",
+        ),
         extensions=(".psd", ".ai", ".sketch", ".fig", ".xd"),
         size_range=(64 * 1024, 256 * 1024),
     ),
@@ -182,10 +256,39 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         解析后的命名空间（count/clean/dry_run/seed）。
     """
     parser = argparse.ArgumentParser(description="FileMind 测试数据生成脚本")
-    parser.add_argument("--count", type=int, default=200, help="生成文件数量（默认 200）")
-    parser.add_argument("--clean", action="store_true", help="删除测试目录并清理 DB 记录")
+    parser.add_argument(
+        "--count", type=int, default=200, help="生成文件数量（默认 200）"
+    )
+    parser.add_argument(
+        "--clean", action="store_true", help="删除测试目录并清理 DB 记录"
+    )
     parser.add_argument("--dry-run", action="store_true", help="仅输出计划，不写入")
-    parser.add_argument("--seed", type=int, default=42, help="随机种子（默认 42，保证可复现）")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="随机种子（默认 42，保证可复现）"
+    )
+    parser.add_argument(
+        "--root",
+        type=str,
+        default=None,
+        help="覆盖测试数据目录（默认 ~/Desktop/filemind-test-data）",
+    )
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="覆盖数据库路径（默认 ~/.filemind/filemind.db）",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=0,
+        help="文件嵌套目录深度（默认 0 = 平铺；T10.5 基准模拟真实目录树）",
+    )
+    parser.add_argument(
+        "--no-db",
+        action="store_true",
+        help="仅写文件不入库（T10.5 基准隔离用，不触碰用户数据库）",
+    )
     return parser.parse_args(argv)
 
 
@@ -217,7 +320,9 @@ def connect_db() -> sqlite3.Connection:
     return conn
 
 
-def build_unique_filename(rng: random.Random, spec: CategorySpec, used: set[str]) -> str:
+def build_unique_filename(
+    rng: random.Random, spec: CategorySpec, used: set[str]
+) -> str:
     """为分类生成一个目录内唯一的文件名。
 
     Args:
@@ -253,25 +358,36 @@ def plan_files(rng: random.Random, count: int) -> list[PlannedFile]:
     for i in range(count):
         spec = BUILTIN_CATEGORIES[i % len(BUILTIN_CATEGORIES)]
         name = build_unique_filename(rng, spec, used_by_category[spec.name])
-        size = rng.randrange(spec.size_range[0], min(spec.size_range[1], MAX_FILE_BYTES) + 1)
+        size = rng.randrange(
+            spec.size_range[0], min(spec.size_range[1], MAX_FILE_BYTES) + 1
+        )
         plans.append(PlannedFile(spec=spec, file_name=name, size=size))
     return plans
 
 
-def materialize_files(plans: list[PlannedFile]) -> list[FileRow]:
+def _nested_dir(index: int, depth: int) -> str:
+    """按 index 确定性映射到深度为 ``depth`` 的子目录链（每层 10 个分支）。
+
+    默认 depth=0 返回空串（平铺，保持既有目录结构兼容）。
+    """
+    return "/".join(f"d{(index // (level + 1)) % 10}" for level in range(depth))
+
+
+def materialize_files(plans: list[PlannedFile], depth: int = 0) -> list[FileRow]:
     """将文件计划落盘并计算哈希，生成 DB 记录行。
 
     Args:
         plans: 文件计划列表。
+        depth: 文件嵌套目录深度（T10.5 基准用于模拟真实目录树）。
 
     Returns:
         与 ``files`` 表列对应的记录列表。
     """
     rows: list[FileRow] = []
-    for plan in plans:
-        category_dir = TESTDATA_ROOT / plan.spec.name
-        category_dir.mkdir(parents=True, exist_ok=True)
-        file_path = category_dir / plan.file_name
+    for idx, plan in enumerate(plans):
+        rel = Path(_nested_dir(idx, depth)) / plan.file_name
+        file_path = TESTDATA_ROOT / plan.spec.name / rel
+        file_path.parent.mkdir(parents=True, exist_ok=True)
         content = random.Random().randbytes(plan.size)
         file_path.write_bytes(content)
         rows.append(
@@ -313,7 +429,10 @@ def upsert_files(conn: sqlite3.Connection, rows: list[FileRow]) -> None:
     """
     conn.executemany(
         INSERT_FILE_SQL,
-        [(r.id, r.path, r.file_name, r.file_size, r.content_hash, r.category) for r in rows],
+        [
+            (r.id, r.path, r.file_name, r.file_size, r.content_hash, r.category)
+            for r in rows
+        ],
     )
 
 
@@ -323,7 +442,9 @@ def summarize(conn: sqlite3.Connection) -> None:
     Args:
         conn: 数据库连接。
     """
-    total = conn.execute("SELECT count(*) FROM files WHERE is_deleted = 0").fetchone()[0]
+    total = conn.execute("SELECT count(*) FROM files WHERE is_deleted = 0").fetchone()[
+        0
+    ]
     fts_total = conn.execute("SELECT count(*) FROM file_fts").fetchone()[0]
     logger.info("files 表现存 %d 条（未删除），file_fts 现存 %d 行", total, fts_total)
     for name, count in conn.execute(
@@ -374,7 +495,10 @@ def run_generate(args: argparse.Namespace) -> int:
     plans = plan_files(rng, args.count)
     logger.info(
         "[plan] 目标目录 %s，数据库 %s，共 %d 个文件（seed=%d）",
-        TESTDATA_ROOT, DB_PATH, len(plans), args.seed,
+        TESTDATA_ROOT,
+        DB_PATH,
+        len(plans),
+        args.seed,
     )
     for spec in BUILTIN_CATEGORIES:
         n = sum(1 for p in plans if p.spec is spec)
@@ -384,6 +508,14 @@ def run_generate(args: argparse.Namespace) -> int:
         logger.info("[dry-run] 仅输出计划，未写入")
         return 0
 
+    if args.no_db:
+        # T10.5 基准隔离：只落盘文件，不碰用户数据库（无 DB 前置条件）
+        rows = materialize_files(plans, args.depth)
+        logger.info(
+            "[no-db] 已写入 %d 个文件（未入库，目录 %s）", len(rows), TESTDATA_ROOT
+        )
+        return 0
+
     try:
         conn = connect_db()
     except FileNotFoundError as e:
@@ -391,7 +523,7 @@ def run_generate(args: argparse.Namespace) -> int:
         return 1
 
     with conn:
-        rows = materialize_files(plans)
+        rows = materialize_files(plans, args.depth)
         category_count = upsert_categories(conn)
         upsert_files(conn, rows)
         logger.info("已写入 %d 个文件、%d 个内置分类", len(rows), category_count)
@@ -439,8 +571,14 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         进程退出码（0 成功，1 失败）。
     """
+    global TESTDATA_ROOT, DB_PATH
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args(argv)
+    # --root/--db：覆盖模块常量（run_generate/run_clean 均引用模块全局，重绑即生效）
+    if args.root:
+        TESTDATA_ROOT = Path(args.root).expanduser()
+    if args.db:
+        DB_PATH = Path(args.db).expanduser()
     if args.clean:
         return run_clean(args)
     return run_generate(args)

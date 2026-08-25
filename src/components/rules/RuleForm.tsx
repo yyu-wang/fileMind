@@ -69,7 +69,13 @@ export function RuleForm({ initial, categories, onSave, onCancel }: RuleFormProp
   };
 
   return (
-    <div className="rules-form" role="dialog" aria-modal="true" aria-label="规则编辑">
+    <div
+      className="rules-form"
+      role="dialog"
+      aria-modal="true"
+      aria-label="规则编辑"
+      data-testid="rule-form"
+    >
       <div className="rules-form__panel">
         <h3 className="rules-form__title">{initial ? '编辑规则' : '新建规则'}</h3>
 
@@ -160,10 +166,20 @@ export function RuleForm({ initial, categories, onSave, onCancel }: RuleFormProp
         </div>
 
         <div className="rules-form__actions">
-          <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={onCancel}
+            data-testid="rule-cancel"
+          >
             取消
           </button>
-          <button type="button" className="btn btn--primary" onClick={handleSubmit}>
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={handleSubmit}
+            data-testid="rule-save"
+          >
             保存
           </button>
         </div>

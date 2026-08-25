@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING
 import httpx
 from ollama import AsyncClient, Message, Options, ResponseError
 
-from app.rules.llm_classify import LLM_MODEL, OLLAMA_HOST, LLMUnavailableError
+from app.rules.llm_classify import (
+    LLM_MODEL,
+    OLLAMA_HOST,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_NUM_CTX,
+    LLMUnavailableError,
+)
 from app.services.cloud_provider import LLMProvider
 from app.services.embedding_service import (
     EMBED_TIMEOUT,
@@ -92,7 +98,13 @@ class OllamaProvider(LLMProvider):
                 ],
                 format="json" if json_mode else None,
                 think=False,
-                options=Options(temperature=temperature, num_predict=max_tokens),
+                # keep_alive 是 chat 顶层参数（模型常驻），num_ctx 在 Options 里
+                keep_alive=OLLAMA_KEEP_ALIVE,
+                options=Options(
+                    temperature=temperature,
+                    num_predict=max_tokens,
+                    num_ctx=OLLAMA_NUM_CTX,
+                ),
             )
         except (httpx.HTTPError, ResponseError) as exc:
             raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc
@@ -132,7 +144,12 @@ class OllamaProvider(LLMProvider):
                 ],
                 stream=True,
                 think=False,
-                options=Options(temperature=temperature, num_predict=max_tokens),
+                keep_alive=OLLAMA_KEEP_ALIVE,
+                options=Options(
+                    temperature=temperature,
+                    num_predict=max_tokens,
+                    num_ctx=OLLAMA_NUM_CTX,
+                ),
             )
             async for chunk in stream:
                 message = chunk.message
@@ -162,7 +179,13 @@ class OllamaProvider(LLMProvider):
         model = self._embed_model
         try:
             resp = await asyncio.wait_for(
-                self._client.embed(model=_ollama_model_name(model), input=texts),
+                # keep_alive 是 embed 顶层参数（模型常驻避免重复冷加载）；
+                # embedding 模型无上下文窗口概念，不传 num_ctx。
+                self._client.embed(
+                    model=_ollama_model_name(model),
+                    input=texts,
+                    keep_alive=OLLAMA_KEEP_ALIVE,
+                ),
                 timeout=EMBED_TIMEOUT,
             )
         except ResponseError as exc:

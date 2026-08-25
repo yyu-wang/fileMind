@@ -119,4 +119,17 @@ describe('FileListTable', () => {
     renderTable({ files: [] });
     expect(screen.queryByRole('row')).not.toBeNull();
   });
+
+  it('T10.4 virtualizes: renders only visible rows for 10,000 files', () => {
+    const manyFiles = Array.from({ length: 10_000 }, (_, i) => makeFile(`f${i}`, `file-${i}.txt`));
+    renderTable({ files: manyFiles });
+    const rows = screen.getAllByRole('row');
+    // 表头 1 行 + 虚拟化窗口（jsdom 无布局高度 → react-virtual 只渲染
+    // overscan 附近的可见行，约 20 行）。证明 O(可见) 而非 O(N)：
+    // 若误渲染全量，10,001 行会让本断言失败。
+    expect(rows.length).toBeLessThan(100);
+    // 首行在 DOM 中；远端行未渲染（O(N) 渲染会含 file-9999.txt）
+    expect(screen.getByText('file-0.txt')).toBeInTheDocument();
+    expect(screen.queryByText('file-9999.txt')).not.toBeInTheDocument();
+  });
 });

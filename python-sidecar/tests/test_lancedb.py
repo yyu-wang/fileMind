@@ -230,3 +230,39 @@ def test_update_paths_unsafe_file_id_skipped(ldb: LanceDBManager) -> None:
     assert paths["fid2-0"] == "/new/c"
     # 非法项被跳过，未注入
     assert ldb.is_table_exists(tname)
+
+
+# ------------------------------------------------------------------
+# T10.2 表句柄缓存
+# ------------------------------------------------------------------
+
+
+def test_open_table_caches_handle(ldb: LanceDBManager) -> None:
+    """同表重复 open 命中句柄缓存（返回同一实例，跳过重复读元数据）。"""
+    tname = ldb.ensure_table("bge-small-en", version=1, dim=4)
+    first = ldb.open_table(tname)
+    second = ldb.open_table(tname)
+    assert first is second
+
+
+def test_invalidate_table_drops_cached_handle(ldb: LanceDBManager) -> None:
+    """invalidate_table 使旧句柄失效，再次 open 返回新实例。"""
+    tname = ldb.ensure_table("bge-small-en", version=1, dim=4)
+    first = ldb.open_table(tname)
+    ldb.invalidate_table(tname)
+    second = ldb.open_table(tname)
+    assert first is not second
+
+
+def test_invalidate_all_drops_all_handles(ldb: LanceDBManager) -> None:
+    """invalidate_all 清空全部句柄缓存（整体重建索引后调用）。"""
+    tname = ldb.ensure_table("m_a", version=1, dim=2)
+    first = ldb.open_table(tname)
+    ldb.invalidate_all()
+    second = ldb.open_table(tname)
+    assert first is not second
+
+
+def test_search_vectors_missing_table_returns_empty(ldb: LanceDBManager) -> None:
+    """表不存在 → search_vectors 返回空（try-except 降级纯 FTS），不抛错。"""
+    assert ldb.search_vectors("documents_ghost_v1", [0.1, 0.2], top_k=5) == []

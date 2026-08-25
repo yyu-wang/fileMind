@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "task": "E10 性能基准",
+    "scale": "small",
+    "date": "3.12.14",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "commit": "9fa2499"
+  },
+  "scan_count": 10000,
+  "scan_full_10k_ms": 850.4,
+  "scan_incremental_unchanged_ms": 138.7,
+  "sidecar_rss_mb": 162.0,
+  "threshold_mb": 500,
+  "rag_ttft_ms": null,
+  "rag_retrieve_ms": null,
+  "rag_index_ms": 3048,
+  "rag_skipped": "/index/build 503: {\"detail\":\"建立索引失败: Embedding 调用失败:  (status code: 502)\"}"
+}

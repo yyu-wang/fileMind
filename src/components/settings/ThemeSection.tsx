@@ -27,6 +27,7 @@ export function ThemeSection() {
             key={opt.value}
             type="button"
             className={`theme-segmented__item ${theme === opt.value ? 'selected' : ''}`}
+            data-testid={`theme-${opt.value.toLowerCase()}`}
             onClick={() => setTheme(opt.value)}
             aria-pressed={theme === opt.value}
           >

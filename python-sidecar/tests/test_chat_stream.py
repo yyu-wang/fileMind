@@ -22,6 +22,11 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from httpx import Response
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app import state  # noqa: E402
@@ -29,12 +34,10 @@ from app.api.routes_chat import NOT_FOUND_ANSWER  # noqa: E402
 from app.main import app  # noqa: E402
 from app.rules.llm_classify import LLMUnavailableError  # noqa: E402
 from app.services.hybrid_search import FusedHit  # noqa: E402
+from app.services.query_cache import reset_query_cache  # noqa: E402
 from app.services.rerank_service import RerankResult  # noqa: E402
 from app.services.rewrite_service import ConversationTurn, RewriteResult  # noqa: E402
 from app.services.self_correct_service import SelfCorrectResult  # noqa: E402
-
-if TYPE_CHECKING:
-    from httpx import Response
 
 _TEST_PSK: bytes = b"test-psk-32-bytes-need-32-bytes!!"
 _PATH = "/chat/stream"
@@ -52,12 +55,14 @@ def _rewrite(query: str) -> RewriteResult:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    """重置全局状态、注入固定 PSK、预置 LanceDB 管理器。"""
+def client() -> Generator[TestClient, None, None]:
+    """重置全局状态、检索缓存，注入固定 PSK、预置 LanceDB 管理器。"""
+    reset_query_cache()
     state.reset_state()
     state.set_psk(_TEST_PSK)
     state.set_lancedb(object())  # hybrid_search/rerank 均 mock，mgr 不被使用
-    return TestClient(app)
+    yield TestClient(app)
+    reset_query_cache()
 
 
 def _sign(psk: bytes, message: str) -> str:
@@ -221,6 +226,10 @@ def test_sse_event_sequence_and_fields(client: TestClient) -> None:
     # SC-m19：total_tokens 按 len(text)//4 估算（5+2=7）
     assert done["total_tokens"] == 7
     assert done["duration_ms"] >= 0
+    # T10.2 TTFT 指标：retrieve 耗时 + 首 token 耗时（≤ 总时长）
+    assert done["retrieve_ms"] >= 0
+    assert done["first_token_ms"] >= 0
+    assert done["first_token_ms"] <= done["duration_ms"]
     assert "low_confidence" not in done
 
 
@@ -508,3 +517,38 @@ def test_corrected_empty_marks_low_confidence(client: TestClient) -> None:
     assert "retry" not in names
     assert names == ["search_start", "search_result", "token", "citation", "done"]
     assert events[-1][1]["low_confidence"] is True
+
+
+def test_query_cache_hit_skips_retrieval_pipeline(client: TestClient) -> None:
+    """相同请求第二次命中缓存 → 改写/混合检索/重排只 await 一次；done 字段仍齐全。"""
+    rewritten = "2024年Q3营收是多少"
+    rewrite_mock = mock.AsyncMock(return_value=_rewrite(rewritten))
+    with (
+        mock.patch("app.api.routes_chat.rewrite_query", new=rewrite_mock),
+        mock.patch(
+            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+        ),
+        mock.patch(
+            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+        ),
+        mock.patch(
+            "app.api.routes_chat.stream_generate", new=lambda *a, **k: _dummy_token_stream()
+        ),
+        mock.patch("app.api.routes_chat.stream_with_citations", new=_fake_citations),
+        mock.patch(
+            "app.api.routes_chat.validate_answer",
+            new=mock.AsyncMock(return_value=SelfCorrectResult(is_correct=True)),
+        ),
+    ):
+        first = _post_sse(client, _payload())
+        # 防重放：序号递增；两条请求仅 fts_chunks/query 一致（命中缓存的前提）
+        second = _post_sse(client, _payload(), seq=2)
+
+    first_done = _parse_sse(first.text)[-1]
+    second_done = _parse_sse(second.text)[-1]
+    assert first_done[0] == "done"
+    assert second_done[0] == "done"
+    # 第二次命中缓存：不再走检索管线（改写仅 await 一次），但 done 指标仍在
+    assert rewrite_mock.await_count == 1
+    assert second_done[1]["retrieve_ms"] >= 0
+    assert second_done[1]["first_token_ms"] >= 0

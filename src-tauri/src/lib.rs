@@ -17,6 +17,7 @@ pub mod events;
 pub mod security;
 pub mod services;
 pub mod sidecar;
+pub mod tray;
 
 /// 文件信息（IPC 传输视图）。
 #[derive(Debug, Serialize, Deserialize, Clone, specta::Type)]

@@ -2,8 +2,8 @@
 
 覆盖：
 1. **未签名调用（PSK 已 set，非 dev 模式）** → 401 拒绝（证明路由不被加入 HMAC 豁免路径）。
-2. **已签名调用** → 200，``rss_mb / vms_mb`` 为正数 float、``threshold_mb=300``、
-   ``within_limit`` 为 bool（测试环境必为 True，因为冷启动远低于 300MB）。
+2. **已签名调用** → 200，``rss_mb / vms_mb`` 为正数 float、``threshold_mb=500``、
+   ``within_limit`` 为 bool（测试环境必为 True，因为冷启动远低于 500MB）。
 3. **错误签名** → 401 签名验证失败（防第三方构造假请求读状态）。
 4. **seq 重放** → 401 防重放（证明 /metrics 走完整 HMAC 流程）。
 """
@@ -74,14 +74,14 @@ def test_metrics_signed_success(client: TestClient) -> None:
     resp = _signed_get(client, "/metrics", seq=1)
     assert resp.status_code == 200
     data = resp.json()
-    # 类型校验：rss/vms 为正数 float，threshold 为 300，within_limit 必 True
+    # 类型校验：rss/vms 为正数 float，threshold 为 500，within_limit 必 True
     assert isinstance(data["rss_mb"], (int, float)), "rss_mb 应为数值"
     assert isinstance(data["vms_mb"], (int, float)), "vms_mb 应为数值"
     assert float(data["rss_mb"]) > 0, "冷启动 RSS 应 > 0"
-    assert data["threshold_mb"] == 300
+    assert data["threshold_mb"] == 500
     assert isinstance(data["within_limit"], bool)
-    # 冷启动必然低于 300MB；若此处 False 说明测试环境异常（需人工排查）
-    assert data["within_limit"], "冷启动内存应低于 300MB"
+    # 冷启动必然低于 500MB；若此处 False 说明测试环境异常（需人工排查）
+    assert data["within_limit"], "冷启动内存应低于 500MB"
     # 响应中不得泄漏 PSK
     assert "test-psk-32" not in resp.text.lower()
 
@@ -103,3 +103,22 @@ def test_metrics_seq_replay_rejected(client: TestClient) -> None:
     resp2 = _signed_get(client, "/metrics", seq=42)
     assert resp2.status_code == 401
     assert "序号重放" in resp2.json()["detail"]
+
+
+def test_metrics_threshold_env_override(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """env FILEMIND_MEMORY_THRESHOLD_MB 覆盖门控阈值；非法值回落默认 500。
+
+    走 ``memory_threshold_mb()`` 惰性读取（与 cloud_mask 同模式），
+    测试内直接切换 env 即可，无需 reload 模块。
+    """
+    monkeypatch.setenv("FILEMIND_MEMORY_THRESHOLD_MB", "10")
+    data = _signed_get(client, "/metrics", seq=1).json()
+    assert data["threshold_mb"] == 10
+    assert data["within_limit"] is False  # 测试进程 RSS 必然 ≥ 10MB
+
+    monkeypatch.setenv("FILEMIND_MEMORY_THRESHOLD_MB", "abc")
+    data = _signed_get(client, "/metrics", seq=2).json()
+    assert data["threshold_mb"] == 500
+    assert data["within_limit"] is True

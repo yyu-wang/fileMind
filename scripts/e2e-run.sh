@@ -71,8 +71,8 @@ for spec in e2e/specs/*.e2e.ts; do
   # 000/001 测「首次引导」→ 不能 SKIP（否则 main.rs 预置 onboarding_completed=true，
   # loadConfig 校正后直达文件页，wizard 永不出现）；002/003 直达文件页 → SKIP。
   case "$name" in
-    002-*|003-*) export FILEMIND_E2E_SKIP_ONBOARDING=1 ;;
-    *)           unset FILEMIND_E2E_SKIP_ONBOARDING ;;
+    002-*|003-*|004-*|005-*) export FILEMIND_E2E_SKIP_ONBOARDING=1 ;;
+    *)                        unset FILEMIND_E2E_SKIP_ONBOARDING ;;
   esac
 
   _cleanup_sidecars

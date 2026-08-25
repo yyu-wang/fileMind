@@ -40,4 +40,30 @@ export const sel = {
   chatInput: '.chat-input__field',
   chatBubbleCursor: '.chat-bubble__cursor',
   chatBubbleAssistant: '.chat-bubble--assistant .chat-bubble__content',
+
+  // —— 规则编辑（RulesPage / RuleForm / RuleList）——
+  rulesTitle: '.rules-page__title',
+  rulesNew: '[data-testid="rules-new"]',
+  rulesEmpty: '.state-view--empty',
+  ruleForm: '[data-testid="rule-form"]',
+  ruleSave: '[data-testid="rule-save"]',
+  ruleCancel: '[data-testid="rule-cancel"]',
+  ruleItem: '[data-testid="rule-item"]',
+  ruleToggle: '[data-testid="rule-toggle"]',
+  ruleEdit: '[data-testid="rule-edit"]',
+  ruleDelete: '[data-testid="rule-delete"]',
+  ruleNameInput: '#rule-name',
+  ruleTypeSelect: '#rule-type',
+  rulePatternInput: '#rule-pattern',
+  ruleCategorySelect: '#rule-category',
+  rulePriorityInput: '#rule-priority',
+
+  // —— 设置（SettingsPage / OllamaStatusCard / ThemeSection）——
+  settingsTitle: '.settings-page__title',
+  ollamaStatus: '.settings-status',
+  ollamaRedetect: '[data-testid="ollama-redetect"]',
+  themeSystem: '[data-testid="theme-system"]',
+  themeLight: '[data-testid="theme-light"]',
+  themeDark: '[data-testid="theme-dark"]',
+  embeddingCurrent: '[data-testid="embedding-current"]',
 } as const;

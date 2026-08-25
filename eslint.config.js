@@ -92,6 +92,7 @@ export default [
       'src-tauri/',
       'python-sidecar/',
       'src/types/ipc.ts',
+      '.bench/',
     ],
   },
 ];

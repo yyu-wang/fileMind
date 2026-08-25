@@ -211,10 +211,9 @@ async def _fake_embed_texts(texts: list[str], model: str) -> list[list[float]]:
 async def test_build_clears_query_cache(tmp_path: Path) -> None:
     """build 路由成功后 get_query_cache() 被 clear（直接调 async 路由函数，
     绕过 HTTP/HMAC 层——SC-M5 验证的是路由逻辑而非传输层）。"""
-    from app.services.query_cache import get_query_cache, reset_query_cache
-
     from app.api.routes_index import build_index as route_build
     from app.models import IndexBuildRequest
+    from app.services.query_cache import get_query_cache, reset_query_cache
 
     reset_query_cache()
     try:

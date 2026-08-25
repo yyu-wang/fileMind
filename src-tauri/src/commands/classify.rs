@@ -264,6 +264,7 @@ mod tests {
             is_deleted: false,
             created_at: "2026-01-01 00:00:00".to_string(),
             updated_at: "2026-01-01 00:00:00".to_string(),
+            mtime: None,
         };
         let guard = state.db.lock().unwrap();
         FileRepo::upsert_batch(guard.conn(), &[rec]).unwrap();

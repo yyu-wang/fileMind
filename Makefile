@@ -1,18 +1,18 @@
-.PHONY: dev dev:web dev:sidecar test build lint format gen:ipc clean install testdata testdata:clean
+.PHONY: dev dev-web dev-sidecar test build lint format gen-ipc clean install testdata testdata-clean
 
 dev:
 	npm run dev:tauri
 
-dev:web:
+dev-web:
 	npm run dev
 
-dev:sidecar:
+dev-sidecar:
 	source .venv/bin/activate && cd python-sidecar && uvicorn main:app --reload --port 8765
 
 test:
 	npm run test:unit
 	cargo test --manifest-path src-tauri/Cargo.toml
-	source .venv/bin/activate && pytest python-sidecar/tests/
+	cd python-sidecar && source ../.venv/bin/activate && pytest tests/
 
 build:
 	npm run build:tauri
@@ -20,14 +20,14 @@ build:
 lint:
 	npm run lint
 	cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-	source .venv/bin/activate && ruff check python-sidecar/ && mypy python-sidecar/app/
+	cd python-sidecar && source ../.venv/bin/activate && ruff check . && mypy app/
 
 format:
 	npm run format
 	cargo fmt --manifest-path src-tauri/Cargo.toml
-	source .venv/bin/activate && ruff format python-sidecar/
+	cd python-sidecar && source ../.venv/bin/activate && ruff format .
 
-gen:ipc:
+gen-ipc:
 	cargo run --bin export-specta --manifest-path src-tauri/Cargo.toml -- --output src/types/ipc.ts
 
 clean:
@@ -44,5 +44,5 @@ testdata:
 	cargo run --example init_db --manifest-path src-tauri/Cargo.toml
 	python3 scripts/gen_testdata.py
 
-testdata:clean:
+testdata-clean:
 	python3 scripts/gen_testdata.py --clean

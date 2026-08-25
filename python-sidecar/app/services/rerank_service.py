@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -38,6 +39,11 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 #: 单例 pipeline（懒加载；在 to_thread 中构造）
 _pipeline: CrossEncoder | None = None
 _pipeline_lock = asyncio.Lock()
+#: 空闲卸载阈值（秒，env 可覆盖；默认 600s = 10min 无推理即释放模型，
+#: 内存优先取舍的兜底：防 rerank 长时间常驻占用内存预算）
+RERANK_IDLE_UNLOAD = float(os.environ.get("FILEMIND_RERANK_IDLE_UNLOAD", "600") or "600")
+#: 上次 rerank 推理结束的 monotonic 时间戳（None = 尚未推理过）
+_last_used_monotonic: float | None = None
 
 
 @dataclass(frozen=True)
@@ -69,13 +75,29 @@ def _load_cross_encoder(model: str) -> CrossEncoder:
     """构造 CrossEncoder。
 
     延迟导入 sentence-transformers：torch 加载即占用约 500MB+ RSS，
-    若顶层导入会让整个 sidecar 进程常驻超内存预算（Go/No-Go 第 7 项 <300MB）。
+    若顶层导入会让整个 sidecar 进程常驻超内存预算（Go/No-Go 第 7 项 <500MB）。
     """
     from sentence_transformers import CrossEncoder
 
     # sentence_transformers 已提供 py.typed，但 CrossEncoder 构造器/返回类型
     # 仍解析为 Any（下游 torch 缺 stub），mypy no-any-return 下需显式断言
     return cast("CrossEncoder", CrossEncoder(model))
+
+
+def _unload_if_idle() -> None:
+    """已加载模型空闲超过阈值 → 释放（内存优先取舍的兜底，非预载路径）。
+
+    只在下次取用 pipeline 时惰性检查：不引入定时器，避免空转；卸载后
+    下次推理会重新加载（懒加载语义不变）。
+    """
+    global _pipeline, _last_used_monotonic
+    if (
+        _pipeline is not None
+        and _last_used_monotonic is not None
+        and time.monotonic() - _last_used_monotonic >= RERANK_IDLE_UNLOAD
+    ):
+        _pipeline = None
+        _last_used_monotonic = None
 
 
 async def _get_pipeline(model: str) -> CrossEncoder:
@@ -85,6 +107,7 @@ async def _get_pipeline(model: str) -> CrossEncoder:
         RerankUnavailableError: 模型加载失败（未下载 / 依赖缺失）。
     """
     global _pipeline
+    _unload_if_idle()
     if _pipeline is not None:
         return _pipeline
     async with _pipeline_lock:
@@ -116,6 +139,7 @@ async def rerank(
     Raises:
         RerankUnavailableError: 模型加载或推理失败。
     """
+    global _last_used_monotonic
     if not candidates:
         return []
     pipeline = await _get_pipeline(model)
@@ -124,6 +148,8 @@ async def rerank(
         raw_scores = await asyncio.to_thread(pipeline.predict, pairs)
     except Exception as exc:  # noqa: BLE001
         raise RerankUnavailableError(f"Rerank 推理失败: {exc}") from exc
+    # T10.3：记录最后使用时间（空闲卸载判定；推理失败则不计入使用）
+    _last_used_monotonic = time.monotonic()
     scored = [(float(score), cand) for score, cand in zip(raw_scores, candidates, strict=False)]
     scored.sort(key=lambda item: item[0], reverse=True)
     return [

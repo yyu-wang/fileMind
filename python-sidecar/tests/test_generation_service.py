@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Generator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
@@ -27,9 +27,18 @@ from app.services.generation_service import (  # noqa: E402
     CONTENT_MAX,
     SourceChunk,
     build_rag_prompt,
+    reset_clients,
     stream_generate,
     stream_with_citations,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_clients() -> Generator[None, None, None]:
+    """每个用例前后重置模块级客户端单例（避免跨用例复用上例的 fake）。"""
+    reset_clients()
+    yield
+    reset_clients()
 
 
 def chunk(citation_id: int, text: str = "2024年Q3营收为5.2亿元", page: int = 3) -> SourceChunk:
@@ -165,6 +174,27 @@ async def test_stream_generate_yields_non_empty_deltas() -> None:
     assert captured["think"] is False
     assert captured["model"] == "qwen3.8-27b"
     assert captured["options"].temperature == 0.2  # type: ignore[attr-defined]
+    # T10.2：keep_alive 顶层参数（常驻权重）+ num_ctx 覆盖 RAG 上下文窗口
+    assert captured["keep_alive"] == "30m"
+    assert captured["options"].num_ctx == 8192  # type: ignore[attr-defined]
+
+
+async def test_stream_generate_reuses_single_client() -> None:
+    """模块级单例：多次生成只构造一次 AsyncClient（httpx 连接池复用）。"""
+
+    async def fake_chat(**kwargs: object) -> object:
+        async def gen() -> object:
+            yield SimpleNamespace(message=SimpleNamespace(content="ok"))
+
+        return gen()
+
+    client = _fake_client(fake_chat)
+    with mock.patch("app.services.generation_service.AsyncClient", return_value=client) as patched:
+        got1 = [tok async for tok in stream_generate("sys", "user")]
+        got2 = [tok async for tok in stream_generate("sys", "user")]
+    assert got1 == ["ok"]
+    assert got2 == ["ok"]
+    assert patched.call_count == 1
 
 
 async def test_stream_generate_conn_error_raises_unavailable() -> None:

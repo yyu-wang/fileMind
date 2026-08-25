@@ -128,7 +128,7 @@ make test    # 三语言全量测试
 
 ```bash
 make format   # 自动格式化
-make gen:ipc  # 如果修改了 IPC 命令，重新生成类型
+make gen-ipc  # 如果修改了 IPC 命令，重新生成类型
 ```
 
 ### 7. 提交后

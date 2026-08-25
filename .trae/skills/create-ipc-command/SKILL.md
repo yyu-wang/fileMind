@@ -1,6 +1,6 @@
 ---
-name: "create-ipc-command"
-description: "Creates a new Tauri IPC command with specta types, path validation, error handling, and test scaffold. Invoke when adding a new Rust IPC command for frontend-backend communication."
+name: 'create-ipc-command'
+description: 'Creates a new Tauri IPC command with specta types, path validation, error handling, and test scaffold. Invoke when adding a new Rust IPC command for frontend-backend communication.'
 ---
 
 # Create IPC Command
@@ -18,12 +18,14 @@ Creates a new Tauri IPC command following project security and type-safety stand
 ### 1. Read Rules First
 
 Before generating any code, read these rule files:
+
 - `rules/rust.md` — Rust coding rules (no unwrap, Result<T,String>, specta required)
 - `rules/security.md` — Security rules (path validation, key management)
 
 ### 2. Determine Command Details
 
 Ask or infer:
+
 - Command name (snake_case, e.g. `scan_directory`)
 - Parameters (with types)
 - Return type
@@ -64,6 +66,7 @@ pub async fn {command_name}({params}) -> Result<{return_type}, String> {
 ### 5. Register Command
 
 Add to `src-tauri/src/main.rs` invoke_handler:
+
 ```rust
 .invoke_handler(tauri::generate_handler![
     // ... existing commands
@@ -72,6 +75,7 @@ Add to `src-tauri/src/main.rs` invoke_handler:
 ```
 
 Add to `src-tauri/src/bin/export_specta.rs`:
+
 ```rust
 commands::{module}::{command_name},
 ```
@@ -102,7 +106,7 @@ mod tests {
 ### 7. Regenerate IPC Types
 
 ```bash
-make gen:ipc
+make gen-ipc
 ```
 
 ### 8. Self-Check
