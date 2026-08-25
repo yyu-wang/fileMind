@@ -42,6 +42,10 @@ interface ClassifyHistoryState {
   clearError: () => void;
 }
 
+// FE-m8：请求序号守卫——快速连续调用时丢弃过期请求的结果
+let historyReqSeq = 0;
+let batchReqSeq = 0;
+
 export const useClassifyHistoryStore = create<ClassifyHistoryState>()((set, get) => ({
   batches: [],
   detail: null,
@@ -50,8 +54,10 @@ export const useClassifyHistoryStore = create<ClassifyHistoryState>()((set, get)
   error: null,
 
   loadHistory: async () => {
+    const seq = ++historyReqSeq;
     set({ error: null, loading: true });
     const result = await fileIpc.getOperationHistory(1, HISTORY_PAGE_SIZE);
+    if (seq !== historyReqSeq) return; // 已被新请求取代
     if (result.status === 'ok') {
       set({ batches: result.data.batches, loading: false });
     } else {
@@ -60,8 +66,10 @@ export const useClassifyHistoryStore = create<ClassifyHistoryState>()((set, get)
   },
 
   openBatch: async (batchId) => {
+    const seq = ++batchReqSeq;
     set({ error: null, loading: true });
     const result = await fileIpc.getBatchDetail(batchId);
+    if (seq !== batchReqSeq) return; // 已被新请求取代
     if (result.status === 'ok') {
       set({ detail: result.data, loading: false });
     } else {

@@ -12,6 +12,7 @@ const OP_TYPE_LABELS: Record<string, string> = {
   move: '移动',
   rename: '重命名',
   delete: '删除',
+  copy: '复制',
 };
 
 interface ClassifyHistoryListProps {

@@ -110,6 +110,25 @@ describe('FilePreviewDrawer', () => {
     });
   });
 
+  it('syncs pageNumber when initialPage changes for same file', async () => {
+    // FE-M6：ChatPage 对 Drawer 用 key={file.id}，同文件不同页码的引用点击不会重挂载，
+    // initialPage 变化需要在 render 期同步到 pageNumber（否则停留旧页）
+    mocks.readFilePreview.mockResolvedValue({
+      status: 'ok',
+      data: makePreview({ kind: 'Pdf', data_url: 'data:application/pdf;base64,BBB' }),
+    });
+    const file = makeFile({ path: '/tmp/a.pdf', file_name: 'a.pdf' });
+    const { rerender } = render(
+      <FilePreviewDrawer file={file} onClose={vi.fn()} initialPage={2} />,
+    );
+    expect(await screen.findByText('2 / …')).toBeInTheDocument();
+
+    rerender(<FilePreviewDrawer file={file} onClose={vi.fn()} initialPage={3} />);
+    expect(await screen.findByText('3 / …')).toBeInTheDocument();
+    // 同引用不重挂载：不应重新拉取预览（走 render 期同步而非重新加载）
+    expect(mocks.readFilePreview).toHaveBeenCalledTimes(1);
+  });
+
   it('renders unsupported fallback', async () => {
     mocks.readFilePreview.mockResolvedValue({
       status: 'ok',

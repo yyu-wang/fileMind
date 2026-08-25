@@ -9,6 +9,7 @@ const OP_TYPE_LABELS: Record<string, string> = {
   move: '移动',
   rename: '重命名',
   delete: '删除',
+  copy: '复制',
 };
 
 /** 从绝对路径取文件名（兼容 / 与 Windows \）。 */

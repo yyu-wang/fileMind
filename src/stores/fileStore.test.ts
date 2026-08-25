@@ -55,6 +55,61 @@ describe('fileStore', () => {
     (fileIpc.getFileStats as Mock).mockResolvedValue({ status: 'ok', data: stats });
   });
 
+  it('FE-C4: 慢扫描 A + 快扫描 B 并发，A 晚回被丢弃（scanPath 与 files 一致）', async () => {
+    const filesA = [fileInfo('1', 'a.pdf')];
+    const filesB = [fileInfo('2', 'b.pdf')];
+    let resolveA!: (v: { status: string; data: FileInfo[] }) => void;
+    (fileIpc.scanDirectory as Mock).mockImplementation((path: string) =>
+      path === '/a'
+        ? new Promise((r) => {
+            resolveA = r;
+          })
+        : Promise.resolve({ status: 'ok', data: filesB }),
+    );
+
+    const p1 = useFileStore.getState().scanFiles('/a');
+    const p2 = useFileStore.getState().scanFiles('/b');
+    await p2;
+    // B 已返回；此时 A 的慢响应才到达
+    resolveA({ status: 'ok', data: filesA });
+    await p1;
+
+    const s = useFileStore.getState();
+    expect(s.files).toEqual(filesB);
+    expect(s.scanPath).toBe('/b');
+    expect(s.isScanning).toBe(false);
+  });
+
+  it('FE-C4: loadAllFiles 成功清空 scanPath（全量列表与旧扫描根解绑）', async () => {
+    useFileStore.setState({ scanPath: '/old' });
+    (fileIpc.listAllFiles as Mock).mockResolvedValue({
+      status: 'ok',
+      data: [fileInfo('1', 'x.pdf')],
+    });
+
+    await useFileStore.getState().loadAllFiles();
+
+    const s = useFileStore.getState();
+    expect(s.scanPath).toBeNull();
+    expect(s.files).toHaveLength(1);
+    expect(s.isScanning).toBe(false);
+  });
+
+  it('FE-C4: loadAllFiles 期间 isScanning=true（刷新按钮可禁用）', async () => {
+    let resolve!: (v: { status: string; data: FileInfo[] }) => void;
+    (fileIpc.listAllFiles as Mock).mockImplementation(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const p = useFileStore.getState().loadAllFiles();
+    expect(useFileStore.getState().isScanning).toBe(true);
+    resolve({ status: 'ok', data: [] });
+    await p;
+    expect(useFileStore.getState().isScanning).toBe(false);
+  });
+
   it('scanFiles 成功：更新列表/路径/统计并清空选中', async () => {
     const files = [fileInfo('1', 'a.pdf'), fileInfo('2', 'b.pdf')];
     (fileIpc.scanDirectory as Mock).mockResolvedValue({ status: 'ok', data: files });

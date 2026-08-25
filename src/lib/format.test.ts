@@ -20,6 +20,11 @@ describe('formatFileSize', () => {
     expect(formatFileSize(1024 * 1024)).toBe('1.0 MB');
     expect(formatFileSize(1024 * 1024 * 1024)).toBe('1.0 GB');
   });
+
+  it('formats TB for terabyte sizes (FE-m4)', () => {
+    expect(formatFileSize(1024 * 1024 * 1024 * 1024)).toBe('1.0 TB');
+    expect(formatFileSize(1024 * 1024 * 1024 * 1024 * 2.5)).toBe('2.5 TB');
+  });
 });
 
 describe('formatDateTime', () => {

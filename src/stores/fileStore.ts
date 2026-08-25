@@ -10,6 +10,11 @@ import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
 import type { FileInfo, FileStats } from '../types/ipc';
 
+// FE-C4：文件列表请求序号——scanFiles/loadAllFiles 共用。
+// 慢请求（大目录扫描）后发起的快请求先返回时，旧响应到达后序号失配被丢弃，
+// 防止「A 目录晚回覆盖 B 目录」导致 files 与 scanPath 不一致。
+let listReqId = 0;
+
 interface FileState {
   /** 当前文件列表 */
   files: FileInfo[];
@@ -54,8 +59,11 @@ export const useFileStore = create<FileState>()((set) => ({
   error: null,
 
   scanFiles: async (path) => {
+    const req = ++listReqId;
     set({ isScanning: true, error: null });
     const result = await fileIpc.scanDirectory(path);
+    // FE-C4：期间有更新的列表请求发起，本次响应已过期，丢弃
+    if (req !== listReqId) return;
     if (result.status === 'ok') {
       set({
         files: result.data,
@@ -71,12 +79,23 @@ export const useFileStore = create<FileState>()((set) => ({
   },
 
   loadAllFiles: async () => {
+    const req = ++listReqId;
+    // FE-C4：刷新也是列表变更，进 isScanning 态（FilesPage 刷新按钮防狂点）
+    set({ isScanning: true, error: null });
     const result = await fileIpc.listAllFiles(null);
+    if (req !== listReqId) return;
     if (result.status === 'ok') {
-      set({ files: result.data, selectedIds: [] });
+      set({
+        files: result.data,
+        selectedIds: [],
+        isScanning: false,
+        // FE-C4：全量列表覆盖了扫描态列表，旧 scanPath 已不代表 files 来源，
+        // 必须清空——否则后续手动分类 joinPath(scanPath,...) 拼错目标根
+        scanPath: null,
+      });
       await useFileStore.getState().loadStats();
     } else {
-      set({ error: result.error });
+      set({ isScanning: false, error: result.error });
     }
   },
 

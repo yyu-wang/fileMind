@@ -22,9 +22,10 @@ export function ChatBubble({ message, streaming = false, onCitationClick }: Chat
 
       {message.citations != null && message.citations.length > 0 && (
         <div className="chat-bubble__citations">
-          {message.citations.map((citation) => (
+          {message.citations.map((citation, idx) => (
+            // FE-m10：同来源多页引用 id 相同会导致 React key 冲突
             <CitationChip
-              key={citation.id}
+              key={`${citation.id}-${citation.page}-${idx}`}
               citation={citation}
               onClick={() => onCitationClick(citation)}
             />

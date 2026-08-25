@@ -18,6 +18,8 @@ export function RulesPage() {
   const saveRule = useRuleStore((s) => s.saveRule);
   const deleteRule = useRuleStore((s) => s.deleteRule);
   const reorder = useRuleStore((s) => s.reorder);
+  const toggleRule = useRuleStore((s) => s.toggleRule);
+  const togglingIds = useRuleStore((s) => s.togglingIds);
   const clearError = useRuleStore((s) => s.clearError);
 
   const [formOpen, setFormOpen] = useState(false);
@@ -57,9 +59,8 @@ export function RulesPage() {
   };
 
   const handleToggle = (rule: Rule) => {
-    void saveRule({ ...rule, is_enabled: !rule.is_enabled }).catch(() => {
-      // 错误已由 store 记录
-    });
+    // FE-M4：改走 toggleRule——saveRule 基于渲染闭包旧值，快速连点丢更新
+    void toggleRule(rule.id);
   };
 
   const handleReorder = (orderedIds: string[]) => {
@@ -115,6 +116,7 @@ export function RulesPage() {
             onDelete={(rule) => void handleDelete(rule)}
             onToggle={handleToggle}
             onReorder={handleReorder}
+            disabledIds={togglingIds}
           />
         )}
       </div>

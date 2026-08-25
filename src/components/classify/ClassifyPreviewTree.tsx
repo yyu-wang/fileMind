@@ -65,10 +65,11 @@ function groupPreviewItems(items: ClassifyPlanItem[]): PreviewGroup[] {
 }
 
 /** 从 target_path 提取相对扫描根的目标子目录（`/财务/`），供树子节点展示。 */
-function targetSubdir(targetPath: string, scanPath: string | null): string {
+export function targetSubdir(targetPath: string, scanPath: string | null): string {
   if (!scanPath) return '';
-  if (!targetPath.startsWith(scanPath)) return '';
-  const rest = targetPath.slice(scanPath.length).replace(/^\//, '');
+  // FE-m2：加路径边界检查——startsWith 无边界时 /a/dir 误匹配 /a/dir2
+  if (targetPath !== scanPath && !targetPath.startsWith(scanPath + '/')) return '';
+  const rest = targetPath === scanPath ? '' : targetPath.slice(scanPath.length + 1);
   const dir = rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : '';
   return dir ? ` → /${dir}/` : '';
 }
@@ -125,8 +126,9 @@ export function ClassifyPreviewTree({ preview, onOpenPreview }: ClassifyPreviewT
       <div className="classify-tree-header">
         <h3>分类预览</h3>
         <span className="count">
-          {preview.stats.by_rule + preview.stats.by_heuristic} 个已分类 · {preview.stats.pending}{' '}
-          个待确认
+          {/* FE-M10：从 items 现算——stats.by_* 是预览时点快照，漏手动分配 */}
+          {preview.items.filter((i) => i.category_name != null).length} 个已分类 ·{' '}
+          {preview.items.filter((i) => i.category_name == null).length} 个待确认
         </span>
       </div>
 

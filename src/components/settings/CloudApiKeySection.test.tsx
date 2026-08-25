@@ -90,6 +90,8 @@ describe('CloudApiKeySection', () => {
 
   it('deletes a key and shows 未配置 again', async () => {
     const user = userEvent.setup();
+    // FE-m13：删除前有 window.confirm 二次确认，需 mock 放行
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(fileIpc.getApiKeyStatus).mockResolvedValue({
       status: 'ok',
       data: [CONFIGURED_OPENAI, NO_KEY_DEEPSEEK],

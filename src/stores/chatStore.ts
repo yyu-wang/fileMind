@@ -26,6 +26,11 @@ const MAX_RETRIES = 2;
 /** 透传给查询改写的对话轮数（对齐 P-02 `HISTORY_TURNS=3`）。 */
 const HISTORY_TURNS = 3;
 
+/** FE-C3：流空闲看门狗——上一个事件后超过该时长无新事件视为流挂起。 */
+const STREAM_IDLE_TIMEOUT_MS = 90_000;
+/** FE-C3：流整体时长上限（含正常长回答的余量）。 */
+const STREAM_TOTAL_TIMEOUT_MS = 600_000;
+
 /** 聊天流程状态（SearchStatusBar 展示用）。 */
 export type ChatStatus = 'idle' | 'searching' | 'streaming';
 
@@ -112,10 +117,13 @@ function buildHistory(messages: ChatMessage[], maxTurns: number): ChatTurn[] {
 function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest {
   const settings = useSettingsStore.getState();
   const embeddingModel = settings.embeddingModel;
+  // FE-m11：版本号从 embeddingModelOptions 查找，fallback 1（与 Rust 当前硬编码一致）
+  const version =
+    settings.embeddingModelOptions.find((m) => m.name === embeddingModel)?.version ?? 1;
   return {
     query,
     history: buildHistory(messages.slice(0, -1), HISTORY_TURNS),
-    table_name: `documents_${embeddingModel}_v1`,
+    table_name: `documents_${embeddingModel}_v${version}`,
     embedding_model: embeddingModel,
     inference_mode: settings.inferenceMode.toLowerCase(),
     llm_model: settings.llmModel || 'qwen3.8-27b',
@@ -128,6 +136,35 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
 
 // 模块级缓存：订阅一次性建立，避免 HMR / 重复调用产生多份监听
 let chatUnlisten: (() => void) | null = null;
+
+// FE-C2/FE-C3 模块级流控制状态（瞬态，不进 store 持久化）：
+// - activeSeq：当前流的 seq（null = 无流 / 新流 invoke 未返回）
+// - lastSeq：最近一次 invoke 返回的 seq（收编「首帧先于 invoke 返回」的事件）
+// - 看门狗 timer：空闲 90s / 总量 600s 超时兜底复位 isStreaming
+let activeSeq: number | null = null;
+let lastSeq = 0;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let totalTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** FE-C3：清看门狗（终态/清空/发送失败时调用）。 */
+function stopWatchdog() {
+  if (idleTimer) clearTimeout(idleTimer);
+  if (totalTimer) clearTimeout(totalTimer);
+  idleTimer = null;
+  totalTimer = null;
+}
+
+/**
+ * FE-C3：（重新）启动看门狗。每个已处理事件都会重置空闲计时；
+ * 任一超时触发时若仍在流式 → 置错误并复位全部流式状态。
+ */
+function restartWatchdog(onTimeout: () => void) {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(onTimeout, STREAM_IDLE_TIMEOUT_MS);
+  if (!totalTimer) {
+    totalTimer = setTimeout(onTimeout, STREAM_TOTAL_TIMEOUT_MS);
+  }
+}
 
 export const useChatStore = create<ChatState>()(
   persist(
@@ -168,18 +205,65 @@ export const useChatStore = create<ChatState>()(
           error: null,
         }));
 
+        // FE-C2：invoke 返回前 activeSeq 置空——旧流残余事件（seq 为旧值）
+        // 在此期间到达一律丢弃；首帧可能先于 invoke 返回，由收编逻辑处理
+        activeSeq = null;
+
+        // FE-C3：流级看门狗，超时兜底复位（done/error/clearHistory 时清除）
+        restartWatchdog(() => {
+          const s = get();
+          if (!s.isStreaming) return;
+          stopWatchdog();
+          activeSeq = null;
+          set({
+            error: '流式响应超时，请重试',
+            isStreaming: false,
+            status: 'idle',
+            currentStream: '',
+          });
+        });
+
         try {
-          await chatStream(buildRequest(trimmed, get().messages));
+          const seq = await chatStream(buildRequest(trimmed, get().messages));
+          // FE-C2：seq 到手，此后只处理该 seq 的事件
+          lastSeq = seq;
+          activeSeq = seq;
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
+          stopWatchdog();
+          activeSeq = null;
           set({ error: message, isStreaming: false, status: 'idle' });
         }
       },
 
       handleChatEvent: (event) => {
-        const { isStreaming } = get();
-        // 非流式会话期间的迟到事件忽略（error 除外，便于 UI 透出侧车错误）
-        if (!isStreaming && event.event !== 'error') return;
+        // FE-C2：按 seq 过滤——只处理当前流的事件，旧流残余（含迟到 error）
+        // 一律丢弃，避免串入新回答或误杀进行中的新流
+        if (activeSeq === null) {
+          // 新流 invoke 未返回：仅收编「seq 比 lastSeq 大」的首批事件
+          //（旧流残余 seq 等于旧值，不会被收编）
+          if (get().isStreaming && event.request_seq > lastSeq) {
+            lastSeq = event.request_seq;
+            activeSeq = event.request_seq;
+          } else {
+            return;
+          }
+        } else if (event.request_seq !== activeSeq) {
+          return;
+        }
+        // FE-C3：每个已处理事件重置空闲计时
+        restartWatchdog(() => {
+          const s = get();
+          if (!s.isStreaming) return;
+          stopWatchdog();
+          activeSeq = null;
+          set({
+            error: '流式响应超时，请重试',
+            isStreaming: false,
+            status: 'idle',
+            currentStream: '',
+          });
+        });
 
         switch (event.event) {
           case 'search_start':
@@ -229,6 +313,8 @@ export const useChatStore = create<ChatState>()(
             get().finishStream({ lowConfidence: event.data.low_confidence ?? false });
             break;
           case 'error':
+            activeSeq = null;
+            stopWatchdog();
             set({
               error: event.data.message,
               isStreaming: false,
@@ -240,8 +326,17 @@ export const useChatStore = create<ChatState>()(
       },
 
       initChatListener: async () => {
+        // FE-m9：await 前占位，防止并发双调用都通过幂等检查后双注册
         if (chatUnlisten) return;
-        chatUnlisten = await listenChatEvent((event) => get().handleChatEvent(event));
+        chatUnlisten = () => {}; // 占位：后续 await 期间第二次调用会命中上行 if 直接返回
+        try {
+          const unlisten = await listenChatEvent((event) => get().handleChatEvent(event));
+          chatUnlisten = unlisten;
+        } catch (err) {
+          // 注册失败：清掉占位允许重试
+          chatUnlisten = null;
+          console.error('chat listener 注册失败', err);
+        }
       },
 
       appendStreamChunk: (chunk) => {
@@ -254,6 +349,9 @@ export const useChatStore = create<ChatState>()(
 
       finishStream: (meta) => {
         const { currentStream, pendingCitations, retries } = get();
+        // 终态：流结束，清 seq 与看门狗（此后到达的同 seq 迟到事件也被过滤）
+        activeSeq = null;
+        stopWatchdog();
         if (!currentStream) {
           // 空流（异常终止）：不产生空消息，仅复位状态
           set({ isStreaming: false, status: 'idle', currentStream: '' });
@@ -282,7 +380,10 @@ export const useChatStore = create<ChatState>()(
         }));
       },
 
-      clearHistory: () =>
+      clearHistory: () => {
+        // FE-C2：作废在途流——清 seq 后旧流残余事件全部失效，看门狗停止
+        activeSeq = null;
+        stopWatchdog();
         set({
           messages: [],
           currentStream: '',
@@ -294,7 +395,8 @@ export const useChatStore = create<ChatState>()(
           rewrittenQuery: null,
           searchInfo: null,
           lowConfidence: false,
-        }),
+        });
+      },
 
       clearError: () => set({ error: null }),
     }),

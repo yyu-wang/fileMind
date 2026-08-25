@@ -54,6 +54,17 @@ interface ExecControl {
 
 const control: ExecControl = { paused: false, cancelled: false };
 
+/**
+ * 执行令牌（FE-C5）：每次 execute 递增取号，reset() 再递增作废在途执行。
+ * 在途执行在每个 await 恢复点校验令牌，失配即放弃写状态——
+ * 防止「用户已 reset 重来」后被旧循环的收尾 set 覆盖回 Cancelled/Done。
+ */
+let execToken = 0;
+
+// FE-M9：预览请求序号——生成中的慢响应被后续请求/取消作废，
+// 到达后序号失配直接丢弃，防止旧预览覆盖新状态。
+let previewSeq = 0;
+
 const INITIAL_PROGRESS: ProgressState = { done: 0, total: 0 };
 
 interface ClassifyState {
@@ -168,8 +179,14 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ status: ClassifyStatus.Idle, error: '请先在文件页选择要整理的目录' });
       return;
     }
+    // FE-M9：重入守卫——StrictMode 双挂载/用户快速连点时，进行中的预览
+    // 直接忽略后续调用（旧实现并发跑两个 IPC，晚回者覆盖早回者）
+    if (get().status === ClassifyStatus.Previewing) return;
+    const seq = ++previewSeq;
     set({ status: ClassifyStatus.Previewing, error: null, preview: null, execSummary: null });
     const result = await fileIpc.classifyPreview(fileIds, scanPath);
+    // FE-M9：期间有新请求发起或 reset 被调用，本次响应已过期，丢弃
+    if (seq !== previewSeq) return;
     if (result.status === 'ok') {
       const pendingIds = result.data.items
         .filter((item) => item.category_name == null)
@@ -198,6 +215,9 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     if (!preview) return;
     const item = preview.items.find((i) => i.file_id === fileId);
     if (!item) return;
+    // FE-M1：与批量版 assignCategories 对齐——已分类项拒绝覆盖，
+    // 避免重复调用导致分类被覆盖、stats.categorized 虚增、pending 重复扣减
+    if (item.category_name != null) return;
 
     // 目标目录合法性校验（相对路径、无穿越），非法拒绝并提示
     const targetDir = category.target_dir.trim();
@@ -215,7 +235,19 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     const targetPath = joinPath(scanPath, targetDir, item.file_name);
     const updatedItems = preview.items.map((i) =>
       i.file_id === fileId
-        ? { ...i, category_name: category.name, rule_source: 'manual', target_path: targetPath }
+        ? // FE-M2：手动指定 = 用户显式授权执行——重算 status 置 Ok。
+          // 旧 Conflict/Error 状态基于旧目标路径或预览时点，已过时；
+          // 新目标即使同名，Rust 执行端默认 Rename 策略兜底，不会覆盖。
+          // 源文件确已不存在的项，执行时单项失败计入 failed 并在摘要呈现，
+          // 好过静默排除（用户手动指定的分类永远不执行且无提示）。
+          {
+            ...i,
+            category_name: category.name,
+            rule_source: 'manual',
+            target_path: targetPath,
+            status: 'Ok' as const,
+            conflict_type: null,
+          }
         : i,
     );
     const stats = {
@@ -259,6 +291,9 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         category_name: category.name,
         rule_source: 'manual',
         target_path: targetPath,
+        // FE-M2：与单个版一致——手动指定即用户授权执行，状态重算为 Ok
+        status: 'Ok' as const,
+        conflict_type: null,
       };
     });
 
@@ -279,6 +314,11 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
   },
 
   execute: async (resolveConflicts = false, mode: ClassifyExecMode = 'move') => {
+    // FE-C1 重入守卫：执行中/暂停中拒绝再次进入，防止双执行循环交错
+    // 重复移动文件、operations_log 双写污染撤销链。
+    if (get().status === ClassifyStatus.Running || get().status === ClassifyStatus.Paused) {
+      return;
+    }
     const preview = get().preview;
     if (!preview) {
       set({ status: ClassifyStatus.Idle, error: '尚未生成分类预览' });
@@ -301,6 +341,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     }
 
     const plan = execItems.map((item) => toPlanItem(item, mode));
+    const token = ++execToken;
     control.paused = false;
     control.cancelled = false;
     set({ status: ClassifyStatus.Running, error: null, progress: { done: 0, total: plan.length } });
@@ -308,9 +349,13 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     let success = 0;
     let failed = 0;
     let lastBatchId: string | null = null;
+    /** 当前执行是否仍持有令牌（reset 会作废在途执行的写状态权利）。 */
+    const stillHolds = () => token === execToken;
 
     for (let i = 0; i < plan.length; i += CHUNK_SIZE) {
       if (await waitWhilePaused()) break;
+      // 每个 await 恢复点先校验令牌：已被 reset 作废则静默退出，不写任何状态。
+      if (!stillHolds()) return;
       const chunk = plan.slice(i, i + CHUNK_SIZE);
       const result = await fileIpc.executeOperations({
         batch_id: preview.batch_id,
@@ -318,6 +363,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         exclude_file_ids: [],
         resolve_conflicts: resolveConflicts,
       });
+      if (!stillHolds()) return;
       if (result.status === 'error') {
         failed += chunk.length;
         set({ error: result.error });
@@ -325,21 +371,30 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       }
       for (const r of result.data.results) {
         if (r.success) {
-          success += 1;
           const execItem = execItems.find((item) => item.file_id === r.file_id);
           // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
           // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
           if (execItem?.category_name) {
-            await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
+            const label = await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
+            // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
+            // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
+            if (label.status === 'error') {
+              failed += 1;
+              set({ error: `文件已移动但分类标签写入失败：${label.error}` });
+              continue;
+            }
           }
+          success += 1;
         } else {
           failed += 1;
         }
       }
       lastBatchId = result.data.batch_id;
+      if (!stillHolds()) return;
       set({ progress: { done: success + failed, total: plan.length }, lastBatchId });
     }
 
+    if (!stillHolds()) return;
     const nextStatus = control.cancelled ? ClassifyStatus.Cancelled : ClassifyStatus.Done;
     set({ status: nextStatus, execSummary: buildSummary(preview, success, failed) });
     // 移动/打标已落库：只刷新轻量统计，不拉全量文件列表——
@@ -362,6 +417,11 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
   },
 
   cancel: () => {
+    // FE-m7：Idle 态误调 cancel 会污染状态机（直接跳到 Cancelled）
+    const { status } = get();
+    if (status !== ClassifyStatus.Running && status !== ClassifyStatus.Paused) {
+      return;
+    }
     control.cancelled = true;
     set({ status: ClassifyStatus.Cancelled });
   },
@@ -383,6 +443,11 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
   },
 
   reset: () => {
+    // FE-C5：作废在途执行的令牌——正在 await 的执行循环恢复后发现失配，
+    // 直接静默退出，不再把状态覆盖回 Cancelled/Done 或带回 execSummary。
+    execToken += 1;
+    // FE-M9：同步作废在途的预览请求（响应到达后 seq 失配被丢弃）
+    previewSeq += 1;
     control.cancelled = true;
     control.paused = false;
     set({

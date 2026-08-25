@@ -45,6 +45,16 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
   const [pageNumber, setPageNumber] = useState(() => initialPage ?? 1);
   const [numPages, setNumPages] = useState<number | null>(null);
 
+  // FE-M6：同文件不同页码的引用点击（ChatPage key={file.id} 不重挂载）需要
+  // 在渲染期间同步 pageNumber——useState 初始化只读一次，旧页码会残留。
+  // React 官方「渲染期间调整 state」模式：条件 setState 立即重渲染，
+  // 比 useEffect 少一帧错页闪烁。
+  const [prevInitialPage, setPrevInitialPage] = useState(initialPage);
+  if (initialPage !== undefined && initialPage !== prevInitialPage) {
+    setPrevInitialPage(initialPage);
+    setPageNumber(initialPage);
+  }
+
   // 状态在 useState 初始化（loading / 第 1 页）；文件切换由父级 key 触发重挂载重置。
   useEffect(() => {
     if (!file) {
@@ -52,16 +62,26 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
     }
     let cancelled = false;
 
-    fileIpc.readFilePreview(file.path).then((result) => {
-      if (cancelled) {
-        return;
-      }
-      if (result.status === 'ok') {
-        setState({ phase: 'ready', preview: result.data });
-      } else {
-        setState({ phase: 'error', message: result.error });
-      }
-    });
+    // FE-m6：加 catch——IPC 层 reject 时无 catch 会断 promise 链，state 卡 loading
+    fileIpc
+      .readFilePreview(file.path)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+        if (result.status === 'ok') {
+          setState({ phase: 'ready', preview: result.data });
+        } else {
+          setState({ phase: 'error', message: result.error });
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setState({
+          phase: 'error',
+          message: err instanceof Error ? err.message : '读取预览失败',
+        });
+      });
     return () => {
       cancelled = true;
     };

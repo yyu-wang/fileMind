@@ -53,9 +53,11 @@ export function ClassifyDonePanel({
         )}
       </ul>
       <div className="classify-done__actions">
-        {!cancelled && canUndo && (
+        {/* FE-M3：取消态也要显示撤销——取消语义是「已执行块保留、整批可撤销」
+            （批次 4 FE-C5 修复后），排除取消态会让用户被迫去历史页找撤销 */}
+        {canUndo && (
           <button type="button" className="btn" data-testid="classify-undo" onClick={onUndo}>
-            撤销本批
+            {cancelled && summary.success > 0 ? '撤销已执行部分' : '撤销本批'}
           </button>
         )}
         <button type="button" className="btn btn--primary" onClick={onFinish}>

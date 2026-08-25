@@ -16,6 +16,8 @@ interface RuleListProps {
   onToggle: (rule: Rule) => void;
   /** 拖拽结束后的最终顺序（规则 id 数组） */
   onReorder: (orderedIds: string[]) => void;
+  /** FE-M4：在途 toggle 的规则 id（checkbox 禁用防连点） */
+  disabledIds: string[];
 }
 
 export function RuleList({
@@ -25,6 +27,7 @@ export function RuleList({
   onDelete,
   onToggle,
   onReorder,
+  disabledIds,
 }: RuleListProps) {
   const [dragId, setDragId] = useState<string | null>(null);
 
@@ -85,6 +88,7 @@ export function RuleList({
               className="rules-item__switch-input"
               checked={rule.is_enabled}
               onChange={() => onToggle(rule)}
+              disabled={disabledIds.includes(rule.id)}
               aria-label={`${rule.is_enabled ? '禁用' : '启用'}规则 ${rule.name}`}
             />
             <span className="rules-item__switch-slider" aria-hidden />

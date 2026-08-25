@@ -8,8 +8,8 @@
 import { listen } from '@tauri-apps/api/event';
 import { commands, type ChatStreamRequest } from '../../types/ipc';
 
-/** `chat://event` 事件负载，按 event 名判别联合（对齐 Sidecar SSE data 行）。 */
-export type ChatEvent =
+/** SSE 帧数据，按 event 名判别联合（对齐 Sidecar SSE data 行）。 */
+export type ChatEventData =
   | { event: 'search_start'; data: { query_original: string; query_rewritten: string } }
   | {
       event: 'search_result';
@@ -37,16 +37,26 @@ export type ChatEvent =
   | { event: 'error'; data: { code: string; message: string } };
 
 /**
- * 发起 RAG 对话流式请求。
+ * `chat://event` 事件负载 = SSE 帧数据 + `request_seq`。
+ *
+ * FE-C2：`request_seq` 与 `chatStream` 返回值同源（Rust `request_seq`
+ * 计数器），前端按它过滤旧流残余事件（清空对话/新流开始后旧流不再串入）。
+ */
+export type ChatEvent = ChatEventData & { request_seq: number };
+
+/**
+ * 发起 RAG 对话流式请求，返回本次流的请求序号（seq）。
  *
  * 命令立即返回，真正的 SSE 帧由后台任务推送到 `chat://event`，
  * 经 [`listenChatEvent`] 订阅消费。调用失败（如 Sidecar 未就绪）时抛错。
  */
-export async function chatStream(request: ChatStreamRequest): Promise<void> {
+export async function chatStream(request: ChatStreamRequest): Promise<number> {
   const result = await commands.chatStream(request);
   if (result.status !== 'ok') {
     throw new Error(result.error);
   }
+  // 成功路径 Rust 恒返回 seq；null 兜底为 0（typedError 类型的名义空值）
+  return result.data ?? 0;
 }
 
 /**

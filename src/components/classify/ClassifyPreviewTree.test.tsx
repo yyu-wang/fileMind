@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 
 import type { ClassifyPlanItem, ClassifyPreview } from '@/types/ipc';
 import { PENDING_NAME } from '@/stores/classifyStore';
-import { ClassifyPreviewTree } from './ClassifyPreviewTree';
+import { ClassifyPreviewTree, targetSubdir } from './ClassifyPreviewTree';
 
 function makeItem(id: string, overrides: Partial<ClassifyPlanItem> = {}): ClassifyPlanItem {
   return {
@@ -120,5 +120,28 @@ describe('ClassifyPreviewTree', () => {
 
     expect(onOpenPreview).toHaveBeenCalledTimes(1);
     expect(onOpenPreview).toHaveBeenCalledWith(item);
+  });
+});
+
+describe('targetSubdir (FE-m2: path boundary)', () => {
+  it('returns subdir for exact child path', () => {
+    expect(targetSubdir('/tmp/财务/a.pdf', '/tmp')).toBe(' → /财务/');
+  });
+
+  it('returns empty for scan root itself', () => {
+    expect(targetSubdir('/tmp', '/tmp')).toBe('');
+  });
+
+  it('does not match sibling with common prefix', () => {
+    // /a/dir vs /a/dir2：无路径边界时 startsWith 误匹配
+    expect(targetSubdir('/a/dir2/b.pdf', '/a/dir')).toBe('');
+  });
+
+  it('matches deep nested path', () => {
+    expect(targetSubdir('/tmp/财务/2024/a.pdf', '/tmp')).toBe(' → /财务/2024/');
+  });
+
+  it('returns empty when scanPath is null', () => {
+    expect(targetSubdir('/tmp/财务/a.pdf', null)).toBe('');
   });
 });

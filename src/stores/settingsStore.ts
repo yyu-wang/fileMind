@@ -48,6 +48,8 @@ interface SettingsState {
   cloudConsentSignedAt: string | null;
   /** 配置加载中 */
   isLoading: boolean;
+  /** FE-M11：启动配置加载失败（App 渲染错误卡片 + 重试入口） */
+  initFailed: boolean;
   /** 错误信息（null 表示无错误） */
   error: string | null;
   /** Ollama 探测结果（null 表示未探测或探测失败） */
@@ -65,6 +67,8 @@ interface SettingsState {
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
+  /** FE-M11：initFailed 后重试加载 */
+  retryInit: () => Promise<void>;
   /** 切换推理模式（需用户主动调用，记录审计日志） */
   setInferenceMode: (mode: InferenceMode) => Promise<void>;
   /** 探测本地 Ollama 环境（可用性 + 模型列表，设置页/引导页调用） */
@@ -91,13 +95,44 @@ interface SettingsState {
   clearError: () => void;
 }
 
+/**
+ * FE-M11：loadConfig 的实际加载逻辑（被 loadConfig 的 try/catch 包裹）。
+ * 抽为独立函数：store action 内联时替换残留体困难，独立函数更清晰。
+ * 业务错误（status==='error'）与 IPC 异常统一 throw，由调用方落 initFailed。
+ */
+async function loadConfigInner(set: (partial: Partial<SettingsState>) => void): Promise<void> {
+  const result = await fileIpc.getConfig();
+  if (result.status === 'ok') {
+    const cfg = result.data;
+    const mode = normalizeInferenceMode(cfg.inference_mode);
+    set({
+      dataDirectory: cfg.data_directory,
+      inferenceMode: mode,
+      embeddingModel: cfg.embedding_model,
+      maxFileSizeMb: cfg.max_file_size_mb,
+      language: cfg.language,
+      onboardingCompleted: cfg.onboarding_completed,
+      cloudConsentSigned: cfg.cloud_consent_signed,
+      cloudConsentVersion: cfg.cloud_consent_version,
+      cloudConsentProvider: cfg.cloud_consent_provider,
+      cloudConsentSignedAt: cfg.cloud_consent_signed_at,
+      llmModel: cfg.llm_model,
+      isLoading: false,
+      initFailed: false,
+    });
+  } else {
+    throw new Error(result.error);
+  }
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
       inferenceMode: 'Local',
       llmModel: 'qwen3.8-27b',
       dataDirectory: '',
-      embeddingModel: 'bge-small-zh',
+      // FE-m12：对齐 Rust config.rs 默认值 bge-large-zh-v1.5
+      embeddingModel: 'bge-large-zh-v1.5',
       maxFileSizeMb: 100,
       language: 'zh-CN',
       onboardingCompleted: false,
@@ -106,6 +141,7 @@ export const useSettingsStore = create<SettingsState>()(
       cloudConsentProvider: null,
       cloudConsentSignedAt: null,
       isLoading: true,
+      initFailed: false,
       error: null,
       ollamaStatus: null,
       ollamaProbing: false,
@@ -119,27 +155,21 @@ export const useSettingsStore = create<SettingsState>()(
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
-        const result = await fileIpc.getConfig();
-        if (result.status === 'ok') {
-          const cfg = result.data;
-          const mode = normalizeInferenceMode(cfg.inference_mode);
+        // FE-M11：typedError 对 Error 实例直接 rethrow（specta 生成，不可改），
+        // 必须兜底——否则 isLoading 永久 true，App 渲染「正在加载配置...」白屏
+        try {
+          await loadConfigInner(set);
+        } catch (e) {
           set({
-            dataDirectory: cfg.data_directory,
-            inferenceMode: mode,
-            embeddingModel: cfg.embedding_model,
-            maxFileSizeMb: cfg.max_file_size_mb,
-            language: cfg.language,
-            onboardingCompleted: cfg.onboarding_completed,
-            cloudConsentSigned: cfg.cloud_consent_signed,
-            cloudConsentVersion: cfg.cloud_consent_version,
-            cloudConsentProvider: cfg.cloud_consent_provider,
-            cloudConsentSignedAt: cfg.cloud_consent_signed_at,
-            llmModel: cfg.llm_model,
             isLoading: false,
+            initFailed: true,
+            error: e instanceof Error ? e.message : String(e),
           });
-        } else {
-          set({ isLoading: false, error: result.error });
         }
+      },
+
+      retryInit: async () => {
+        await get().loadConfig();
       },
 
       setInferenceMode: async (mode) => {
@@ -173,9 +203,19 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       setLlmModel: async (name) => {
-        // 乐观更新本地值，持久化失败时由调用方（设置页）回滚提示
+        // FE-M5：乐观更新 + 失败回滚（此前失败不回滚，下拉显示未持久化的模型）
+        const prev = get().llmModel;
         set({ llmModel: name });
-        await get().updateConfig({ llm_model: name });
+        try {
+          await get().updateConfig({ llm_model: name });
+        } catch (e) {
+          // 仅当 store 值仍是本次乐观值时回滚：updateConfig 成功后的 loadConfig
+          // 重拉若再抛错（网络抖动），值其实已持久化，回滚是误伤
+          if (get().llmModel === name) {
+            set({ llmModel: prev, error: e instanceof Error ? e.message : String(e) });
+          }
+          throw e;
+        }
       },
 
       updateConfig: async (partial) => {
@@ -190,9 +230,11 @@ export const useSettingsStore = create<SettingsState>()(
           language: partial.language ?? current.language,
           onboarding_completed: partial.onboarding_completed ?? current.onboardingCompleted,
           cloud_consent_signed: partial.cloud_consent_signed ?? current.cloudConsentSigned,
-          cloud_consent_version: partial.cloud_consent_version ?? null,
-          cloud_consent_provider: partial.cloud_consent_provider ?? null,
-          cloud_consent_signed_at: partial.cloud_consent_signed_at ?? null,
+          // 兜底必须回填当前值而非 null：后端 upsert 是全字段覆盖，
+          // 置空会静默清掉已签署的同意书记录（合规审计链断裂）
+          cloud_consent_version: partial.cloud_consent_version ?? current.cloudConsentVersion,
+          cloud_consent_provider: partial.cloud_consent_provider ?? current.cloudConsentProvider,
+          cloud_consent_signed_at: partial.cloud_consent_signed_at ?? current.cloudConsentSignedAt,
         };
         const result = await fileIpc.updateConfig(fullConfig);
         if (result.status !== 'ok') {
@@ -241,8 +283,13 @@ export const useSettingsStore = create<SettingsState>()(
       loadApiKeyStatus: async () => {
         const result = await fileIpc.getApiKeyStatus();
         if (result.status === 'ok') {
-          // 数组 → 以 provider 为键的映射，组件按服务商取状态
+          // FE-M12：合并构建而非整体替换——后端只返回部分 provider 时，
+          // 未返回的项保留旧状态并补默认值，避免组件读到 undefined 崩溃
+          const prev = get().apiKeyStatus;
           const map = {} as Record<CloudProvider, ApiKeyStatus>;
+          for (const provider of Object.keys(prev) as CloudProvider[]) {
+            map[provider] = { provider, has_key: false, hint: '' };
+          }
           for (const status of result.data) map[status.provider] = status;
           set({ apiKeyStatus: map });
         } else {

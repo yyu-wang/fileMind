@@ -52,7 +52,9 @@ export function FilesPage() {
     {
       key: ' ',
       handler: () => {
-        const first = files.find((f) => selectedIds.includes(f.id));
+        // FE-M8：find 内逐个 includes 是 O(N×M)，Set 化后整体 O(N+M)
+        const selectedSet = new Set(selectedIds);
+        const first = files.find((f) => selectedSet.has(f.id));
         if (first) setPreviewFile(first);
       },
     },
@@ -122,8 +124,14 @@ export function FilesPage() {
           )}
         </div>
         <div className="files-page__actions">
-          <button type="button" className="btn btn--ghost" onClick={() => void loadAllFiles()}>
-            刷新
+          {/* FE-C4：刷新也进 isScanning 态（store），狂点被防抖 */}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => void loadAllFiles()}
+            disabled={isScanning}
+          >
+            {isScanning ? '刷新中…' : '刷新'}
           </button>
           <button
             type="button"

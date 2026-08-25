@@ -3,7 +3,7 @@
 // 引用跳转：按文件名从 fileStore 匹配 FileInfo，兜底 fileIpc.searchByFilename，
 // 打开 FilePreviewDrawer 定位到引用页码。
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { SearchStatusBar } from '@/components/chat/SearchStatusBar';
@@ -51,6 +51,13 @@ export function ChatPage() {
   // 建立索引：请求状态 + 结果提示（T7.x）
   const [building, setBuilding] = useState(false);
   const [indexMessage, setIndexMessage] = useState<string | null>(null);
+  // FE-m14：await 后 setState 的卸载守卫，防组件卸载后 setState warning
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // T6.10 快捷键：⌘N 新建对话（清空当前会话）
   useHotkeys([{ key: 'n', meta: true, handler: clearHistory }]);
@@ -59,6 +66,7 @@ export function ChatPage() {
     setBuilding(true);
     setIndexMessage(null);
     const result = await fileIpc.buildIndex();
+    if (!isMountedRef.current) return;
     if (result.status === 'ok') {
       setIndexMessage(
         `索引完成：${result.data.indexed_count} 个文件，跳过 ${result.data.skipped_count} 个`,
@@ -72,6 +80,7 @@ export function ChatPage() {
   const handleCitationClick = async (citation: ChatCitation) => {
     const local = files.find((f) => f.file_name === citation.fileName);
     const file = local ?? (await findFileByName(citation.fileName));
+    if (!isMountedRef.current) return;
     if (file) {
       setPreviewTarget({ file, initialPage: citation.page });
     }

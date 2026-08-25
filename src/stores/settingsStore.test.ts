@@ -61,6 +61,7 @@ function resetSettings(): void {
     cloudConsentProvider: null,
     cloudConsentSignedAt: null,
     isLoading: true,
+    initFailed: false,
     error: null,
     ollamaStatus: null,
     ollamaProbing: false,
@@ -199,6 +200,27 @@ describe('settingsStore', () => {
     expect(fileIpc.getConfig).toHaveBeenCalled(); // 成功后重载保证一致
   });
 
+  it('updateConfig 不得清空已签署的同意书字段（FE-B1 回归）', async () => {
+    // 模拟已签同意书状态后，仅更新无关字段（如切模型）
+    useSettingsStore.setState({
+      cloudConsentSigned: true,
+      cloudConsentVersion: CLOUD_CONSENT_VERSION,
+      cloudConsentProvider: 'Openai',
+      cloudConsentSignedAt: '2026-08-24T00:00:00Z',
+    });
+    (fileIpc.getConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
+    (fileIpc.updateConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
+
+    await useSettingsStore.getState().updateConfig({ llm_model: 'qwen2.5' });
+
+    // 后端 upsert 是全字段覆盖：未传的同意书字段必须回填当前值而非 null
+    const sent = (fileIpc.updateConfig as Mock).mock.calls[0][0] as AppConfig;
+    expect(sent.cloud_consent_signed).toBe(true);
+    expect(sent.cloud_consent_version).toBe(CLOUD_CONSENT_VERSION);
+    expect(sent.cloud_consent_provider).toBe('Openai');
+    expect(sent.cloud_consent_signed_at).toBe('2026-08-24T00:00:00Z');
+  });
+
   it('updateConfig 失败：置错并抛异常', async () => {
     (fileIpc.updateConfig as Mock).mockResolvedValue({ status: 'error', error: 'CFG-INVALID' });
 
@@ -331,5 +353,66 @@ describe('settingsStore', () => {
 
     expect(useSettingsStore.getState().theme).toBe(ThemeMode.Dark);
     expect(document.documentElement.getAttribute('data-theme')).toBe(ThemeMode.Dark);
+  });
+});
+
+describe('settingsStore 批次10修复（FE-M5/M11/M12）', () => {
+  beforeEach(resetSettings);
+
+  it('FE-M11: loadConfig IPC 异常（Error rethrow）→ initFailed=true + isLoading=false', async () => {
+    (fileIpc.getConfig as Mock).mockRejectedValue(new Error('IPC 断连'));
+
+    await useSettingsStore.getState().loadConfig();
+
+    const s = useSettingsStore.getState();
+    expect(s.initFailed).toBe(true);
+    expect(s.isLoading).toBe(false);
+    expect(s.error).toBe('IPC 断连');
+  });
+
+  it('FE-M11: loadConfig 业务错误（status=error）→ initFailed=true', async () => {
+    (fileIpc.getConfig as Mock).mockResolvedValue({ status: 'error', error: 'DB 锁定' });
+
+    await useSettingsStore.getState().loadConfig();
+
+    const s = useSettingsStore.getState();
+    expect(s.initFailed).toBe(true);
+    expect(s.isLoading).toBe(false);
+    expect(s.error).toBe('DB 锁定');
+  });
+
+  it('FE-M11: retryInit 成功后 initFailed 复位', async () => {
+    (fileIpc.getConfig as Mock).mockRejectedValueOnce(new Error('第一次失败'));
+    await useSettingsStore.getState().loadConfig();
+    expect(useSettingsStore.getState().initFailed).toBe(true);
+
+    (fileIpc.getConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
+    await useSettingsStore.getState().retryInit();
+
+    const s = useSettingsStore.getState();
+    expect(s.initFailed).toBe(false);
+    expect(s.isLoading).toBe(false);
+  });
+
+  it('FE-M5: setLlmModel 持久化失败回滚旧值并 rethrow', async () => {
+    (fileIpc.updateConfig as Mock).mockResolvedValue({ status: 'error', error: '写盘失败' });
+    // updateConfig 失败路径会 set error + throw；setLlmModel 捕获后回滚
+
+    await expect(useSettingsStore.getState().setLlmModel('llama3')).rejects.toThrow('写盘失败');
+
+    expect(useSettingsStore.getState().llmModel).toBe('qwen3.8-27b');
+  });
+
+  it('FE-M12: loadApiKeyStatus 部分返回 → 其余 provider 保留默认而非 undefined', async () => {
+    (fileIpc.getApiKeyStatus as Mock).mockResolvedValue({
+      status: 'ok',
+      data: [{ provider: 'Openai', has_key: true, hint: '***abcd' }],
+    });
+
+    await useSettingsStore.getState().loadApiKeyStatus();
+
+    const map = useSettingsStore.getState().apiKeyStatus;
+    expect(map.Openai.has_key).toBe(true);
+    expect(map.Deepseek).toEqual({ provider: 'Deepseek', has_key: false, hint: '' });
   });
 });

@@ -3,9 +3,12 @@
 // 探测动作由父级（SettingsPage）挂载时触发，本卡只读 store 并支持手动重新探测；
 // LLM 选择调用 setLlmModel 持久化；Embedding 仅展示可用性（真实切换属后续建索引任务）。
 
+import { useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
 
 export function OllamaStatusCard() {
+  // FE-M5：模型切换失败的 inline 提示（store 已回滚旧值，此处只做可见性）
+  const [modelSaveError, setModelSaveError] = useState<string | null>(null);
   const ollamaStatus = useSettingsStore((s) => s.ollamaStatus);
   const ollamaProbing = useSettingsStore((s) => s.ollamaProbing);
   const llmModel = useSettingsStore((s) => s.llmModel);
@@ -54,7 +57,13 @@ export function OllamaStatusCard() {
           id="llm-model-select"
           className="settings-select"
           value={llmModel}
-          onChange={(e) => void setLlmModel(e.target.value)}
+          onChange={(e) => {
+            setModelSaveError(null);
+            // FE-M5：此前 void 不 catch——持久化失败静默，下拉停在未保存的值上
+            setLlmModel(e.target.value).catch(() => {
+              setModelSaveError('模型保存失败，已还原为原模型，请重试');
+            });
+          }}
           disabled={!ollamaStatus?.available || ollamaProbing}
         >
           {ollamaStatus?.available ? (
@@ -74,6 +83,11 @@ export function OllamaStatusCard() {
           )}
         </select>
         <p className="settings-field__hint">聊天与智能分类使用的本地推理模型。</p>
+        {modelSaveError && (
+          <p className="settings-field__hint" role="alert" style={{ color: 'var(--danger, #d33)' }}>
+            {modelSaveError}
+          </p>
+        )}
       </div>
 
       <div className="settings-field">

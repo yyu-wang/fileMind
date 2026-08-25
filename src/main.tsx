@@ -51,9 +51,16 @@ if (rootElement) {
 
 // T6.2：启动时从 Rust 端加载配置与文件统计，确保 StatusBar 显示真实数据
 // 不阻塞渲染（fire-and-forget），加载完成 store 自动触发 UI 更新
-Promise.all([useSettingsStore.getState().loadConfig(), useFileStore.getState().loadStats()]).catch(
-  (e) => console.warn('[main] loadConfig/loadStats failed:', e),
-);
+// FE-M11：allSettled——loadConfig 失败已由 store 落 initFailed（App 渲染重试卡片），
+// Promise.all 会因首个 reject 跳过 loadStats；settled 保证两者都执行
+Promise.allSettled([
+  useSettingsStore.getState().loadConfig(),
+  useFileStore.getState().loadStats(),
+]).then((results) => {
+  for (const r of results) {
+    if (r.status === 'rejected') console.warn('[main] init task failed:', r.reason);
+  }
+});
 
 // T6.6：订阅 chat://event（Rust 代理 Sidecar SSE 帧）；非 Tauri 环境监听失败仅告警
 useChatStore

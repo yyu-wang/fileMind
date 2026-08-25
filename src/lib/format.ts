@@ -6,7 +6,7 @@
 
 export type FileKind = 'text' | 'image' | 'pdf' | 'unsupported';
 
-const SIZE_UNITS = ['B', 'KB', 'MB', 'GB'] as const;
+const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
 
 const RUST_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 

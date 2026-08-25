@@ -50,6 +50,11 @@ export function CloudApiKeySection() {
   };
 
   const remove = async (provider: CloudProvider) => {
+    // FE-m13：删除 API Key 需二次确认，避免误操作丢失凭据
+    const displayName = PROVIDERS.find((p) => p.value === provider)?.label ?? provider;
+    if (!window.confirm(`确认删除 ${displayName} 的 API Key？删除后需重新输入。`)) {
+      return;
+    }
     setBusyProvider(provider);
     setError(null);
     try {

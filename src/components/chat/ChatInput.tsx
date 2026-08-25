@@ -30,6 +30,11 @@ export function ChatInput({ disabled, onSend }: ChatInputProps) {
         disabled={disabled}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
+          // FE-M7：输入法组合期（中文拼音候选确认）的 Enter 只用于上屏候选词，
+          // 此时 isComposing=true，直接放行避免把半成品拼音当消息发出。
+          if (e.nativeEvent.isComposing) {
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSubmit();

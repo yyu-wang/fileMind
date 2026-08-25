@@ -41,13 +41,48 @@ function StatBar({ label, count, total, color }: StatRow & { total: number }) {
 
 export function ClassifyStatsPanel({ preview }: ClassifyStatsPanelProps) {
   const scanPath = useFileStore((s) => s.scanPath);
-  const total = preview.stats.total;
+  // FE-M10：total 同样从 items 派生，与五行计数口径一致（stats.total 是预览
+  // 时点快照，手动分配增删项后不再相等）
+  const total = preview.items.length;
 
-  // LLM 兜底命中数（rule_source === 'llm' 的已分类项）
-  const llmCount = useMemo(
-    () => preview.items.filter((i) => i.rule_source === 'llm').length,
-    [preview.items],
-  );
+  // FE-M10：统计口径统一为「从 items 派生」——后端 stats 是预览时点快照，
+  // 手动分配（rule_source='manual'）不落在 by_rule/by_heuristic/llm 任何一行，
+  // 混用会导致四行加总 < total。全部行改为对 items 现算，加总恒等于 total。
+  const derived = useMemo(() => {
+    let byRule = 0;
+    let byHeuristic = 0;
+    let llm = 0;
+    let manual = 0;
+    let pending = 0;
+    for (const item of preview.items) {
+      if (item.category_name == null) {
+        pending += 1;
+      } else if (item.rule_source === 'manual') {
+        manual += 1;
+      } else if (item.rule_source === 'llm') {
+        llm += 1;
+      } else if (item.rule_source.startsWith('rule:')) {
+        byRule += 1;
+      } else {
+        // heuristic 及其他来源（后端 rule_source: rule:<名>/heuristic/pending）
+        byHeuristic += 1;
+      }
+    }
+    return { byRule, byHeuristic, llm, manual, pending };
+  }, [preview.items]);
+
+  const rows: (StatRow & { key: string })[] = [
+    { key: 'rule', label: '规则命中', count: derived.byRule, color: 'var(--success)' },
+    {
+      key: 'heuristic',
+      label: '按类型识别',
+      count: derived.byHeuristic,
+      color: 'var(--accent2)',
+    },
+    { key: 'llm', label: 'AI 判断', count: derived.llm, color: 'var(--accent)' },
+    { key: 'manual', label: '手动指定', count: derived.manual, color: 'var(--accent-light)' },
+    { key: 'pending', label: '待确认', count: derived.pending, color: 'var(--warn)' },
+  ];
 
   // 目标结构：分类名去重（排除冲突项与未分类）
   const categories = useMemo(() => {
@@ -60,19 +95,8 @@ export function ClassifyStatsPanel({ preview }: ClassifyStatsPanelProps) {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
   }, [preview.items]);
 
-  const rows: (StatRow & { key: string })[] = [
-    { key: 'rule', label: '规则命中', count: preview.stats.by_rule, color: 'var(--success)' },
-    {
-      key: 'heuristic',
-      label: '按类型识别',
-      count: preview.stats.by_heuristic,
-      color: 'var(--accent2)',
-    },
-    { key: 'llm', label: 'AI 判断', count: llmCount, color: 'var(--accent)' },
-    { key: 'pending', label: '待确认', count: preview.stats.pending, color: 'var(--warn)' },
-  ];
-
-  const rootName = scanPath ? scanPath.split('/').filter(Boolean).pop() : '文件库';
+  // FE-m3：兼容 Windows 反斜杠路径分隔符
+  const rootName = scanPath ? scanPath.split(/[\\/]/).filter(Boolean).pop() : '文件库';
 
   return (
     <div className="stats-panel">

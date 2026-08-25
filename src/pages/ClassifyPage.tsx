@@ -79,6 +79,11 @@ export function ClassifyPage() {
   const noUnorganizedTargets = hasFiles && !hasSelection && unorganizedFiles.length === 0;
   const showPreview =
     preview !== null && status !== ClassifyStatus.Done && status !== ClassifyStatus.Cancelled;
+  // FE-C1/FE-C5：执行中隐藏头部按钮组（进度遮罩盖不住 header）——
+  // 双保险阻止第二个 execute；同时消除头部「取消」（丢弃预览）与遮罩内
+  // 「取消」（保留已执行块）的语义冲突，执行期只保留遮罩内一个取消入口。
+  const executing = status === ClassifyStatus.Running || status === ClassifyStatus.Paused;
+  const showHeaderActions = showPreview && !executing;
 
   // 底部警告条计数（对齐原型「⚠️ N 个冲突文件需处理 · M 个待确认」）
   const conflictCount = preview?.items.filter((i) => i.status === 'Conflict').length ?? 0;
@@ -131,9 +136,18 @@ export function ClassifyPage() {
             </span>
           )}
         </div>
-        {showPreview && (
+        {showHeaderActions && (
           <div className="classify-page__actions">
-            <button type="button" className="btn btn--ghost" onClick={reset}>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => {
+                // FE-M9：取消丢弃预览时同步清空文件页选中——否则残留的
+                // selectedIds 在下次进入分类页时又触发自动生成
+                useFileStore.getState().clearSelection();
+                reset();
+              }}
+            >
               取消
             </button>
             <button type="button" className="btn" onClick={() => handleExecuteClick(false)}>

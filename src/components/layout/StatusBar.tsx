@@ -37,11 +37,7 @@ export function StatusBar() {
         |
       </span>
       <span className="status-bar__text" title="文件数与索引状态">
-        {isLoadingSettings
-          ? '加载中...'
-          : stats
-            ? `${stats.total_files} 文件 · 索引就绪`
-            : '0 文件'}
+        {isLoadingSettings ? '加载中...' : stats ? `${stats.total_files} 文件` : '0 文件'}
       </span>
       <span className="status-bar__spacer" />
       <span className="status-bar__text status-bar__text--muted" title="版本号">
