@@ -37,7 +37,7 @@ clean:
 
 install:
 	npm install
-	source .venv/bin/activate || (python3 -m venv .venv && source .venv/bin/activate)
+	source .venv/bin/activate || (python3.12 -m venv .venv && source .venv/bin/activate)
 	pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
 
 testdata:

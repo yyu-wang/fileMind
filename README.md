@@ -58,7 +58,7 @@ flowchart LR
 
 - **Node.js ≥ 24** 与 npm
 - **Rust ≥ 1.97**（通过 [rustup](https://rustup.rs) 安装）
-- **Python ≥ 3.x**
+- **Python ≥ 3.12**（sidecar 依赖 `typing.Self` 且 pyproject 锁定 py312；`make install` / `bootstrap.sh` 均用 `python3.12` 建 venv）
 - **Ollama**（可选，本地推理所需）—— [安装](https://ollama.com/download)
 - **Tauri CLI**（`cargo install tauri-cli@^2 --locked`）
 

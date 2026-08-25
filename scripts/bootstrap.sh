@@ -7,7 +7,8 @@ echo "=== FileMind 开发环境初始化 ==="
 echo "[1/6] 检查前置依赖..."
 command -v node >/dev/null 2>&1 || { echo "ERROR: Node.js not found. Install: https://nodejs.org"; exit 1; }
 command -v cargo >/dev/null 2>&1 || { echo "ERROR: Rust not found. Install: https://rustup.rs"; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "ERROR: Python 3 not found."; exit 1; }
+# ENG-3：pyproject 锁定 py312，代码用 typing.Self（需 ≥3.11），系统默认 python3 可能过旧
+command -v python3.12 >/dev/null 2>&1 || { echo "ERROR: Python 3.12 not found (pyproject requires py312)."; exit 1; }
 
 NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
 if [ "$NODE_VERSION" -lt 20 ]; then
@@ -17,7 +18,7 @@ fi
 
 echo "  Node.js: $(node -v)"
 echo "  Rust: $(rustc --version)"
-echo "  Python: $(python3 --version)"
+echo "  Python: $(python3.12 --version)"
 
 # 2. 安装前端依赖
 echo "[2/6] 安装前端依赖..."
@@ -25,7 +26,7 @@ npm install
 
 # 3. 安装 Python Sidecar 依赖
 echo "[3/6] 配置 Python 环境..."
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r python-sidecar/requirements.txt
