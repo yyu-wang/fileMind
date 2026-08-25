@@ -72,13 +72,25 @@ def test_directory_recognition_english() -> None:
     assert match.method == "directory"
 
 
-def test_directory_recognition_chinese() -> None:
-    """中文目录命中：/下载 下未知扩展名 → 压缩包。"""
+def test_downloads_directory_no_longer_forced_archive() -> None:
+    """SC-M7：/下载 不再硬判「压缩包」——杂项目录交扩展名/LLM 兜底。"""
     file = make_file("installer.xyz", parent="/Users/me/下载/temp")
-    match = classify_heuristic(file)
-    assert match is not None
-    assert match.category == "压缩包"
-    assert match.method == "directory"
+    assert classify_heuristic(file) is None
+
+
+def test_desktop_directory_no_longer_forced_document() -> None:
+    """SC-M7：/桌面 不再硬判「文档」。"""
+    file = make_file("weird.zzzz", parent="/Users/me/桌面")
+    assert classify_heuristic(file) is None
+
+
+def test_semantic_directories_still_recognized() -> None:
+    """SC-M7 回归：语义成立的目录映射保留（archives/projects）。"""
+    assert classify_heuristic(make_file("backup.xyz", parent="/data/archives")).category == "压缩包"
+    assert (
+        classify_heuristic(make_file("main.xyz", parent="/data/projects/demo")).category
+        == "项目文件"
+    )
 
 
 def test_no_match_returns_none() -> None:

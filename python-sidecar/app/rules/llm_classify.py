@@ -40,6 +40,10 @@ CONTENT_SUMMARY_MAX = 500
 LLM_MODEL = os.environ.get("FILEMIND_LLM_MODEL", "qwen3.8-27b")
 #: Ollama 服务地址（env 可覆盖）
 OLLAMA_HOST = os.environ.get("FILEMIND_OLLAMA_URL", "http://127.0.0.1:11434")
+#: Ollama 请求保活时间（env 可覆盖）
+OLLAMA_KEEP_ALIVE = os.environ.get("FILEMIND_OLLAMA_KEEP_ALIVE", "30m")
+#: Ollama 上下文窗口大小（env 可覆盖）
+OLLAMA_NUM_CTX = int(os.environ.get("FILEMIND_OLLAMA_NUM_CTX", "8192") or "8192")
 
 
 class LLMUnavailableError(Exception):
@@ -263,17 +267,23 @@ def build_classify_prompt(
     return system, user
 
 
-async def call_ollama_json(system: str, user: str) -> str:
+async def call_ollama_json(system: str, user: str, *, model: str = LLM_MODEL) -> str:
     """调用 Ollama 生成严格 JSON 结果（P-01 分类 / P-02 查询改写共用）。
 
     连接/HTTP 失败抛 :class:`LLMUnavailableError`。``format="json"`` 约束输出，
     ``think=False`` 关闭 Qwen3 系列模型的思维链：思考 token 计入
     ``num_predict`` 预算，未关闭时 JSON 会被截断/报 502（非思维模型忽略此参数）。
+
+    Args:
+        system: system 提示词。
+        user: user 提示词。
+        model: 生成模型名（SC-m9：默认 ``LLM_MODEL``，调用方可传 ``request.llm_model``
+            确保改写/自纠与生成用同一模型）。
     """
     client = AsyncClient(host=OLLAMA_HOST)
     try:
         resp = await client.chat(
-            model=LLM_MODEL,
+            model=model,
             messages=[
                 Message(role="system", content=system),
                 Message(role="user", content=user),

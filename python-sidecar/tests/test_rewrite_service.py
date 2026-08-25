@@ -156,7 +156,7 @@ def test_parse_empty_rewritten_query_falls_back() -> None:
 async def test_rewrite_no_history_skips_llm() -> None:
     """无历史 → 不调 LLM，原样返回。"""
 
-    async def fail_if_called(system: str, user: str) -> str:
+    async def fail_if_called(system: str, user: str, **kwargs: object) -> str:
         raise AssertionError("无历史不应调用 LLM")
 
     with mock.patch("app.services.rewrite_service.call_ollama_json", fail_if_called):
@@ -171,7 +171,7 @@ async def test_rewrite_no_history_skips_llm() -> None:
 async def test_rewrite_success() -> None:
     """正常 LLM 返回 → 解析为 RewriteResult。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         return (
             '{"rewritten_query": "2024年Q3的利润是多少", "need_rewrite": true, '
             '"expanded_keywords": ["2024", "Q3", "利润"]}'
@@ -189,7 +189,7 @@ async def test_rewrite_success() -> None:
 async def test_rewrite_timeout_falls_back() -> None:
     """LLM 超时 → 原查询，reason 标记超时。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         raise TimeoutError
 
     with mock.patch("app.services.rewrite_service.call_ollama_json", fake_call):
@@ -203,7 +203,7 @@ async def test_rewrite_timeout_falls_back() -> None:
 async def test_rewrite_llm_unavailable_propagates() -> None:
     """Ollama 不可用 → LLMUnavailableError 冒泡给调用方（T5.6 决定降级）。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         raise LLMUnavailableError("Ollama down")
 
     with (
@@ -216,7 +216,7 @@ async def test_rewrite_llm_unavailable_propagates() -> None:
 async def test_rewrite_parse_failure_falls_back() -> None:
     """LLM 返回垃圾 → 原查询，reason 标记解析失败。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         return "抱歉，我无法完成改写。"
 
     with mock.patch("app.services.rewrite_service.call_ollama_json", fake_call):

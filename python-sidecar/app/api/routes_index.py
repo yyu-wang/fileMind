@@ -27,6 +27,7 @@ from app.services.ingest_service import (
 from app.services.ingest_service import (
     update_paths as update_paths_service,
 )
+from app.services.query_cache import get_query_cache
 
 router = APIRouter(prefix="/index", tags=["索引"])
 
@@ -53,8 +54,15 @@ async def build_index(req: IndexBuildRequest) -> IndexBuildResponse:
     files = [(f.file_id, f.path) for f in req.files]
     try:
         result = await build_index_service(files, req.table_name, mgr, req.embedding_model)
-    except Exception as exc:  # noqa: BLE001 - 上层统一转 503（Embedding 不可用等）
+    except ValueError as exc:
+        # SC-m18：参数错误（dim<1 等）报 400 而非 503
+        raise HTTPException(status_code=400, detail=f"参数错误: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - Embedding 不可用等统一转 503
         raise HTTPException(status_code=503, detail=f"建立索引失败: {exc}") from exc
+
+    # SC-M5：索引数据已变更，查询缓存中的重排结果全部失效（60s TTL 内
+    # 不清会返回过期 sources/chunks）
+    await get_query_cache().clear()
 
     return IndexBuildResponse(
         indexed_count=result.indexed,
@@ -105,4 +113,6 @@ async def update_index_paths(req: IndexPathUpdateRequest) -> IndexPathUpdateResp
     mappings = [(m.file_id, m.path) for m in req.mappings]
     # LanceDB 更新为阻塞 I/O，放线程池避免阻塞事件循环（异步优先）
     updated = await asyncio.to_thread(update_paths_service, req.table_name, mappings, mgr)
+    # SC-M5：路径变更影响检索结果的 file_path 回填，同样清查询缓存
+    await get_query_cache().clear()
     return IndexPathUpdateResponse(updated=updated)

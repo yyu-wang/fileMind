@@ -48,9 +48,14 @@ async def _stream(*chunks: SimpleNamespace) -> AsyncGenerator[SimpleNamespace]:
 @pytest.fixture
 def client() -> Generator[mock.MagicMock]:
     """patch AsyncOpenAI（DeepSeekProvider 构造经父类调用它）。"""
+    # SC-m11：清 lru_cache 防跨测试拿到旧 mock 实例
+    from app.services.providers.openai_provider import _get_cached_client
+
+    _get_cached_client.cache_clear()
     with mock.patch("app.services.providers.openai_provider.AsyncOpenAI") as cls:
         cls.return_value.chat.completions.create = mock.AsyncMock()
         yield cls
+    _get_cached_client.cache_clear()
 
 
 # ------------------------------------------------------------------

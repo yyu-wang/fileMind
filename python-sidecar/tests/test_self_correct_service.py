@@ -119,7 +119,7 @@ def test_parse_empty_corrected_answer_to_none() -> None:
 async def test_validate_success() -> None:
     """正常 LLM 返回 → 解析为 SelfCorrectResult。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         return '{"is_correct": true, "issues": [], "corrected_answer": null}'
 
     with mock.patch("app.services.self_correct_service.call_ollama_json", fake_call):
@@ -132,7 +132,7 @@ async def test_validate_success() -> None:
 async def test_validate_timeout_fail_open() -> None:
     """LLM 超时 → is_correct=true（fail-open），reason 标记超时。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         raise TimeoutError
 
     with mock.patch("app.services.self_correct_service.call_ollama_json", fake_call):
@@ -145,7 +145,7 @@ async def test_validate_timeout_fail_open() -> None:
 async def test_validate_llm_unavailable_propagates() -> None:
     """Ollama 不可用 → LLMUnavailableError 冒泡给路由（捕获后跳过纠正）。"""
 
-    async def fake_call(system: str, user: str) -> str:
+    async def fake_call(system: str, user: str, **kwargs: object) -> str:
         raise LLMUnavailableError("Ollama down")
 
     with (

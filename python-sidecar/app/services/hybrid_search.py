@@ -14,6 +14,7 @@ RRF 公式（UT-PY-002 门控，k=60）：
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -81,8 +82,12 @@ async def hybrid_search(
     Returns:
         按 ``rrf_score`` 降序的融合命中；向量表不存在时退化为纯 FTS 排序。
     """
-    query_vec = await embed_text(QUERY_INSTRUCTION + query, model=model)
-    vector_hits = manager.search_vectors(table_name, query_vec, top_k=top_k)
+    # SC-m24：bge-large-zh 检索需加指令前缀（BAAI 模型卡要求），其他模型不需要
+    instruction = QUERY_INSTRUCTION if model.startswith("bge-large") else ""
+    query_vec = await embed_text(instruction + query, model=model)
+    # SC-C2：ANN 检索是同步 CPU/IO 混合操作（表大后单次几十~几百 ms），
+    # 下沉线程池避免卡住事件循环（影响并发请求与流式 token 节奏）
+    vector_hits = await asyncio.to_thread(manager.search_vectors, table_name, query_vec, top_k)
     fused = rrf_fusion([[h.chunk_id for h in vector_hits], list(fts_chunk_ids)], k=k)
     meta = {h.chunk_id: h for h in vector_hits}
     enriched: list[FusedHit] = []

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field, ValidationError
 
 from app.rules.llm_classify import (
+    LLM_MODEL,
     OLLAMA_TIMEOUT,
     LLMUnavailableError,
     call_ollama_json,
@@ -212,6 +213,8 @@ async def rewrite_query(
     query: str,
     history: Sequence[ConversationTurn],
     provider: LLMProvider | None = None,
+    *,
+    model: str = LLM_MODEL,
 ) -> RewriteResult:
     """对用户查询执行 P-02 改写（代词消解 + 关键词扩展）。
 
@@ -242,7 +245,10 @@ async def rewrite_query(
             except CloudUnavailableError as exc:
                 raise LLMUnavailableError(f"云端推理不可用: {exc}") from exc
         else:
-            raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
+            # SC-m9：本地路径传 model 确保改写与生成用同一模型
+            raw = await asyncio.wait_for(
+                call_ollama_json(system, user, model=model), timeout=OLLAMA_TIMEOUT
+            )
     except TimeoutError:
         return _fallback(query, f"LLM 超时（>{OLLAMA_TIMEOUT}s）")
     return parse_rewrite_response(raw, query)

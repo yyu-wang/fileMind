@@ -157,9 +157,10 @@ class ChatStreamRequest(BaseModel):
     embedding_model: str = "bge-large-zh-v1.5"
     inference_mode: str = "local"
     llm_model: str = "qwen3.8-27b"
-    top_k: int = 20
-    rerank_top_k: int = 5
-    max_retries: int = 2
+    # SC-m15：加 ge=1 约束——客户端传 0 会导致 FTS LIMIT 0 返回空
+    top_k: int = Field(default=20, ge=1)
+    rerank_top_k: int = Field(default=5, ge=1)
+    max_retries: int = Field(default=2, ge=1)
     fts_chunks: list[ChatChunkInput] = Field(default_factory=list)
     session_id: str | None = None
 
@@ -200,7 +201,8 @@ class SearchRequest(BaseModel):
     """
 
     query: str
-    top_k: int = 20
+    # SC-m15：加 ge=1 约束
+    top_k: int = Field(default=20, ge=1)
     mode: str = "fts"  # fts | vector | hybrid
 
 

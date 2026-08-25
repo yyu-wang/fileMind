@@ -25,6 +25,7 @@ from app.services.providers.openai_provider import (  # noqa: E402
     CLOUD_PROXY_BASE_URL,
     CloudUnavailableError,
     OpenAIProvider,
+    _get_cached_client,
 )
 
 if TYPE_CHECKING:
@@ -54,9 +55,12 @@ async def _stream(*chunks: SimpleNamespace) -> AsyncGenerator[SimpleNamespace]:
 @pytest.fixture
 def client() -> Generator[mock.MagicMock]:
     """patch AsyncOpenAI，返回 mock 类（构造参数记于 ``call_args``，create 记于子 mock）。"""
+    # SC-m11：清 lru_cache 防跨测试拿到旧 mock 实例
+    _get_cached_client.cache_clear()
     with mock.patch("app.services.providers.openai_provider.AsyncOpenAI") as cls:
         cls.return_value.chat.completions.create = mock.AsyncMock()
         yield cls
+    _get_cached_client.cache_clear()
 
 
 # ------------------------------------------------------------------

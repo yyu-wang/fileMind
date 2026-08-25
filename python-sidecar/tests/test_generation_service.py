@@ -202,11 +202,12 @@ def test_build_prompt_cloud_variant_consistent_with_local() -> None:
 
 def test_build_prompt_cloud_truncates_context_by_model() -> None:
     """传入 model → 检索上下文按模型窗口截断（Token 长度适配）。"""
-    # 每片段正文被 _context_block 截到 500 字符，需足够多片段才超窗
-    many_chunks = [chunk(i, text="x" * 500) for i in range(1, 101)]
+    # SC-m7：truncate_context 按 4 chars/token 换算，需更多片段才超窗
+    # qwen3.8-27b: (32000-2000)*4 = 120000 chars；300 片段 * 500 = 150000 > 120000
+    many_chunks = [chunk(i, text="x" * 500) for i in range(1, 301)]
     _, cloud_user = build_rag_prompt("查询", many_chunks, version="cloud", model="qwen3.8-27b")
     assert "[上下文已截断]" in cloud_user
-    # 大窗口模型不触发截断
+    # 大窗口模型不触发截断（gpt-4o: (128000-2000)*4 = 504000 chars）
     _, local_user = build_rag_prompt("查询", many_chunks, model="gpt-4o")
     assert "[上下文已截断]" not in local_user
 

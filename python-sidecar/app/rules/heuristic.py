@@ -183,8 +183,8 @@ DIRECTORY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("documents", "文档"),
     ("docs", "文档"),
     ("文稿", "文档"),
-    ("desktop", "文档"),
-    ("桌面", "文档"),
+    # SC-M7：删除 desktop/桌面——macOS 杂项文件最集中的目录，
+    # 把未知扩展名全判「文档」是大面积误分类，交扩展名/LLM 兜底
     ("文档", "文档"),
     ("videos", "视频"),
     ("video", "视频"),
@@ -195,8 +195,8 @@ DIRECTORY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("audio", "音频"),
     ("音乐", "音频"),
     ("音频", "音频"),
-    ("downloads", "压缩包"),
-    ("下载", "压缩包"),
+    # SC-M7：删除 downloads/下载——同上，下载目录内容品类混杂，
+    # 语义成立的 archives/压缩包 保留
     ("archives", "压缩包"),
     ("archive", "压缩包"),
     ("压缩包", "压缩包"),

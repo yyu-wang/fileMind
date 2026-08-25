@@ -72,7 +72,9 @@ def truncate_context(context: str, model: str) -> str:
     Returns:
         未超窗返回原样；超窗保留前 ``get_max_context(model)`` 字符并追加截断标记。
     """
-    max_chars = get_max_context(model)
+    # SC-m7：get_max_context 返回 token 数，按 ~4 chars/token 近似换算为字符数
+    # （英文偏保守多截，中文偏激进少截，宁可多截不漏截）
+    max_chars = get_max_context(model) * 4
     if len(context) <= max_chars:
         return context
     return context[:max_chars] + "\n[上下文已截断]"

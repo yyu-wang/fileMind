@@ -17,12 +17,19 @@ Chat Completions 请求体 POST 到本地代理 ``127.0.0.1:8766/cloud-proxy/ope
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from openai import AsyncOpenAI, Omit, OpenAIError
 from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
 from openai.types.shared_params import ResponseFormatJSONObject
 
+from app.core.cloud_mask import (
+    CloudMasker,
+    content_max,
+    is_cloud_masking_active,
+    log_cloud_call,
+)
 from app.services.cloud_provider import (
     CloudUnavailableError,
     LLMProvider,
@@ -40,6 +47,25 @@ OPENAI_MODEL = os.environ.get("FILEMIND_OPENAI_MODEL", "gpt-4o")
 CLOUD_TIMEOUT_S = 120.0
 #: 代理共享 token 的 env 键（cloud_proxy.rs 鉴权头同名）
 _CLOUD_TOKEN_ENV = "FILEMIND_CLOUD_PROXY_TOKEN"
+
+
+# SC-m11：AsyncOpenAI 客户端模块级缓存——每次 new OpenAIProvider 会新建
+# AsyncOpenAI（内部连接池/fd），不缓存会导致资源泄漏
+@lru_cache(maxsize=4)
+def _get_cached_client(
+    base_url: str,
+    token: str,
+    timeout: float,
+    max_retries: int,
+) -> AsyncOpenAI:
+    """按配置缓存 AsyncOpenAI 实例（连接池复用）。lru_cache 按参数组合键。"""
+    return AsyncOpenAI(
+        base_url=base_url,
+        api_key="filemind-proxy",  # 占位：真实 Key 由代理从 Keychain 注入
+        default_headers={"x-filemind-token": token},
+        timeout=timeout,
+        max_retries=max_retries,
+    )
 
 
 class OpenAIProvider(LLMProvider):
@@ -77,13 +103,9 @@ class OpenAIProvider(LLMProvider):
         """
         self._model = model
         self._default_max_tokens = default_max_tokens
-        self._client = AsyncOpenAI(
-            base_url=base_url,
-            api_key="filemind-proxy",  # 占位：真实 Key 由代理从 Keychain 注入
-            default_headers={"x-filemind-token": token or os.environ.get(_CLOUD_TOKEN_ENV, "")},
-            timeout=timeout,
-            max_retries=max_retries,
-        )
+        # SC-m11：用模块级缓存避免每次 new provider 泄漏 AsyncOpenAI 连接池
+        effective_token = token or os.environ.get(_CLOUD_TOKEN_ENV, "")
+        self._client = _get_cached_client(base_url, effective_token, timeout, max_retries)
 
     async def generate(
         self,
@@ -107,6 +129,10 @@ class OpenAIProvider(LLMProvider):
         response_format = ResponseFormatJSONObject(type="json_object") if json_mode else Omit()
         # 调用方未显式指定时回落 provider 级默认（DeepSeek 中文长回答防截断）
         effective_max_tokens = max_tokens if max_tokens is not None else self._default_max_tokens
+        # SC-m12：云端调用审计——记录 Provider 与发送数据量（不含内容/文件名）
+        if is_cloud_masking_active():
+            masker = CloudMasker(content_max())
+            log_cloud_call(self.__class__.__name__, masker)
         try:
             resp = await self._client.chat.completions.create(
                 model=self._model,
@@ -144,6 +170,10 @@ class OpenAIProvider(LLMProvider):
         """
         messages = self._build_messages(system, user)
         effective_max_tokens = max_tokens if max_tokens is not None else self._default_max_tokens
+        # SC-m12：云端调用审计——记录 Provider 与发送数据量（不含内容/文件名）
+        if is_cloud_masking_active():
+            masker = CloudMasker(content_max())
+            log_cloud_call(self.__class__.__name__, masker)
         try:
             stream = await self._client.chat.completions.create(
                 model=self._model,

@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -25,7 +27,13 @@ import httpx
 from ollama import AsyncClient, Message, Options, ResponseError
 
 from app.core.cloud_mask import CloudMasker, content_max, is_cloud_masking_active
-from app.rules.llm_classify import LLM_MODEL, OLLAMA_HOST, LLMUnavailableError
+from app.rules.llm_classify import (
+    LLM_MODEL,
+    OLLAMA_HOST,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_NUM_CTX,
+    LLMUnavailableError,
+)
 from app.services.provider_factory import truncate_context
 
 if TYPE_CHECKING:
@@ -36,6 +44,9 @@ if TYPE_CHECKING:
 
 #: P-03 单个检索片段内容截断长度（对齐输入变量 source_N_content「限 500 字符」）
 CONTENT_MAX = 500
+
+#: SC-m8：本地流式生成总量超时（秒）；Ollama 卡死时防后台流无限挂起
+LOCAL_STREAM_TIMEOUT = int(os.environ.get("FILEMIND_LOCAL_STREAM_TIMEOUT", "180") or "180")
 
 #: 引用标注模式：``[N]``
 CITATION_PATTERN = re.compile(r"\[(\d+)\]")
@@ -204,6 +215,27 @@ def build_rag_prompt(
     return system, user
 
 
+#: 模块级惰性单例 AsyncClient（httpx 连接池复用，避免每次生成重建连接）
+_client: AsyncClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client() -> AsyncClient:
+    """返回模块级 AsyncClient 单例（并发安全，双重检查 + asyncio.Lock）。"""
+    global _client
+    if _client is None:
+        async with _client_lock:
+            if _client is None:
+                _client = AsyncClient(host=OLLAMA_HOST)
+    return _client
+
+
+def reset_clients() -> None:
+    """重置客户端单例（仅测试用）。"""
+    global _client
+    _client = None
+
+
 async def stream_generate(
     system: str,
     user: str,
@@ -231,7 +263,7 @@ async def stream_generate(
         async for delta in provider.generate_stream(system, user, temperature=0.2):
             yield delta
         return
-    client = AsyncClient(host=OLLAMA_HOST)
+    client = await _get_client()
     try:
         # chat() 是 async def，stream=True 时 await 后得到流式迭代器；
         # ollama 类型 stub 已标 return 为 AsyncIterator[ChatResponse]，无需 cast
@@ -244,15 +276,21 @@ async def stream_generate(
             stream=True,
             # 关闭 qwen3 思维链：思考 token 混入回答流会破坏引用标注（同 P-01）
             think=False,
-            options=Options(temperature=0.2),
+            # keep_alive 是 chat 顶层参数（模型常驻，T10.2），num_ctx 在 Options 里
+            keep_alive=OLLAMA_KEEP_ALIVE,
+            options=Options(temperature=0.2, num_ctx=OLLAMA_NUM_CTX),
         )
-        async for chunk in stream:
-            message = chunk.message
-            if message is None:
-                continue
-            content = message.content
-            if content:
-                yield content
+        # SC-m8：本地流式加 180s 总量超时——Ollama GPU 死锁等卡死时防后台流无限挂起
+        async with asyncio.timeout(LOCAL_STREAM_TIMEOUT):
+            async for chunk in stream:
+                message = chunk.message
+                if message is None:
+                    continue
+                content = message.content
+                if content:
+                    yield content
+    except TimeoutError as exc:
+        raise LLMUnavailableError(f"Ollama 流式生成超时（>{LOCAL_STREAM_TIMEOUT}s）") from exc
     except (httpx.HTTPError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 流式生成失败: {exc}") from exc
 

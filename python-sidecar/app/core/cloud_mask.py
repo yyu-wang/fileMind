@@ -123,6 +123,9 @@ class CloudMasker:
 
     def resolve(self, key: str) -> MaskedFile | None:
         """DoD 还原：按 key 取回真实文件名/路径；未知 key 返回 None。"""
+        # SC-m12：Rust cloud_proxy 做自己的 DoD 映射，不经 sidecar；
+        # 保留方法供未来 sidecar 直连云端时接线
+        # TODO: Rust 侧 DoD 还原未走 sidecar，本方法当前无调用方
         return self._by_key.get(key)
 
     def stats(self) -> dict[str, int]:

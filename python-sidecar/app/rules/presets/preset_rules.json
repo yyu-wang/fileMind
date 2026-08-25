@@ -10,7 +10,15 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["pdf", "doc", "docx", "txt", "md", "rtf", "odt"]
+        "value": [
+          "pdf",
+          "doc",
+          "docx",
+          "txt",
+          "md",
+          "rtf",
+          "odt"
+        ]
       },
       "action": {
         "category": "文档"
@@ -24,7 +32,12 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["xls", "xlsx", "csv", "ods"]
+        "value": [
+          "xls",
+          "xlsx",
+          "csv",
+          "ods"
+        ]
       },
       "action": {
         "category": "表格"
@@ -38,7 +51,18 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "heic", "heif", "tiff"]
+        "value": [
+          "jpg",
+          "jpeg",
+          "png",
+          "gif",
+          "bmp",
+          "svg",
+          "webp",
+          "heic",
+          "heif",
+          "tiff"
+        ]
       },
       "action": {
         "category": "图片"
@@ -52,7 +76,15 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm"]
+        "value": [
+          "mp4",
+          "avi",
+          "mkv",
+          "mov",
+          "wmv",
+          "flv",
+          "webm"
+        ]
       },
       "action": {
         "category": "视频"
@@ -66,7 +98,14 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["mp3", "wav", "flac", "aac", "ogg", "m4a"]
+        "value": [
+          "mp3",
+          "wav",
+          "flac",
+          "aac",
+          "ogg",
+          "m4a"
+        ]
       },
       "action": {
         "category": "音频"
@@ -80,7 +119,21 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["py", "js", "ts", "rs", "go", "java", "cpp", "c", "h", "rb", "php", "swift", "kt"]
+        "value": [
+          "py",
+          "js",
+          "ts",
+          "rs",
+          "go",
+          "java",
+          "cpp",
+          "c",
+          "h",
+          "rb",
+          "php",
+          "swift",
+          "kt"
+        ]
       },
       "action": {
         "category": "代码"
@@ -94,7 +147,15 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"]
+        "value": [
+          "zip",
+          "rar",
+          "7z",
+          "tar",
+          "gz",
+          "bz2",
+          "xz"
+        ]
       },
       "action": {
         "category": "压缩包"
@@ -108,7 +169,14 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["psd", "ai", "skp", "fig", "xd", "sketch"]
+        "value": [
+          "psd",
+          "ai",
+          "skp",
+          "fig",
+          "xd",
+          "sketch"
+        ]
       },
       "action": {
         "category": "设计文件"
@@ -122,7 +190,15 @@
       "condition": {
         "field": "file_type",
         "operator": "in",
-        "value": ["json", "xml", "yaml", "yml", "sql", "db", "sqlite"]
+        "value": [
+          "json",
+          "xml",
+          "yaml",
+          "yml",
+          "sql",
+          "db",
+          "sqlite"
+        ]
       },
       "action": {
         "category": "数据文件"
@@ -131,7 +207,7 @@
     {
       "id": "preset_name_date_001",
       "name": "日期命名文件",
-      "priority": 70,
+      "priority": 95,
       "enabled": true,
       "condition": {
         "field": "file_name",
@@ -146,12 +222,12 @@
     {
       "id": "preset_name_screenshot_001",
       "name": "截图文件",
-      "priority": 70,
+      "priority": 94,
       "enabled": true,
       "condition": {
         "field": "file_name",
         "operator": "regex",
-        "value": "^(截图|Screenshot|Screen Shot|屏幕截图)[\\s\\-_\\d]"
+        "value": "^(截图|Screenshot|Screen Shot|屏幕截图)[\\s\\-_.\\d]"
       },
       "action": {
         "category": "截图"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 from typing import TYPE_CHECKING
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -28,7 +29,13 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
 # 豁免路由：握手前必须可访问，/health 用于存活探测
-EXEMPT_PATHS: set[str] = {"/handshake", "/health", "/docs", "/openapi.json", "/redoc"}
+# SC-m4：/docs /openapi.json /redoc 不再无条件豁免（信息暴露）；dev 模式可用 FILEMIND_DEV=1 恢复
+EXEMPT_PATHS: set[str] = {"/handshake", "/health"}
+if os.environ.get("FILEMIND_DEV", "0") == "1":
+    EXEMPT_PATHS |= {"/docs", "/openapi.json", "/redoc"}
+
+# SC-m3：请求体大小上限（1MB；正常 JSON 请求体远小于此）
+MAX_BODY_SIZE = 1024 * 1024
 
 
 def _sign(psk: bytes, message: str) -> str:
@@ -37,9 +44,13 @@ def _sign(psk: bytes, message: str) -> str:
 
 
 def _verify(psk: bytes, message: str, signature_hex: str) -> bool:
-    """常量时间验证签名（防时序攻击）。"""
+    """常量时间验证签名（防时序攻击）。
+
+    两侧统一 encode 为 bytes 再比较：``compare_digest`` 收到非 ASCII 的
+    str 会抛 TypeError，恶意构造的签名头不应把验签打成 500（SC-M1）。
+    """
     expected = _sign(psk, message)
-    return hmac.compare_digest(expected, signature_hex)
+    return hmac.compare_digest(expected.encode("utf-8"), signature_hex.encode("utf-8"))
 
 
 def _build_request_canonical(method: str, path: str, body: str, seq: int) -> str:
@@ -78,26 +89,40 @@ class HMACMiddleware(BaseHTTPMiddleware):
         if not signature or not seq_str:
             return _error_response(401, "SEC-E-002:缺少签名头")
 
-        # 解析序号
-        try:
-            seq = int(seq_str)
-        except ValueError:
+        # 解析序号：严格 ASCII 十进制。int() 会接受 "+5"/" 5"/全角数字等
+        # 宽松格式，canonical 两侧不一致会造成验签语义混乱（SC-M1）
+        if not (seq_str.isascii() and seq_str.isdigit()):
             return _error_response(401, "SEC-E-002:序号格式无效")
+        seq = int(seq_str)
 
-        # 序号防重放：必须严格递增
+        # SC-m4：OPTIONS 预检直接放行（CORS 在 HMAC 之后，OPTIONS 无签名头会 401）
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # 先读请求体（POST/PUT/PATCH 才有 body，GET 为空）。
+        # 这是本函数在 seq 校验前唯一的挂起点：必须放在原子段之外，
+        # 否则 await 期间事件循环可切走执行并发请求（SC-M1 竞态根源）
+        body_bytes = await request.body()
+        # SC-m3：body 大小上限 1MB（超限拒绝防资源耗尽）
+        if len(body_bytes) > MAX_BODY_SIZE:
+            return _error_response(413, "SEC-E-002:请求体过大")
+        # SC-m3：decode 加保护——恶意非 UTF-8 body 不应打成 500
+        try:
+            body = body_bytes.decode("utf-8") if body_bytes else ""
+        except UnicodeDecodeError:
+            return _error_response(400, "SEC-E-002:请求体非 UTF-8")
+
+        # ---- 原子段：seq 读取 → 判断 → 验签 → 写入，中间无 await ----
+        # asyncio 单线程模型下，无挂起点即不会被并发协程插入，
+        # 两个同 seq 的并发请求只有一个能通过检查并写入 last_seq
         if seq <= state.get_last_seq():
             return _error_response(401, "SEC-E-002:序号重放或乱序")
 
-        # 读取请求体（POST/PUT/PATCH 才有 body，GET 为空）
-        body_bytes = await request.body()
-        body = body_bytes.decode("utf-8") if body_bytes else ""
-
-        # 验签
         canonical = _build_request_canonical(request.method, path, body, seq)
         if not _verify(psk, canonical, signature):
             return _error_response(401, "SEC-E-002:签名验证失败")
 
-        # 验签通过，更新 last_seq
         state.set_last_seq(seq)
+        # ---- 原子段结束 ----
 
         return await call_next(request)

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field, ValidationError
 
 from app.rules.llm_classify import (
+    LLM_MODEL,
     OLLAMA_TIMEOUT,
     LLMUnavailableError,
     call_ollama_json,
@@ -218,6 +219,8 @@ async def validate_answer(
     context_blocks: str,
     answer: str,
     provider: LLMProvider | None = None,
+    *,
+    model: str = LLM_MODEL,
 ) -> SelfCorrectResult:
     """对生成的回答执行 P-04 校验。
 
@@ -247,7 +250,10 @@ async def validate_answer(
             except CloudUnavailableError as exc:
                 raise LLMUnavailableError(f"云端推理不可用: {exc}") from exc
         else:
-            raw = await asyncio.wait_for(call_ollama_json(system, user), timeout=OLLAMA_TIMEOUT)
+            # SC-m9：本地路径传 model 确保自纠与生成用同一模型
+            raw = await asyncio.wait_for(
+                call_ollama_json(system, user, model=model), timeout=OLLAMA_TIMEOUT
+            )
     except TimeoutError:
         return _fallback("超时")
     return parse_self_correct_response(raw)

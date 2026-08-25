@@ -35,6 +35,9 @@ _KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
+# SC-m26：URL 模式——先保护 URL，避免路径正则误匹配 URL 中的路径段
+_URL_PATTERN = re.compile(r'https?://[^\s"\'(),;:]+')
+
 # 绝对路径型：POSIX（≥2 段）+ Windows 盘符两种写法。段内排除空白与常见标点，
 # 避免跨词贪心；含空格的路径由调用侧 sanitize_path 兜底。
 _PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -61,17 +64,29 @@ def redact(text: str) -> str:
     """
     for pattern in _KEY_PATTERNS:
         text = pattern.sub(_REDACTED, text)
+    # SC-m26：URL 先保护——路径正则会误匹配 URL 中的 /path 段
+    urls = _URL_PATTERN.findall(text)
+    placeholders: dict[str, str] = {}
+    for i, url in enumerate(urls):
+        ph = f"\x00URL{i}\x00"
+        placeholders[ph] = url
+        text = text.replace(url, ph)
     for pattern in _PATH_PATTERNS:
         text = pattern.sub(lambda m: sanitize_path(m.group(0)), text)
+    for ph, url in placeholders.items():
+        text = text.replace(ph, url)
     return text
 
 
 @runtime_checkable
 class SidecarLogger(Protocol):
-    """Logger duck-type：.info/.warning(msg, **kwargs) 是唯一承诺的 API。"""
+    """Logger duck-type：.info/.warning/.error/.exception/.debug 是承诺的 API。"""
 
     def info(self, msg: str, **kwargs: object) -> None: ...
     def warning(self, msg: str, **kwargs: object) -> None: ...
+    def error(self, msg: str, **kwargs: object) -> None: ...
+    def exception(self, msg: str, **kwargs: object) -> None: ...
+    def debug(self, msg: str, **kwargs: object) -> None: ...
 
 
 class _MaskingLogger:
@@ -89,6 +104,16 @@ class _MaskingLogger:
 
     def warning(self, msg: str, **kwargs: object) -> None:
         self._inner.warning(redact(msg), **self._mask_kwargs(kwargs))
+
+    # SC-m26：补 error/exception/debug——原仅 info/warning 脱敏，error 日志会泄漏
+    def error(self, msg: str, **kwargs: object) -> None:
+        self._inner.error(redact(msg), **self._mask_kwargs(kwargs))
+
+    def exception(self, msg: str, **kwargs: object) -> None:
+        self._inner.exception(redact(msg), **self._mask_kwargs(kwargs))
+
+    def debug(self, msg: str, **kwargs: object) -> None:
+        self._inner.debug(redact(msg), **self._mask_kwargs(kwargs))
 
     @staticmethod
     def _mask_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
@@ -120,6 +145,16 @@ class _StdlibLogger:
 
     def warning(self, msg: str, **kwargs: object) -> None:
         self._logger.warning(_format_kv(msg, kwargs))
+
+    # SC-m26：补 error/exception/debug
+    def error(self, msg: str, **kwargs: object) -> None:
+        self._logger.error(_format_kv(msg, kwargs))
+
+    def exception(self, msg: str, **kwargs: object) -> None:
+        self._logger.exception(_format_kv(msg, kwargs))
+
+    def debug(self, msg: str, **kwargs: object) -> None:
+        self._logger.debug(_format_kv(msg, kwargs))
 
 
 def getLogger(name: str = "filemind.sidecar") -> SidecarLogger:  # noqa: N802 - 复刻 logging.getLogger 命名

@@ -1,18 +1,16 @@
+import time
+
 from fastapi import APIRouter
 
 from app.models import HealthResponse
 
 router = APIRouter(prefix="/health", tags=["健康检查"])
 
-_START_TIME = None
+# SC-m1：模块导入时即记录启动时间（原 None+首次请求设值导致首问 uptime≈0）
+_START_TIME = time.time()
 
 
 def _get_uptime() -> float:
-    import time
-
-    global _START_TIME
-    if _START_TIME is None:
-        _START_TIME = time.time()
     return time.time() - _START_TIME
 
 

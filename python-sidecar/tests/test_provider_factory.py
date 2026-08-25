@@ -51,7 +51,8 @@ def test_truncate_context_within_window_unchanged() -> None:
 
 def test_truncate_context_over_window_keeps_prefix_and_marker() -> None:
     """超窗保留前缀 + 截断标记。"""
-    max_chars = get_max_context("qwen3.8-27b")
+    # SC-m7：truncate_context 按 4 chars/token 近似换算
+    max_chars = get_max_context("qwen3.8-27b") * 4
     long = "x" * (max_chars + 1000)
     assert truncate_context(long, "qwen3.8-27b") == long[:max_chars] + "\n[上下文已截断]"
 

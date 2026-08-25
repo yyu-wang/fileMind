@@ -49,14 +49,23 @@ STATUS_UNCLASSIFIED = "unclassified"
 CATEGORY_UNCLASSIFIED = "未分类"
 
 
-def build_default_engine() -> RuleEngine:
-    """构建加载预置规则的默认引擎。
+# SC-m22：模块级单例——每请求 load() 同步读盘改为 reload_if_changed（mtime 检测）
+_default_engine: RuleEngine | None = None
 
-    每次请求全新加载，天然支持规则热更新（读取当前 JSON 文件）。
+
+def build_default_engine() -> RuleEngine:
+    """构建加载预置规则的默认引擎（单例 + mtime 热更新）。
+
+    首次调用 load()，后续调用 reload_if_changed()（文件 mtime 变化时才重载）。
+    线程安全：_rules 为不可变 tuple，整体替换后并发读取安全。
     """
-    engine = RuleEngine(PRESET_RULES_PATH)
-    engine.load()
-    return engine
+    global _default_engine
+    if _default_engine is None:
+        _default_engine = RuleEngine(PRESET_RULES_PATH)
+        _default_engine.load()
+    else:
+        _default_engine.reload_if_changed()
+    return _default_engine
 
 
 def _to_file_meta(item: ClassifyItem) -> FileMeta:
@@ -74,6 +83,8 @@ def _rule_item(item: ClassifyItem, rule_match: RuleMatch) -> dict[str, object]:
     return {
         "file_name": item.name,
         "category": rule_match.category,
+        # SC-m23：输出 sub_category（RuleMatch 有此字段但 _rule_item 未传）
+        "sub_category": rule_match.sub_category,
         "confidence": RULE_CONFIDENCE,
         "status": STATUS_CLASSIFIED,
         "method": "rule",

@@ -45,8 +45,9 @@ async def switch_model(body: EmbeddingSwitchRequest) -> dict[str, object]:
             current_model=body.current_model,
             indexed_files=body.indexed_files,
             lancedb=state.get_lancedb(),
-            current_version=current_version
-            or embedding_models.get_model_info(body.new_model).default_version,
+            # SC-m2：None 时不再静默回退新模型默认版本（误导 precheck 判定无需重建），
+            # 传 0 让 precheck 自然检测到 version 不匹配并触发重建
+            current_version=current_version or 0,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

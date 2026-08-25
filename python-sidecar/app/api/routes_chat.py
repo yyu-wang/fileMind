@@ -39,6 +39,7 @@ from app.services.generation_service import (
 )
 from app.services.hybrid_search import hybrid_search
 from app.services.provider_factory import resolve_cloud_provider
+from app.services.query_cache import get_query_cache
 from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
 from app.services.rewrite_service import ConversationTurn, rewrite_query
 from app.services.self_correct_service import validate_answer
@@ -68,6 +69,23 @@ def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
     return [ConversationTurn(user=turn.user, assistant=turn.assistant) for turn in history]
 
 
+def _cache_key(request: ChatStreamRequest) -> tuple[object, ...]:
+    """检索缓存 key：覆盖影响检索结果的输入。
+
+    FTS 命中（``fts_chunks``）由同一 query 在 Rust 侧确定性产生，不入 key；
+    ``llm_model`` 只影响生成阶段，不影响检索结果。
+    """
+    history = tuple((turn.user, turn.assistant) for turn in request.history)
+    return (
+        request.query,
+        history,
+        request.table_name,
+        request.embedding_model,
+        request.top_k,
+        request.rerank_top_k,
+    )
+
+
 async def _retrieve(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
@@ -90,9 +108,22 @@ async def _retrieve(
         LLMUnavailableError / EmbeddingUnavailableError / RerankUnavailableError:
             推理（改写 / 向量化 / 重排）不可用。
     """
-    rewritten = await rewrite_query(request.query, _to_turns(request.history), provider=provider)
-    rewritten_query = rewritten.rewritten_query
+    # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
+    cache = get_query_cache()
+    cache_key = _cache_key(request)
+    cached = await cache.get(cache_key)
+    if cached is not None:
+        logger.info("chat.retrieve.cache_hit")
+        return cached
 
+    t_stage = time.monotonic()
+    rewritten = await rewrite_query(
+        request.query, _to_turns(request.history), provider=provider, model=request.llm_model
+    )
+    rewritten_query = rewritten.rewritten_query
+    logger.info("chat.retrieve.rewrite", ms=_elapsed_ms(t_stage))
+
+    t_stage = time.monotonic()
     fused = await hybrid_search(
         rewritten_query,
         [c.chunk_id for c in request.fts_chunks],
@@ -101,6 +132,7 @@ async def _retrieve(
         model=request.embedding_model,
         top_k=request.top_k,
     )
+    logger.info("chat.retrieve.hybrid_search", ms=_elapsed_ms(t_stage))
 
     # FTS-only 命中的原文在 Rust 侧（SQLite），用请求 fts_chunks 补全
     text_by_id = {c.chunk_id: c.text for c in request.fts_chunks}
@@ -114,22 +146,36 @@ async def _retrieve(
         for hit in enriched
         if hit.chunk_text
     ]
+    t_stage = time.monotonic()
     reranked = await rerank(rewritten_query, candidates, top_k=request.rerank_top_k)
+    logger.info("chat.retrieve.rerank", ms=_elapsed_ms(t_stage))
 
     hit_by_id = {h.chunk_id: h for h in enriched}
     sources: list[dict[str, object]] = []
     chunks: list[SourceChunk] = []
-    for idx, result in enumerate(reranked, start=1):
-        hit = hit_by_id.get(result.chunk_id)
+    for idx, reranked_hit in enumerate(reranked, start=1):
+        hit = hit_by_id.get(reranked_hit.chunk_id)
         text = hit.chunk_text if hit else ""
-        file_name = Path(result.file_path).name if result.file_path else ""
+        file_name = Path(reranked_hit.file_path).name if reranked_hit.file_path else ""
         sources.append(
-            {"id": idx, "file_name": file_name, "page": result.page, "score": result.score}
+            {
+                "id": idx,
+                "file_name": file_name,
+                "page": reranked_hit.page,
+                "score": reranked_hit.score,
+            }
         )
         chunks.append(
-            SourceChunk(citation_id=idx, file_name=file_name, page=result.page, text=text)
+            SourceChunk(
+                citation_id=idx,
+                file_name=file_name,
+                page=reranked_hit.page,
+                text=text,
+            )
         )
-    return rewritten_query, len(candidates), sources, chunks
+    retrieved = (rewritten_query, len(candidates), sources, chunks)
+    await cache.set(cache_key, retrieved)
+    return retrieved
 
 
 def _sse(event: str, data: dict[str, object]) -> str:
@@ -161,12 +207,22 @@ async def _rag_event_stream(
     provider = resolve_cloud_provider(request.llm_model)
     version = provider.version if provider is not None else "local"
 
+    retrieve_started = time.monotonic()
     try:
         rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
     except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
         logger.warning("chat.retrieve_failed", error=str(exc))
-        yield ("error", {"code": "OLLAMA_UNAVAILABLE", "message": str(exc)})
+        # SC-m10：区分错误码——LLM/Embedding/Rerank 不可用不应统一报 OLLAMA_UNAVAILABLE
+        if isinstance(exc, EmbeddingUnavailableError):
+            code = "EMBEDDING_UNAVAILABLE"
+        elif isinstance(exc, RerankUnavailableError):
+            code = "RERANK_UNAVAILABLE"
+        else:
+            code = "LLM_UNAVAILABLE"
+        yield ("error", {"code": code, "message": str(exc)})
         return
+    retrieve_ms = _elapsed_ms(retrieve_started)
+    logger.info("chat.retrieve.done", ms=retrieve_ms)
 
     yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
     yield (
@@ -178,7 +234,12 @@ async def _rag_event_stream(
         yield ("token", {"content": NOT_FOUND_ANSWER})
         yield (
             "done",
-            {"session_id": session_id, "total_tokens": 1, "duration_ms": _elapsed_ms(started)},
+            {
+                "session_id": session_id,
+                "total_tokens": 1,
+                "duration_ms": _elapsed_ms(started),
+                "retrieve_ms": retrieve_ms,
+            },
         )
         return
 
@@ -189,26 +250,36 @@ async def _rag_event_stream(
     total_tokens = 0
     cited: list[int] = []
     answer_parts: list[str] = []
+    first_token_ms: int | None = None
     try:
         token_stream = stream_generate(system, user, model=request.llm_model, provider=provider)
         async for event in stream_with_citations(token_stream, valid_ids):
             if event[0] == "text":
+                if first_token_ms is None:
+                    first_token_ms = _elapsed_ms(started)
+                    logger.info("chat.first_token", ttft_ms=first_token_ms)
                 yield ("token", {"content": event[1]})
                 answer_parts.append(event[1])
-                total_tokens += 1
+                # SC-m19：按字符数/4 估算 token（原 +=1 统计的是块数非 token）
+                total_tokens += max(1, len(event[1]) // 4)
             else:
                 cited.append(event[1])
                 answer_parts.append(f"[{event[1]}]")
     except LLMUnavailableError as exc:
         logger.warning("chat.generate_failed", error=str(exc))
-        yield ("error", {"code": "OLLAMA_UNAVAILABLE", "message": str(exc)})
+        # SC-m10：生成失败报 LLM_UNAVAILABLE（更准确的语义）
+        yield ("error", {"code": "LLM_UNAVAILABLE", "message": str(exc)})
         return
 
     # P-04 自我纠正：验证失败且重试次数 < max_retries 时重推修正回答（fail-open）
     context_blocks = format_context_blocks(chunks)
     try:
         result = await validate_answer(
-            rewritten_query, context_blocks, "".join(answer_parts), provider=provider
+            rewritten_query,
+            context_blocks,
+            "".join(answer_parts),
+            provider=provider,
+            model=request.llm_model,
         )
     except LLMUnavailableError:
         result = None  # 验证不可用 → 跳过纠正，直接输出已生成回答
@@ -233,7 +304,8 @@ async def _rag_event_stream(
             if event[0] == "text":
                 yield ("token", {"content": event[1]})
                 new_parts.append(event[1])
-                total_tokens += 1
+                # SC-m19：按字符数/4 估算 token
+                total_tokens += max(1, len(event[1]) // 4)
             else:
                 new_cited.append(event[1])
                 new_parts.append(f"[{event[1]}]")
@@ -241,7 +313,11 @@ async def _rag_event_stream(
         answer_text = "".join(new_parts)
         try:
             result = await validate_answer(
-                rewritten_query, context_blocks, answer_text, provider=provider
+                rewritten_query,
+                context_blocks,
+                answer_text,
+                provider=provider,
+                model=request.llm_model,
             )
         except LLMUnavailableError:
             result = None
@@ -265,7 +341,11 @@ async def _rag_event_stream(
         "session_id": session_id,
         "total_tokens": total_tokens,
         "duration_ms": _elapsed_ms(started),
+        "retrieve_ms": retrieve_ms,
     }
+    # T10.2 TTFT 指标：首 token 相对请求开始的耗时（未生成 token 的路径不输出）
+    if first_token_ms is not None:
+        done_data["first_token_ms"] = first_token_ms
     if low_confidence:
         done_data["low_confidence"] = True
     yield ("done", done_data)
@@ -289,8 +369,21 @@ async def chat_stream(request: ChatStreamRequest) -> StreamingResponse:
             logger.warning("chat.lancedb_unavailable")
             yield _sse("error", {"code": "INTERNAL_ERROR", "message": "向量库未初始化"})
             return
-        async for event, data in _rag_event_stream(request, mgr):
-            yield _sse(event, data)
+        try:
+            async for event, data in _rag_event_stream(request, mgr):
+                yield _sse(event, data)
+        except Exception as exc:
+            # 兜底（SC-M2）：LanceDB 表不存在 / table 与 embedding 模型不匹配等
+            # 意外异常若不捕获，async generator 中途崩溃 → SSE 连接断开且无
+            # error 事件，前端只能看到连接错误。此处产出 error 事件后正常收尾；
+            # 异常类型与细节只进服务端日志，不透给前端
+            # （SidecarLogger 协议仅承诺 info/warning，与既有失败日志级别一致）
+            logger.warning(
+                "chat.stream_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            yield _sse("error", {"code": "INTERNAL_ERROR", "message": "生成回答时发生内部错误"})
 
     return StreamingResponse(
         stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"}

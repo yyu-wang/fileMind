@@ -16,6 +16,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.embedding_models import MODEL_REGISTRY, get_model_info
+from app.core.logging import getLogger
 from app.models import (
     EmbeddingModelAvailability,
     InferenceTestResponse,
@@ -27,6 +28,8 @@ from app.services.embedding_service import _OLLAMA_MODEL_ALIASES, OLLAMA_HOST
 
 #: /api/tags 探测超时（秒）——轻量查询，快速失败避免设置页卡住
 PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
+
+logger = getLogger()
 #: Ollama 模型名尾部标签后缀（比对前剥离，避免 :latest 干扰）
 _LATEST_SUFFIX = ":latest"
 
@@ -68,7 +71,13 @@ async def _fetch_ollama_tags() -> list[_OllamaTagModel]:
     async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
         resp = await client.get(f"{OLLAMA_HOST}/api/tags")
         resp.raise_for_status()
-        return _OllamaTagsResponse.model_validate(resp.json()).models
+        # SC-m17：Ollama 返回非 JSON（如 HTML 错误页）时不应 500
+        try:
+            body = resp.json()
+        except Exception:
+            logger.warning("inference_probe.invalid_json", status=resp.status_code)
+            return []
+        return _OllamaTagsResponse.model_validate(body).models
 
 
 def _strip_tag(name: str) -> str:

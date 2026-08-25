@@ -56,5 +56,6 @@ def build_fts_query(query: str) -> str:
     """
     _ensure_jieba()
     tokens = jieba.cut_for_search(query)
-    safe_tokens = [f'"{t.strip()}"' for t in tokens if t.strip()]
+    # SC-m6：FTS5 字符串字面量内 " 用 "" 转义（规范要求），否则含引号的 token 产生非法 MATCH
+    safe_tokens = [f'"{t.strip().replace(chr(34), chr(34) * 2)}"' for t in tokens if t.strip()]
     return " ".join(safe_tokens)

@@ -88,7 +88,8 @@ def test_section7_spot_rules_present() -> None:
     assert doc.action.category == "文档"
 
     date_rule = by_id["preset_name_date_001"]
-    assert date_rule.priority == 70
+    # SC-M6：文件名信号强于扩展名（日期 95 > 扩展名 90），否则死规则
+    assert date_rule.priority == 95
     assert date_rule.condition.operator == "regex"
     assert date_rule.condition.value == r"^(20\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])"
     assert date_rule.action.sub_category == "{{year}}年{{month}}月"
@@ -125,3 +126,45 @@ def test_malformed_rule_rejected(payload: dict[str, object]) -> None:
     """结构/取值不合规的规则必须被 Pydantic 拒绝。"""
     with pytest.raises(ValidationError):
         PresetRule.model_validate(payload)
+
+
+# ---------- SC-M6：文件名规则优先级高于扩展名（端到端回归） ----------
+
+
+def test_filename_rules_beat_extension_rules() -> None:
+    """SC-M6：文件名特异规则（日期/截图/版本）必须先于扩展名规则命中。
+
+    修复前扩展名规则 priority=90 高于文件名规则（70/65），任何有已知
+    扩展名的文件永远先命中扩展名 → 文件名规则是死规则。
+    """
+    from pathlib import Path
+
+    from app.rules.engine import RuleEngine
+    from app.rules.models import FileMeta
+
+    engine = RuleEngine(
+        Path(__file__).resolve().parents[1] / "app" / "rules" / "presets" / "preset_rules.json"
+    )
+    engine.load()
+
+    def match(name: str) -> str | None:
+        m = engine.match_file(
+            FileMeta(
+                name=name,
+                extension=Path(name).suffix.lstrip(".").lower(),
+                path=Path("/data") / name,
+                size=1024,
+            )
+        )
+        return m.category if m else None
+
+    # Screenshot.png：旧正则字符类缺 '.' → 不命中 → 落入扩展名「图片」
+    assert match("Screenshot.png") == "截图"
+    assert match("截图 2024-08-15.png") == "截图"
+    assert match("20240101_报告.pdf") == "按日期归档"
+    # 版本后缀是弱信号：已知类型让位于扩展名（eval 数据集以此为 ground truth）
+    assert match("报告_v2.pdf") == "文档"
+    # 无扩展名的版本文件才由版本规则兜底
+    assert match("设计稿_最终版") == "版本文件"
+    # 普通文档：文件名规则不命中 → 扩展名兜底不受影响
+    assert match("报告.pdf") == "文档"

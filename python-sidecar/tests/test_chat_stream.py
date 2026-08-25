@@ -218,7 +218,8 @@ def test_sse_event_sequence_and_fields(client: TestClient) -> None:
     assert events[5][0] == "done"
     done = events[5][1]
     assert done["session_id"]
-    assert done["total_tokens"] == 2
+    # SC-m19：total_tokens 按 len(text)//4 估算（5+2=7）
+    assert done["total_tokens"] == 7
     assert done["duration_ms"] >= 0
     assert "low_confidence" not in done
 
@@ -233,10 +234,12 @@ def test_history_passed_to_rewrite(client: TestClient) -> None:
     ):
         _post_sse(client, _payload())
 
+    # SC-m9：rewrite_query 新增 model 参数（默认 LLM_MODEL）
     rewrite_mock.assert_awaited_once_with(
         "那营收多少？",
         [ConversationTurn(user="2024年Q3营收是多少？", assistant="5.2亿元")],
         provider=None,
+        model="qwen3.8-27b",
     )
 
 
@@ -259,7 +262,7 @@ def test_no_candidates_short_circuit(client: TestClient) -> None:
 
 
 def test_llm_unavailable_yields_error_event(client: TestClient) -> None:
-    """生成阶段 Ollama 不可用 → 检索事件后 error 事件 OLLAMA_UNAVAILABLE。"""
+    """生成阶段 Ollama 不可用 → 检索事件后 error 事件 LLM_UNAVAILABLE（SC-m10）。"""
 
     def boom(*args: object, **kwargs: object) -> object:
         raise LLMUnavailableError("Ollama down")
@@ -286,7 +289,8 @@ def test_llm_unavailable_yields_error_event(client: TestClient) -> None:
     # 检索成功（search_start/search_result 先发），生成阶段失败 → error 结尾
     names = [e[0] for e in events]
     assert names == ["search_start", "search_result", "error"]
-    assert events[-1] == ("error", {"code": "OLLAMA_UNAVAILABLE", "message": "Ollama down"})
+    # SC-m10：错误码从 OLLAMA_UNAVAILABLE 改为 LLM_UNAVAILABLE
+    assert events[-1] == ("error", {"code": "LLM_UNAVAILABLE", "message": "Ollama down"})
 
 
 def test_lancedb_uninitialized_yields_internal_error(client: TestClient) -> None:
@@ -296,6 +300,31 @@ def test_lancedb_uninitialized_yields_internal_error(client: TestClient) -> None
 
     events = _parse_sse(resp.text)
     assert events == [("error", {"code": "INTERNAL_ERROR", "message": "向量库未初始化"})]
+
+
+def test_unexpected_exception_yields_error_event(client: TestClient) -> None:
+    """检索阶段抛意外异常（如 LanceDB 表不存在）→ 流以 error 事件收尾（SC-M2 回归）。
+
+    旧实现只捕获三类 UnavailableError，意外异常使 async generator 中途崩溃，
+    SSE 连接断开且无 error 事件；修复后兜底产出 INTERNAL_ERROR 后正常收尾，
+    且异常细节不透给前端（只进服务端日志）。
+    """
+
+    async def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("table documents_xxx_v1 not found")
+
+    with (
+        mock.patch(
+            "app.api.routes_chat.rewrite_query",
+            new=mock.AsyncMock(return_value=_rewrite("改写")),
+        ),
+        mock.patch("app.api.routes_chat.hybrid_search", new=boom),
+    ):
+        resp = _post_sse(client, _payload())
+
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events == [("error", {"code": "INTERNAL_ERROR", "message": "生成回答时发生内部错误"})]
 
 
 # ------------------------------------------------------------------
@@ -370,7 +399,8 @@ def test_retry_replays_corrected_answer(client: TestClient) -> None:
         }
     ]
     assert events[6][0] == "done"
-    assert events[6][1]["total_tokens"] == 2
+    # SC-m19：total_tokens 按 len(text)//4 估算（1+1+1=3）
+    assert events[6][1]["total_tokens"] == 3
     assert "low_confidence" not in events[6][1]
 
 
@@ -414,7 +444,10 @@ def test_retry_exhausted_marks_low_confidence(client: TestClient) -> None:
 def test_validate_llm_unavailable_fail_open(client: TestClient) -> None:
     """验证阶段 Ollama 故障 → fail-open：不重试，直接 done（无 low_confidence）。"""
 
-    async def boom(query: str, context: str, answer: str, provider=None) -> object:
+    # SC-m9：validate_answer 新增 model 参数
+    async def boom(
+        query: str, context: str, answer: str, provider=None, **kwargs: object
+    ) -> object:
         raise LLMUnavailableError("Ollama down")
 
     with (

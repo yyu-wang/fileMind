@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -134,6 +135,43 @@ def chunk_text(text: str, target: int = CHUNK_TARGET_CHARS) -> list[str]:
     return blocks
 
 
+def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
+    """同步读取 + 分块（SC-C1：整体放线程池执行，不卡事件循环）。
+
+    单文件失败（不存在/非文本/不可读/空内容）计入 warning 日志并跳过，
+    不中断整体；返回值为空表示本次无可写入内容。
+    """
+    docs: list[DocumentChunk] = []
+    for file_id, raw_path in files:
+        path = Path(raw_path)
+        if not path.is_file() or not is_supported_text(path):
+            continue
+        try:
+            text = read_text(path)
+        except OSError as exc:
+            logger.warning(
+                "ingest.read_failed",
+                file_id=file_id,
+                path=sanitize_path(raw_path),
+                error=str(exc),
+            )
+            continue
+        chunks = chunk_text(text)
+        if not chunks:
+            continue
+        for seq, content in enumerate(chunks):
+            docs.append(
+                DocumentChunk(
+                    vector=[],
+                    chunk_id=f"{file_id}-{seq}",
+                    file_path=raw_path,
+                    chunk_text=content,
+                    page=0,
+                )
+            )
+    return docs
+
+
 async def build_index(
     files: list[tuple[str, str]],
     table_name: str,
@@ -141,6 +179,15 @@ async def build_index(
     embedding_model: str = EMBEDDING_MODEL,
 ) -> BuildIndexResult:
     """对文件列表执行索引：读取 → 分块 → Embedding → 写 LanceDB。
+
+    SC-C1：文件读取/分块（I/O + CPU 密集）与 LanceDB 写盘全部经
+    ``asyncio.to_thread`` 下沉线程池，事件循环保持可调度——索引期间
+    ``/health`` 仍毫秒级响应，避免 Rust watchdog 误判 sidecar 死亡。
+
+    SC-C3：写入前按 file_id 删除旧向量行（add_chunks 是纯追加语义，
+    不清理则同文件重复 build 后 chunk 翻倍、检索重复）。仅对本次产出
+    ≥1 chunk 的文件执行删除——读取失败/非文本的文件保留旧向量
+    （临时权限问题不应连带删掉既有好数据）。
 
     Args:
         files: ``(file_id, path)`` 列表（来自 Rust SQLite files 表）。
@@ -154,46 +201,16 @@ async def build_index(
     Raises:
         EmbeddingUnavailableError: Ollama Embedding 不可用（整体失败）。
     """
-    # 阶段 1：读取 + 分块（单文件失败计入 skipped）
-    docs: list[DocumentChunk] = []
-    indexed = 0
-    skipped = 0
-    for file_id, raw_path in files:
-        path = Path(raw_path)
-        if not path.is_file() or not is_supported_text(path):
-            skipped += 1
-            continue
-        try:
-            text = read_text(path)
-        except OSError as exc:
-            logger.warning(
-                "ingest.read_failed",
-                file_id=file_id,
-                path=sanitize_path(raw_path),
-                error=str(exc),
-            )
-            skipped += 1
-            continue
-        chunks = chunk_text(text)
-        if not chunks:
-            skipped += 1
-            continue
-        for seq, content in enumerate(chunks):
-            docs.append(
-                DocumentChunk(
-                    vector=[],
-                    chunk_id=f"{file_id}-{seq}",
-                    file_path=raw_path,
-                    chunk_text=content,
-                    page=0,
-                )
-            )
-        indexed += 1
+    # 阶段 1：读取 + 分块（同步块整体下沉线程池；skipped 按产出文件数推算）
+    docs = await asyncio.to_thread(_read_and_chunk, files)
+    indexed_file_ids = {d.chunk_id.rsplit("-", 1)[0] for d in docs}
+    indexed = len(indexed_file_ids)
+    skipped = len(files) - indexed
 
     if not docs:
         return BuildIndexResult(indexed=0, skipped=skipped)
 
-    # 阶段 2：分批 Embedding + 写入
+    # 阶段 2：分批 Embedding（网络 IO，事件循环友好）
     for start in range(0, len(docs), EMBED_BATCH_SIZE):
         batch = docs[start : start + EMBED_BATCH_SIZE]
         vectors = await embed_texts(
@@ -203,7 +220,15 @@ async def build_index(
         for doc, vector in zip(batch, vectors, strict=True):
             doc.vector = vector
 
-    mgr.add_chunks(table_name, docs)
+    # 阶段 3（SC-C3）：先删旧行再写入——失败可整体重跑，无重复行
+    for file_id in indexed_file_ids:
+        if not _is_safe_file_id(file_id):
+            logger.warning("ingest.delete_stale_skipped", file_id=file_id)
+            continue
+        mgr.delete_chunks_by_file_id(table_name, file_id)
+
+    # 阶段 4：写入（LanceDB add 同步写盘，下沉线程池）
+    await asyncio.to_thread(mgr.add_chunks, table_name, docs)
     logger.info(
         "ingest.done",
         indexed=indexed,
@@ -255,6 +280,13 @@ def update_paths(
         if not _is_safe_file_id(file_id):
             logger.warning("ingest.update_paths_skipped", file_id=file_id)
             continue
-        tbl.update(where=f"chunk_id LIKE '{file_id}-%'", values={"file_path": path})
+        # SC-m16：LIKE 前缀加边界——chunk_id 格式是 {file_id}-{seq}，
+        # file_id 是 UUID（含连字符），{file_id}- 已含分隔符，
+        # 但显式 ESCAPE 防御 file_id 是另一个 id 前缀的极端场景
+        tbl.update(
+            where=f"chunk_id = '{file_id}' OR chunk_id LIKE '{file_id}-%' ESCAPE '\\'",
+            values={"file_path": path},
+        )
         updated += 1
+    # SC-m16：updated 计数是有效映射数（LanceDB update 不返回影响行数）
     return updated

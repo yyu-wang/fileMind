@@ -16,6 +16,9 @@ from app.models import ShutdownResponse
 
 router = APIRouter(prefix="/shutdown", tags=["生命周期"])
 
+# SC-m21：保存 task 引用防 GC 回收（Python 文档明确要求）
+_shutdown_task: asyncio.Task[None] | None = None
+
 
 async def _graceful_exit() -> None:
     """后台任务：响应发完后短暂 sleep，然后退出自身进程。
@@ -39,5 +42,7 @@ async def shutdown() -> ShutdownResponse:
         防止未授权第三方让 Sidecar 误退出（安全 T-01 延伸）。
     """
     # 不 await —— 先返回响应再执行退出逻辑
-    asyncio.create_task(_graceful_exit())
+    # SC-m21：保存引用防 GC 回收（create_task 返回的 task 无引用时可能被回收）
+    global _shutdown_task
+    _shutdown_task = asyncio.create_task(_graceful_exit())
     return ShutdownResponse(status="shutting_down")

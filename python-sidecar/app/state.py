@@ -18,7 +18,9 @@ _psk: bytes | None = None
 # 上一个请求的序号（防重放：新请求 seq 必须 > last_seq）
 _last_seq: int = 0
 # 已使用的握手 nonce 集合（防握手重放）
+# SC-m5：加上限防长期运行无界增长；超限时清空（旧 nonce 已过 TTL 无意义）
 _used_nonces: set[str] = set()
+MAX_NONCES = 10000
 # LanceDB 管理器（lifespan 初始化后非 None）
 _lancedb: LanceDBManager | None = None
 # 当前 Embedding 模型名（lifespan 启动时注入 DEFAULT_MODEL）
@@ -36,13 +38,6 @@ def set_psk(psk: bytes | None) -> None:
     """设置 PSK（仅 lifespan 启动时调用一次）。"""
     global _psk
     _psk = psk
-
-
-def next_seq() -> int:
-    """返回递增的下一个请求序号（用于客户端发送）。"""
-    global _last_seq
-    _last_seq += 1
-    return _last_seq
 
 
 def get_last_seq() -> int:
@@ -64,6 +59,9 @@ def add_nonce(nonce: str) -> bool:
     """
     if nonce in _used_nonces:
         return False
+    # SC-m5：超上限时清空（nonce 是握手防重放，旧 nonce 已过 TTL 无意义）
+    if len(_used_nonces) >= MAX_NONCES:
+        _used_nonces.clear()
     _used_nonces.add(nonce)
     return True
 

@@ -71,15 +71,21 @@ def test_read_text_invalid_utf8_lossy(tmp_path: Path) -> None:
 
 
 class _FakeManager:
-    """LanceDBManager 最小替身：记录 add_chunks 调用。"""
+    """LanceDBManager 最小替身：记录 add_chunks / delete 调用。"""
 
     def __init__(self) -> None:
         self.added: list[DocumentChunk] = []
+        self.deleted: list[str] = []
 
     def add_chunks(self, table_name: str, chunks: list[DocumentChunk]) -> int:
         assert table_name == "documents_bge-large-zh-v1.5_v1"
         self.added.extend(chunks)
         return len(chunks)
+
+    def delete_chunks_by_file_id(self, table_name: str, file_id: str) -> int:
+        # SC-C3：build_index 写入前按 file_id 清旧行（fake 只记录调用）
+        self.deleted.append(file_id)
+        return 0
 
 
 @pytest.mark.asyncio

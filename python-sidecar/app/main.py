@@ -71,7 +71,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
         psk_hex = sys.stdin.readline().strip()
         if psk_hex:
-            state.set_psk(bytes.fromhex(psk_hex))
+            # SC-m20：hex 非法时不应崩 lifespan，跳过 PSK（dev 模式中间件跳过验签）
+            try:
+                state.set_psk(bytes.fromhex(psk_hex))
+            except ValueError:
+                logger.error("main.psk_invalid_hex", psk_len=len(psk_hex))
     # dev 模式：PSK 保持 None，中间件跳过验签
 
     # --- 步骤 2：LanceDB 初始化（T2.2 新增） ------------------------------

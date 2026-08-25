@@ -95,11 +95,10 @@ def evaluate_incremental(
             result.indexed.append(change.file_id)
             continue
 
-        # 规则 3：embedding 版本变了 → 需要重新索引
-        if (
-            change.stored_embedding_version is not None
-            and change.stored_embedding_version != current_embedding_version
-        ):
+        # 规则 3：embedding 版本变了 → 需要重新索引。
+        # SC-M3：None（索引过内容但 embedding 失败/未做）≠ current，
+        # 必须进 indexed——否则该文件永远不会被向量化。
+        if change.stored_embedding_version != current_embedding_version:
             result.indexed.append(change.file_id)
             continue
 
