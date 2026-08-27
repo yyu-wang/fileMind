@@ -58,8 +58,11 @@ pub struct ChatStreamRequest {
     pub embedding_model: String,
     /// 推理模式（`local` / `cloud` / `hybrid`）。
     pub inference_mode: String,
-    /// 生成模型名。
+    /// 生成模型名。云端模式下若 `cloud_model` 非空，会被覆盖。
     pub llm_model: String,
+    /// 云端推理模型名（仅 cloud 模式生效；空串则回落到 Provider 默认）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cloud_model: String,
     /// 向量检索候选数。
     pub top_k: u32,
     /// 重排后保留数。
@@ -72,6 +75,7 @@ pub struct ChatStreamRequest {
     pub session_id: Option<String>,
 }
 
+/// 对话流式命令的默认请求体字段（RAG 问答默认参数）。
 impl Default for ChatStreamRequest {
     fn default() -> Self {
         Self {
@@ -81,6 +85,7 @@ impl Default for ChatStreamRequest {
             embedding_model: "bge-large-zh-v1.5".to_string(),
             inference_mode: "local".to_string(),
             llm_model: "qwen3.8-27b".to_string(),
+            cloud_model: String::new(),
             top_k: 20,
             rerank_top_k: 5,
             max_retries: 2,
@@ -121,8 +126,16 @@ pub fn chat_stream(
 fn chat_stream_inner(
     app: tauri::AppHandle,
     state: &AppState,
-    request: ChatStreamRequest,
+    mut request: ChatStreamRequest,
 ) -> AppResult<u64> {
+    // 云端模式：若用户指定了 cloud_model，用它覆盖 llm_model
+    // （云端 Provider 按 llm_model 前缀路由，所以 llm_model 即云端模型名）
+    if request.inference_mode.eq_ignore_ascii_case("cloud") && !request.cloud_model.is_empty() {
+        request.llm_model.clone_from(&request.cloud_model);
+        // cloud_model 已合并进 llm_model，清空避免冗余序列化
+        request.cloud_model = String::new();
+    }
+
     let psk = state
         .sidecar_psk
         .lock()

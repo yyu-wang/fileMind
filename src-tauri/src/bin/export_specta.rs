@@ -49,6 +49,7 @@ fn main() {
             commands::inference::get_inference_mode,
             commands::inference::set_inference_mode,
             commands::ollama::ollama_status,
+            commands::ollama::install_embedding_model,
             commands::config::get_config,
             commands::config::update_config,
             commands::config::sign_cloud_consent,

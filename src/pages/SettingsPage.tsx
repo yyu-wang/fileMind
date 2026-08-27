@@ -4,8 +4,10 @@
 // OllamaStatusCard 提供手动「重新检测」。
 
 import { useEffect } from 'react';
+import { AboutSection } from '../components/settings/AboutSection';
 import { CloudApiKeySection } from '../components/settings/CloudApiKeySection';
 import { EmbeddingModelSection } from '../components/settings/EmbeddingModelSection';
+import { FileSafetySection } from '../components/settings/FileSafetySection';
 import { InferenceModeSection } from '../components/settings/InferenceModeSection';
 import { OllamaStatusCard } from '../components/settings/OllamaStatusCard';
 import { ThemeSection } from '../components/settings/ThemeSection';
@@ -29,7 +31,9 @@ export function SettingsPage() {
         <CloudApiKeySection />
         <OllamaStatusCard />
         <EmbeddingModelSection />
+        <FileSafetySection />
         <ThemeSection />
+        <AboutSection />
       </div>
     </div>
   );

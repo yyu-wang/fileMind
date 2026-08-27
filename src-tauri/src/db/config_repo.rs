@@ -12,7 +12,8 @@ const SELECT_CONFIG_SQL: &str = "
     SELECT data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
            language, onboarding_completed,
            cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
-           cloud_consent_signed_at
+           cloud_consent_signed_at,
+           cloud_model
     FROM app_config WHERE id = 1
 ";
 
@@ -21,8 +22,9 @@ const UPSERT_CONFIG_SQL: &str = "
         id, data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
         language, onboarding_completed,
         cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
-        cloud_consent_signed_at
-    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        cloud_consent_signed_at,
+        cloud_model
+    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     ON CONFLICT(id) DO UPDATE SET
         data_directory = excluded.data_directory,
         inference_mode = excluded.inference_mode,
@@ -34,7 +36,8 @@ const UPSERT_CONFIG_SQL: &str = "
         cloud_consent_signed = excluded.cloud_consent_signed,
         cloud_consent_version = excluded.cloud_consent_version,
         cloud_consent_provider = excluded.cloud_consent_provider,
-        cloud_consent_signed_at = excluded.cloud_consent_signed_at
+        cloud_consent_signed_at = excluded.cloud_consent_signed_at,
+        cloud_model = excluded.cloud_model
 ";
 
 const SIGN_CONSENT_SQL: &str = "
@@ -95,6 +98,7 @@ impl ConfigRepo {
                 config.cloud_consent_version,
                 provider_str,
                 config.cloud_consent_signed_at,
+                config.cloud_model,
             ],
         )?;
         Ok(())
@@ -150,6 +154,7 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
         cloud_consent_provider: provider_str.as_deref().map(str_to_provider),
         // 旧版 epoch: 前缀兼容：读取时归一化为 RFC3339（BE-M2）
         cloud_consent_signed_at: row.get::<_, Option<String>>(10)?.map(normalize_signed_at),
+        cloud_model: row.get(11)?,
     })
 }
 
@@ -236,6 +241,7 @@ mod tests {
         assert!(!config.onboarding_completed);
         assert!(!config.cloud_consent_signed);
         assert!(config.cloud_consent_version.is_none());
+        assert!(config.cloud_model.is_empty());
     }
 
     #[test]
@@ -245,6 +251,7 @@ mod tests {
         config.data_directory = "/tmp/test".to_string();
         config.inference_mode = "cloud".to_string();
         config.llm_model = "qwen3.8-14b".to_string();
+        config.cloud_model = "gpt-4o".to_string();
         config.onboarding_completed = true;
         config.max_file_size_mb = 200;
         ConfigRepo::upsert(db.conn(), &config).unwrap();
@@ -253,6 +260,7 @@ mod tests {
         assert_eq!(reloaded.data_directory, "/tmp/test");
         assert_eq!(reloaded.inference_mode, "cloud");
         assert_eq!(reloaded.llm_model, "qwen3.8-14b");
+        assert_eq!(reloaded.cloud_model, "gpt-4o");
         assert!(reloaded.onboarding_completed);
         assert_eq!(reloaded.max_file_size_mb, 200);
     }

@@ -64,6 +64,14 @@ interface SettingsState {
   theme: ThemeMode;
   /** 各云服务商 API Key 状态（仅掩码提示，不含完整 Key；不持久化） */
   apiKeyStatus: Record<CloudProvider, ApiKeyStatus>;
+  /** 云端推理模型名（如 gpt-4o / deepseek-chat；空串表示未指定，走 Provider 默认） */
+  cloudModel: string;
+  /** 云端推理 Temperature（0-1，0.2 为通用默认） */
+  temperature: number;
+  /** 正在安装的 Embedding 模型名（null 表示无安装任务） */
+  installingModel: string | null;
+  /** 模型安装错误信息（null 表示无错误） */
+  installError: string | null;
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
@@ -93,6 +101,8 @@ interface SettingsState {
   setTheme: (mode: ThemeMode) => void;
   /** 清除错误 */
   clearError: () => void;
+  /** 安装指定 Embedding 模型（从 Ollama 拉取） */
+  installModel: (modelName: string) => Promise<void>;
 }
 
 /**
@@ -117,6 +127,7 @@ async function loadConfigInner(set: (partial: Partial<SettingsState>) => void): 
       cloudConsentProvider: cfg.cloud_consent_provider,
       cloudConsentSignedAt: cfg.cloud_consent_signed_at,
       llmModel: cfg.llm_model,
+      cloudModel: cfg.cloud_model ?? '',
       isLoading: false,
       initFailed: false,
     });
@@ -152,6 +163,10 @@ export const useSettingsStore = create<SettingsState>()(
         Openai: { provider: 'Openai', has_key: false, hint: '' },
         Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
       },
+      cloudModel: '',
+      temperature: 0.2,
+      installingModel: null,
+      installError: null,
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
@@ -235,6 +250,7 @@ export const useSettingsStore = create<SettingsState>()(
           cloud_consent_version: partial.cloud_consent_version ?? current.cloudConsentVersion,
           cloud_consent_provider: partial.cloud_consent_provider ?? current.cloudConsentProvider,
           cloud_consent_signed_at: partial.cloud_consent_signed_at ?? current.cloudConsentSignedAt,
+          cloud_model: partial.cloud_model ?? current.cloudModel,
         };
         const result = await fileIpc.updateConfig(fullConfig);
         if (result.status !== 'ok') {
@@ -326,6 +342,26 @@ export const useSettingsStore = create<SettingsState>()(
       setTheme: (mode) => {
         set({ theme: mode });
         applyTheme(mode);
+      },
+
+      installModel: async (modelName) => {
+        set({ installingModel: modelName, installError: null });
+        try {
+          const result = await fileIpc.installEmbeddingModel(modelName);
+          if (result.status === 'ok') {
+            if (result.data.success) {
+              await get().probeOllama();
+            } else {
+              set({ installError: result.data.message });
+            }
+          } else {
+            set({ installError: result.error });
+          }
+        } catch (e) {
+          set({ installError: e instanceof Error ? e.message : String(e) });
+        } finally {
+          set({ installingModel: null });
+        }
       },
 
       clearError: () => set({ error: null }),

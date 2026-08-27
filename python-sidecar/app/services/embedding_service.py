@@ -37,6 +37,8 @@ EMBED_TIMEOUT = float(os.environ.get("FILEMIND_EMBED_TIMEOUT", "60"))
 #: 注册表模型标识 → Ollama 实际模型名（bge 系列非官方库，社区命名空间托底）
 _OLLAMA_MODEL_ALIASES: dict[str, str] = {
     "bge-large-zh-v1.5": "qllama/bge-large-zh-v1.5",
+    "bge-m3": "awenleven/bge-m3:567m",
+    "bge-small-zh-v1.5": "qllama/bge-small-zh-v1.5",
 }
 
 

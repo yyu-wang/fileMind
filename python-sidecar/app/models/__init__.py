@@ -319,3 +319,18 @@ class _OllamaTagsResponse(BaseModel):
     """GET {OLLAMA_HOST}/api/tags 响应体。"""
 
     models: list[_OllamaTagModel] = Field(default_factory=list)
+
+
+class ModelInstallRequest(BaseModel):
+    """POST /inference/install-model 请求体：从 Ollama 拉取指定模型。"""
+
+    model_name: str = Field(description="注册表模型名（如 bge-small-zh-v1.5）")
+
+
+class ModelInstallResponse(BaseModel):
+    """POST /inference/install-model 响应体。"""
+
+    success: bool
+    model_name: str
+    ollama_name: str
+    message: str = ""

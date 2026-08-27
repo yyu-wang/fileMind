@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { CloudProvider } from '../../types/ipc';
 import { CloudConsentDialog } from './CloudConsentDialog';
+import { ConsentViewDialog } from './ConsentViewDialog';
 
 /** 日期展示格式：YYYY-MM-DD HH:mm（zh-CN 时区本地时间）。 */
 function formatSignedAt(iso: string): string {
@@ -30,6 +31,7 @@ export function InferenceModeSection() {
   const cloudConsentVersion = useSettingsStore((s) => s.cloudConsentVersion);
   const cloudConsentSignedAt = useSettingsStore((s) => s.cloudConsentSignedAt);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [viewConsentOpen, setViewConsentOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -93,6 +95,19 @@ export function InferenceModeSection() {
           </button>
         )}
       </div>
+      {/* 原型 05_交互原型 §设置页推理模式区：底部并列「查看知情同意书」+「撤回云端同意」 */}
+      <div className="settings-row settings-row--actions">
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setViewConsentOpen(true)}
+        >
+          查看知情同意书
+        </button>
+        <span className="settings-section__desc settings-mode-badge settings-mode-badge--empty">
+          🔀 混合模式（P1 不支持，敬请期待）
+        </span>
+      </div>
       {isCloud && cloudConsentProvider && (
         <p className="settings-section__desc settings-section__consent-info">
           已签署同意书 · {cloudConsentProvider} · 版本 {cloudConsentVersion ?? '未知'} ·
@@ -111,6 +126,7 @@ export function InferenceModeSection() {
           onCancel={() => setConsentOpen(false)}
         />
       )}
+      {viewConsentOpen && <ConsentViewDialog onClose={() => setViewConsentOpen(false)} />}
     </section>
   );
 }

@@ -2,9 +2,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { ApiKeyStatus, AppConfig, OllamaStatus } from '@/types/ipc';
+import type { ApiKeyStatus, AppConfig, FileStats, OllamaStatus } from '@/types/ipc';
 import { ThemeMode } from '@/types/models';
 
+import { useFileStore } from '@/stores/fileStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { SettingsPage } from './SettingsPage';
 
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   deleteApiKey: vi.fn(),
   signCloudConsent: vi.fn(),
   revokeCloudConsent: vi.fn(),
+  getFileStats: vi.fn(),
 }));
 
 vi.mock('@/lib/ipc', () => ({
@@ -29,6 +31,7 @@ vi.mock('@/lib/ipc', () => ({
     deleteApiKey: mocks.deleteApiKey,
     signCloudConsent: mocks.signCloudConsent,
     revokeCloudConsent: mocks.revokeCloudConsent,
+    getFileStats: mocks.getFileStats,
   },
 }));
 
@@ -58,6 +61,14 @@ const ollamaOk: OllamaStatus = {
 const noKey: ApiKeyStatus = { provider: 'Openai', has_key: false, hint: '' };
 const noDeep: ApiKeyStatus = { provider: 'Deepseek', has_key: false, hint: '' };
 
+const emptyStats: FileStats = {
+  total_files: 0,
+  categorized_files: 0,
+  uncategorized_files: 0,
+  duplicate_groups: 0,
+  total_size_bytes: 0,
+};
+
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
@@ -82,9 +93,12 @@ beforeEach(() => {
     theme: ThemeMode.System,
     apiKeyStatus: { Openai: noKey, Deepseek: noDeep },
   });
+  // 重置 fileStore，避免 EmbeddingModelSection useEffect 触发真实 loadStats
+  useFileStore.setState({ stats: emptyStats, total: 0, files: [], selectedIds: [] });
   mocks.ollamaStatus.mockResolvedValue({ status: 'ok', data: ollamaOk });
   mocks.getConfig.mockResolvedValue({ status: 'ok', data: baseConfig });
   mocks.getApiKeyStatus.mockResolvedValue({ status: 'ok', data: [noKey, noDeep] });
+  mocks.getFileStats.mockResolvedValue({ status: 'ok', data: emptyStats });
 });
 
 function renderPage(): void {

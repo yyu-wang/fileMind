@@ -42,6 +42,9 @@ pub struct AppConfig {
     pub cloud_consent_provider: Option<CloudProvider>,
     /// 签署时间（ISO 8601 字符串，未签为 `None`）。
     pub cloud_consent_signed_at: Option<String>,
+    /// 云端推理模型名（如 `gpt-4o` / `deepseek-chat`；空串表示未指定，回落到 Provider 默认值）。
+    #[serde(default)]
+    pub cloud_model: String,
 }
 
 impl Default for AppConfig {
@@ -61,6 +64,7 @@ impl Default for AppConfig {
             cloud_consent_version: None,
             cloud_consent_provider: None,
             cloud_consent_signed_at: None,
+            cloud_model: String::new(),
         }
     }
 }

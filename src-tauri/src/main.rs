@@ -245,6 +245,7 @@ fn main() {
             let message = log_redact::redact(&record.args().to_string());
             writeln!(buf, "[{} {}] {}", record.level(), record.target(), message)
         })
+        .parse_default_env()
         .init();
 
     // 正则集合编译：模式为编译期常量，正常不可达失败；此时日志可能明文泄漏
@@ -429,6 +430,7 @@ fn main() {
             commands::inference::get_inference_mode,
             commands::inference::set_inference_mode,
             commands::ollama::ollama_status,
+            commands::ollama::install_embedding_model,
             commands::config::get_config,
             commands::config::update_config,
             commands::config::sign_cloud_consent,

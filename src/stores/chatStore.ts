@@ -120,13 +120,20 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
   // FE-m11：版本号从 embeddingModelOptions 查找，fallback 1（与 Rust 当前硬编码一致）
   const version =
     settings.embeddingModelOptions.find((m) => m.name === embeddingModel)?.version ?? 1;
+  const isCloud = settings.inferenceMode === 'Cloud';
+  // 云端模式：若用户配置了 cloudModel，用它作为生成模型；否则回落 llmModel
+  const effectiveLlmModel =
+    isCloud && settings.cloudModel ? settings.cloudModel : settings.llmModel || 'qwen3.8-27b';
   return {
     query,
     history: buildHistory(messages.slice(0, -1), HISTORY_TURNS),
     table_name: `documents_${embeddingModel}_v${version}`,
     embedding_model: embeddingModel,
     inference_mode: settings.inferenceMode.toLowerCase(),
-    llm_model: settings.llmModel || 'qwen3.8-27b',
+    llm_model: effectiveLlmModel,
+    // 云端模型通过 llm_model 传递（Rust chat_stream_inner 会合并 cloud_model → llm_model）
+    // 此处直接传 effectiveLlmModel，云端 Provider 按前缀路由
+    cloud_model: isCloud ? settings.cloudModel : '',
     top_k: TOP_K,
     rerank_top_k: RERANK_TOP_K,
     max_retries: MAX_RETRIES,
