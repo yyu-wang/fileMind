@@ -189,7 +189,7 @@ function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileR
       </div>
       {/* 类型图标（对齐交互原型彩色块） */}
       <div className="files-table__cell files-table__cell--type" role="cell">
-        <span className={`file-type-icon file-type-icon--${typeMeta.kind}`} title={file.file_name}>
+        <span className={`file-type-icon ${typeMeta.kind}`} title={file.file_name}>
           {typeMeta.label}
         </span>
       </div>

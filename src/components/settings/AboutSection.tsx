@@ -13,54 +13,62 @@ export function AboutSection() {
       <h3 id="settings-about-title" className="settings-section__title">
         ℹ️ 关于
       </h3>
-      <div className="settings-row">
-        <div className="settings-field">
-          <label className="settings-field__label">版本</label>
+      <div className="setting-row">
+        <div className="setting-label">
+          <div className="name">版本</div>
         </div>
-        <span className="settings-embedding-meta" data-testid="about-version">
-          {APP_VERSION}
-        </span>
-      </div>
-      <div className="settings-row">
-        <div className="settings-field">
-          <label className="settings-field__label">技术栈</label>
+        <div className="setting-control">
+          <span className="mono text-muted" data-testid="about-version">
+            {APP_VERSION}
+          </span>
         </div>
-        <span className="settings-embedding-meta">
-          Tauri 2 · React 19 · Python FastAPI · LangChain
-        </span>
       </div>
-      <div className="settings-row">
-        <div className="settings-field">
-          <label className="settings-field__label">索引数据库</label>
+      <div className="setting-row">
+        <div className="setting-label">
+          <div className="name">技术栈</div>
         </div>
-        <span className="settings-embedding-meta">SQLite + LanceDB</span>
+        <div className="setting-control">
+          <span className="text-muted text-sm">
+            Tauri 2 · React 19 · Python FastAPI · LangChain
+          </span>
+        </div>
       </div>
-      <div className="settings-row settings-row--actions">
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          disabled
-          title="P1 不支持，敬请期待"
-        >
-          检查更新
-        </button>
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          disabled
-          title="P1 不支持，敬请期待"
-        >
-          导出配置
-        </button>
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          disabled
-          title="P1 不支持，敬请期待"
-          style={{ color: 'var(--warn)' }}
-        >
-          重置应用
-        </button>
+      <div className="setting-row">
+        <div className="setting-label">
+          <div className="name">索引数据库</div>
+        </div>
+        <div className="setting-control">
+          <span className="text-muted text-sm">SQLite + LanceDB</span>
+        </div>
+      </div>
+      <div className="setting-row" style={{ borderBottom: 'none', padding: '12px 0 0' }}>
+        <div className="setting-control" style={{ display: 'flex', gap: 10 }}>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            disabled
+            title="P1 不支持，敬请期待"
+          >
+            检查更新
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            disabled
+            title="P1 不支持，敬请期待"
+          >
+            导出配置
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            disabled
+            title="P1 不支持，敬请期待"
+            style={{ color: 'var(--warn)' }}
+          >
+            重置应用
+          </button>
+        </div>
       </div>
     </section>
   );

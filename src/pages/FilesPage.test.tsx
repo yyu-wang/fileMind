@@ -167,7 +167,7 @@ describe('FilesPage', () => {
     seed({ files: [file()], scanPath: '/tmp', selectedIds: ['f1'] });
     renderPage();
     const btn = screen.getByTestId('files-clear-selection');
-    expect(btn).toHaveTextContent('清除选中 (1)');
+    expect(btn).toHaveTextContent('清除选中');
     await user.click(btn);
     expect(useFileStore.getState().selectedIds).toEqual([]);
     expect(screen.queryByTestId('files-clear-selection')).not.toBeInTheDocument();

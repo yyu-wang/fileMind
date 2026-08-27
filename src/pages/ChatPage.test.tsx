@@ -77,7 +77,7 @@ describe('ChatPage', () => {
     useFileStore.setState({ total: 42 });
     renderPage();
     expect(screen.getByText('开始知识问答')).toBeInTheDocument();
-    expect(screen.getByText('共 42 个文件')).toBeInTheDocument();
+    expect(screen.getByText('基于 42 个已索引文件')).toBeInTheDocument();
   });
 
   it('builds index successfully and shows summary', async () => {
@@ -97,7 +97,7 @@ describe('ChatPage', () => {
     mocks.buildIndex.mockResolvedValue({ status: 'error', error: '向量化失败' });
     renderPage();
     await user.click(screen.getByTestId('build-index'));
-    expect(await screen.findByText('向量化失败')).toBeInTheDocument();
+    expect(await screen.findByText('索引失败：向量化失败')).toBeInTheDocument();
   });
 
   it('renders messages and 清空对话 clears them', async () => {
@@ -105,14 +105,14 @@ describe('ChatPage', () => {
     seed({ messages: [msg] });
     renderPage();
     expect(screen.getByText('你好')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: '清空对话' }));
+    await user.click(screen.getByRole('button', { name: '🧹 清空对话' }));
     expect(useChatStore.getState().messages).toEqual([]);
     expect(screen.getByText('开始知识问答')).toBeInTheDocument();
   });
 
   it('hides 清空对话 when no messages', () => {
     renderPage();
-    expect(screen.queryByRole('button', { name: '清空对话' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '🧹 清空对话' })).not.toBeInTheDocument();
   });
 
   it('dismisses error alert', async () => {

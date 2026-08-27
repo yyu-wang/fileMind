@@ -42,9 +42,9 @@ beforeEach(() => {
 });
 
 function openaiRow(): HTMLElement {
-  const cell = screen.getByText('OpenAI');
-  const row = cell.closest('.settings-row');
-  // .settings-row 恒为 div，转 HTMLElement 供 within 使用
+  const input = screen.getByLabelText('OpenAI API Key 输入框');
+  const row = input.closest('.setting-row');
+  // .setting-row 恒为 div，转 HTMLElement 供 within 使用
   return row as HTMLElement;
 }
 
@@ -53,8 +53,8 @@ describe('CloudApiKeySection', () => {
     mockNoKeys();
     render(<CloudApiKeySection />);
 
-    expect(screen.getByText('OpenAI')).toBeInTheDocument();
-    expect(screen.getByText('DeepSeek')).toBeInTheDocument();
+    expect(screen.getByText(/OpenAI API Key/)).toBeInTheDocument();
+    expect(screen.getByText(/DeepSeek API Key/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText('未配置')).toHaveLength(2));
   });
 

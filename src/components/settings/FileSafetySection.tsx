@@ -6,27 +6,33 @@
 // 注：Dry-run 预览模式当前已在分类页 ClassifyModeDialog 实现为页级开关，
 // 此处全局开关需后端支持，暂占位。
 
+import { useState } from 'react';
+
 interface ToggleRowProps {
   name: string;
   desc: string;
   defaultOn?: boolean;
 }
 
-/** 单行 toggle 占位：disabled checkbox + 文字，模拟原型开关视觉效果。 */
+/** 单行 toggle 占位：原型 .toggle 视觉（disabled 状态不可切换）。 */
 function ToggleRow({ name, desc, defaultOn = true }: ToggleRowProps) {
+  const [on, setOn] = useState(defaultOn);
   return (
-    <div className="settings-row">
-      <div className="settings-field">
-        <label className="settings-field__label">{name}</label>
-        <span className="settings-field__hint">{desc}</span>
+    <div className="setting-row">
+      <div className="setting-label">
+        <div className="name">{name}</div>
+        <div className="desc">{desc}</div>
       </div>
-      <input
-        type="checkbox"
-        className="settings-toggle-placeholder"
-        defaultChecked={defaultOn}
-        disabled
-        aria-label={`${name}（P1 不支持）`}
-      />
+      <div className="setting-control">
+        <button
+          type="button"
+          className={`toggle${on ? ' on' : ''}`}
+          aria-label={`${name}（P1 不支持）`}
+          aria-pressed={on}
+          disabled
+          onClick={() => setOn((v) => !v)}
+        />
+      </div>
     </div>
   );
 }
@@ -37,27 +43,30 @@ export function FileSafetySection() {
       <h3 id="settings-safety-title" className="settings-section__title">
         📁 文件操作安全网
       </h3>
-      <p className="settings-section__desc">
-        保护你的文件不被误操作。以下开关需后端支持，P1 暂未启用。
-      </p>
+      <p className="section-desc">保护你的文件不被误操作。以下开关需后端支持，P1 暂未启用。</p>
       <ToggleRow
         name="Dry-run 预览模式"
         desc="执行前必须先预览分类方案（当前已在分类页支持，全局开关待后端）"
       />
       <ToggleRow name="操作日志 + 撤销" desc="保留操作历史，支持一键撤销" />
       <ToggleRow name="删除走系统回收站" desc="删除的文件进入回收站而非永久删除" />
-      <div className="settings-row">
-        <div className="settings-field">
-          <label htmlFor="log-retention-select" className="settings-field__label">
-            日志保留天数
-          </label>
-          <span className="settings-field__hint">操作历史自动清理周期</span>
+      <div className="setting-row">
+        <div className="setting-label">
+          <div className="name">日志保留天数</div>
+          <div className="desc">操作历史自动清理周期</div>
         </div>
-        <select id="log-retention-select" className="settings-select" disabled defaultValue="30">
-          <option value="30">30 天</option>
-          <option value="90">90 天</option>
-          <option value="0">永久保留</option>
-        </select>
+        <div className="setting-control">
+          <select
+            className="input"
+            disabled
+            defaultValue="30"
+            aria-label="日志保留天数（P1 不支持）"
+          >
+            <option value="30">30 天</option>
+            <option value="90">90 天</option>
+            <option value="0">永久保留</option>
+          </select>
+        </div>
       </div>
     </section>
   );

@@ -105,15 +105,15 @@ export function ChatPage() {
     : null;
 
   return (
-    <div className="chat-page">
-      <header className="chat-page__header">
-        <h1 className="chat-page__title">知识问答</h1>
-        <span className="chat-page__count">共 {totalFiles} 个文件</span>
-        <div className="chat-page__header-actions">
+    <div className="page chat-page">
+      <header className="chat-header">
+        <span className="title">💬 知识问答</span>
+        <span className="meta">基于 {totalFiles} 个已索引文件</span>
+        <div className="header-actions">
           {/* T7.x：建立索引（向量化入库 LanceDB，问答检索的数据源） */}
           <button
             type="button"
-            className="btn btn--ghost"
+            className="btn btn--ghost btn--sm"
             data-testid="build-index"
             onClick={() => void handleBuildIndex()}
             disabled={building}
@@ -121,12 +121,8 @@ export function ChatPage() {
             {building ? '索引中…' : '建立索引'}
           </button>
           {messages.length > 0 && (
-            <button
-              type="button"
-              className="btn btn--ghost chat-page__clear"
-              onClick={clearHistory}
-            >
-              清空对话
+            <button type="button" className="btn btn--ghost btn--sm" onClick={clearHistory}>
+              🧹 清空对话
             </button>
           )}
         </div>
@@ -152,34 +148,31 @@ export function ChatPage() {
         </div>
       )}
 
-      <div className="chat-page__body">
-        {messages.length === 0 && !isStreaming ? (
-          <div className="chat-page__empty">
-            <p className="chat-page__empty-title">开始知识问答</p>
-            <p className="chat-page__empty-sub">
-              基于已索引文档回答问题，答案会标注可跳转的引用来源；多轮对话自动带入上下文
-            </p>
-          </div>
-        ) : (
-          <div className="chat-page__messages">
-            {messages.map((message) => (
-              <ChatBubble
-                key={message.id}
-                message={message}
-                onCitationClick={(c) => void handleCitationClick(c)}
-              />
-            ))}
-            {streamingMessage && (
-              <ChatBubble
-                key="streaming"
-                message={streamingMessage}
-                streaming
-                onCitationClick={(c) => void handleCitationClick(c)}
-              />
-            )}
-          </div>
-        )}
-      </div>
+      {messages.length === 0 && !isStreaming ? (
+        <div className="chat-empty">
+          <div className="icon">💬</div>
+          <h3>开始知识问答</h3>
+          <p>基于已索引文档回答问题，答案会标注可跳转的引用来源；多轮对话自动带入上下文</p>
+        </div>
+      ) : (
+        <div className="chat-messages">
+          {messages.map((message) => (
+            <ChatBubble
+              key={message.id}
+              message={message}
+              onCitationClick={(c) => void handleCitationClick(c)}
+            />
+          ))}
+          {streamingMessage && (
+            <ChatBubble
+              key="streaming"
+              message={streamingMessage}
+              streaming
+              onCitationClick={(c) => void handleCitationClick(c)}
+            />
+          )}
+        </div>
+      )}
 
       <SearchStatusBar
         status={status}
@@ -191,7 +184,7 @@ export function ChatPage() {
         hasTokens={currentStream.length > 0}
       />
 
-      <div className="chat-page__input">
+      <div className="chat-input-area">
         <ChatInput disabled={isStreaming} onSend={(content) => void sendMessage(content)} />
       </div>
 

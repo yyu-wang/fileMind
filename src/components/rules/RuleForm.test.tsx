@@ -1,4 +1,5 @@
-// RuleForm 单元测试：新建/编辑、必填校验、正则预校验、分类下拉与回调。
+// RuleForm 单元测试（对齐交互原型 §规则编辑 §rule-form）：内嵌表单、必填校验、
+// 正则预校验、目标分类下拉、启用 toggle、删除按钮（仅编辑态）。
 
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -39,7 +40,7 @@ describe('RuleForm', () => {
   it('renders create form with defaults', () => {
     render(<RuleForm initial={null} categories={categories} onSave={vi.fn()} onCancel={vi.fn()} />);
     expect(screen.getByText('新建规则')).toBeInTheDocument();
-    expect(screen.getByLabelText('规则名')).toHaveValue('');
+    expect(screen.getByLabelText('规则名称')).toHaveValue('');
     expect(screen.getByLabelText('匹配模式')).toHaveValue('');
     expect(screen.getByLabelText('优先级')).toHaveValue(100);
     expect(screen.getByText('不指定（仅打标签不移动）')).toBeInTheDocument();
@@ -55,9 +56,11 @@ describe('RuleForm', () => {
         onCancel={vi.fn()}
       />,
     );
-    expect(screen.getByText('编辑规则')).toBeInTheDocument();
-    expect(screen.getByLabelText('规则名')).toHaveValue('PDF 归档');
+    expect(screen.getByText('PDF 归档')).toBeInTheDocument();
+    expect(screen.getByLabelText('规则名称')).toHaveValue('PDF 归档');
     expect(screen.getByLabelText('匹配模式')).toHaveValue('pdf');
+    // 编辑态：启用 toggle 处于 off（is_enabled=false）
+    expect(screen.getByTestId('rule-toggle').getAttribute('aria-pressed')).toBe('false');
   });
 
   it('validates empty rule name', async () => {
@@ -74,7 +77,7 @@ describe('RuleForm', () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(<RuleForm initial={null} categories={categories} onSave={onSave} onCancel={vi.fn()} />);
-    await user.type(screen.getByLabelText('规则名'), '规则');
+    await user.type(screen.getByLabelText('规则名称'), '规则');
     await user.click(screen.getByRole('button', { name: '保存' }));
     expect(screen.getByRole('alert')).toHaveTextContent('匹配模式不能为空');
     expect(onSave).not.toHaveBeenCalled();
@@ -85,7 +88,7 @@ describe('RuleForm', () => {
     const onSave = vi.fn();
     render(<RuleForm initial={null} categories={categories} onSave={onSave} onCancel={vi.fn()} />);
     await user.selectOptions(screen.getByLabelText('规则类型'), RuleType.Regex);
-    await user.type(screen.getByLabelText('规则名'), '规则');
+    await user.type(screen.getByLabelText('规则名称'), '规则');
     await user.type(screen.getByLabelText('匹配模式'), '(');
     await user.click(screen.getByRole('button', { name: '保存' }));
     expect(screen.getByRole('alert')).toHaveTextContent('正则表达式不合法');
@@ -96,7 +99,7 @@ describe('RuleForm', () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(<RuleForm initial={null} categories={categories} onSave={onSave} onCancel={vi.fn()} />);
-    await user.type(screen.getByLabelText('规则名'), '  PDF 归档  ');
+    await user.type(screen.getByLabelText('规则名称'), '  PDF 归档  ');
     await user.type(screen.getByLabelText('匹配模式'), '  pdf  ');
     await user.click(screen.getByRole('button', { name: '保存' }));
     expect(onSave).toHaveBeenCalledWith(
@@ -116,7 +119,7 @@ describe('RuleForm', () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
     render(<RuleForm initial={null} categories={categories} onSave={onSave} onCancel={vi.fn()} />);
-    await user.type(screen.getByLabelText('规则名'), '规则');
+    await user.type(screen.getByLabelText('规则名称'), '规则');
     await user.type(screen.getByLabelText('匹配模式'), 'pdf');
     await user.selectOptions(screen.getByLabelText('目标分类'), 'c1');
     await user.click(screen.getByRole('button', { name: '保存' }));
@@ -163,5 +166,60 @@ describe('RuleForm', () => {
     expect(option('magic_number')?.disabled).toBe(true);
     expect(option('size')?.disabled).toBe(true);
     expect(screen.getAllByText(/（即将推出）/)).toHaveLength(2);
+  });
+
+  it('toggles is_enabled via toggle button', async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+    render(<RuleForm initial={null} categories={categories} onSave={onSave} onCancel={vi.fn()} />);
+    // 默认 is_enabled=true，点击后翻转为 false
+    const toggle = screen.getByTestId('rule-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    await user.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await user.type(screen.getByLabelText('规则名称'), '规则');
+    await user.type(screen.getByLabelText('匹配模式'), 'pdf');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ is_enabled: false }));
+  });
+
+  it('hides delete button on create mode and shows on edit mode', () => {
+    const onDelete = vi.fn();
+    const { rerender } = render(
+      <RuleForm
+        initial={null}
+        categories={categories}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    expect(screen.queryByTestId('rule-delete')).not.toBeInTheDocument();
+    rerender(
+      <RuleForm
+        initial={existingRule}
+        categories={categories}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    expect(screen.getByTestId('rule-delete')).toBeInTheDocument();
+  });
+
+  it('calls onDelete when delete clicked', async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    render(
+      <RuleForm
+        initial={existingRule}
+        categories={categories}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '删除规则' }));
+    expect(onDelete).toHaveBeenCalledWith(existingRule);
   });
 });

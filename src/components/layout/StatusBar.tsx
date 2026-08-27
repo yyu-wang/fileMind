@@ -1,15 +1,20 @@
 // 底部状态栏：订阅 settingsStore + fileStore 显示真实状态。
 //
-// 显示项（设计稿 §2 状态栏）：
-// - 推理模式标签（三色：紫=本地/蓝=云端/琥珀=混合，当前仅 Local/Cloud）
+// 显示项（设计稿 05_交互原型 §状态栏）：
+// - 推理模式标签（mode-badge 三色：紫=本地/蓝=云端/琥珀=混合）
 // - 模型名
 // - 文件数 + 索引状态
 // - 选中数量 + 清除按钮（有选中时显示）
-// - 版本号
+// - 版本号（右侧）
 
 import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { MODE_COLORS } from '../../types/models';
+
+const MODE_BADGE_CLASS: Record<string, string> = {
+  Local: 'local',
+  Cloud: 'cloud',
+};
 
 export function StatusBar() {
   const inferenceMode = useSettingsStore((s) => s.inferenceMode);
@@ -20,34 +25,26 @@ export function StatusBar() {
   const clearSelection = useFileStore((s) => s.clearSelection);
 
   const modeColor = MODE_COLORS[inferenceMode];
+  const badgeClass = MODE_BADGE_CLASS[inferenceMode] ?? 'local';
 
   return (
-    <footer className="status-bar" aria-label="状态栏">
-      <span
-        className="status-bar__tag"
-        style={{ background: modeColor.bg, color: modeColor.dot }}
-        title="当前推理模式"
-      >
-        ● {modeColor.label}
+    <footer className="statusbar" aria-label="状态栏">
+      <span className={`status-item mode-badge ${badgeClass}`} title="当前推理模式">
+        <span className="mode-dot" style={{ background: modeColor.dot }} aria-hidden />
+        {modeColor.label}
       </span>
-      <span className="status-bar__sep" aria-hidden>
-        |
-      </span>
-      <span className="status-bar__text" title="当前模型">
+      <span className="status-divider" aria-hidden />
+      <span className="status-item" title="当前模型">
         {llmModel}
       </span>
-      <span className="status-bar__sep" aria-hidden>
-        |
-      </span>
-      <span className="status-bar__text" title="文件数与索引状态">
+      <span className="status-divider" aria-hidden />
+      <span className="status-item" title="文件数与索引状态">
         {isLoadingSettings ? '加载中...' : stats ? `${stats.total_files} 文件` : '0 文件'}
       </span>
       {selectedIds.length > 0 && (
         <>
-          <span className="status-bar__sep" aria-hidden>
-            |
-          </span>
-          <span className="status-bar__text" title="已选中文件数">
+          <span className="status-divider" aria-hidden />
+          <span className="status-item" title="已选中文件数">
             选中 {selectedIds.length}
           </span>
           <button
@@ -61,10 +58,11 @@ export function StatusBar() {
           </button>
         </>
       )}
-      <span className="status-bar__spacer" />
-      <span className="status-bar__text status-bar__text--muted" title="版本号">
-        v0.1.0
-      </span>
+      <div className="status-right">
+        <span className="status-item" title="版本号">
+          v0.1.0
+        </span>
+      </div>
     </footer>
   );
 }

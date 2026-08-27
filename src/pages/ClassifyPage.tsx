@@ -125,22 +125,20 @@ export function ClassifyPage() {
   };
 
   return (
-    <div className="classify-page">
-      <header className="classify-page__header">
-        <div className="classify-page__heading">
-          <h1 className="classify-page__title">智能分类</h1>
-          {showPreview && <span className="classify-page__subtitle">预览分类方案</span>}
-          {scanPath && (
-            <span className="classify-page__path" title={scanPath}>
-              {scanPath}
-            </span>
-          )}
-        </div>
+    <div className="page classify-page">
+      <header className="main-header">
+        <h1>智能分类</h1>
+        {showPreview && <span className="subtitle">预览分类方案</span>}
+        {scanPath && (
+          <span className="subtitle" title={scanPath}>
+            {scanPath}
+          </span>
+        )}
         {showHeaderActions && (
-          <div className="classify-page__actions">
+          <div className="header-actions">
             <button
               type="button"
-              className="btn btn--ghost"
+              className="btn btn--ghost btn--sm"
               onClick={() => {
                 // FE-M9：取消丢弃预览时同步清空文件页选中——否则残留的
                 // selectedIds 在下次进入分类页时又触发自动生成
@@ -150,12 +148,12 @@ export function ClassifyPage() {
             >
               取消
             </button>
-            <button type="button" className="btn" onClick={() => handleExecuteClick(false)}>
+            <button type="button" className="btn btn--sm" onClick={() => handleExecuteClick(false)}>
               仅执行无冲突项
             </button>
             <button
               type="button"
-              className="btn btn--primary"
+              className="btn btn--primary btn--sm"
               data-testid="classify-execute"
               onClick={() => handleExecuteClick(true)}
             >
@@ -186,9 +184,9 @@ export function ClassifyPage() {
       )}
 
       {showPreview && preview && (
-        <div className="classify-main">
+        <div className="classify-layout">
           {/* 左：树形分类预览（按钮在头部，此处仅展示） */}
-          <div className="classify-main__tree">
+          <div className="classify-tree">
             <ClassifyPreviewTree
               preview={preview}
               onOpenPreview={(item) =>

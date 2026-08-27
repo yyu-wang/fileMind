@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { OnboardingWizard } from './components/onboarding/OnboardingWizard';
+import { ToastContainer } from './components/ui/Toast';
 import { FilesPage } from './pages/FilesPage';
 import { ClassifyPage } from './pages/ClassifyPage';
 import { ChatPage } from './pages/ChatPage';
@@ -46,7 +47,12 @@ export function App() {
 
   // 首次启动未完成引导：显示引导向导（设计稿 §3：引导不可跳过）
   if (!onboardingCompleted) {
-    return <OnboardingWizard />;
+    return (
+      <>
+        <OnboardingWizard />
+        <ToastContainer />
+      </>
+    );
   }
 
   // 已完成引导：显示主界面
@@ -62,6 +68,7 @@ export function App() {
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </AppLayout>
+      <ToastContainer />
     </HashRouter>
   );
 }

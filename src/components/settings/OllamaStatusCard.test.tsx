@@ -1,4 +1,4 @@
-// OllamaStatusCard 单元测试：状态徽标、重新检测、LLM 下拉与 Embedding 可用性。
+// OllamaStatusCard 单元测试：状态徽标、重新检测、LLM 下拉。
 
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -91,7 +91,7 @@ describe('OllamaStatusCard', () => {
     });
     render(<OllamaStatusCard />);
     expect(screen.getByRole('status')).toHaveTextContent('● Ollama 可用');
-    const select = screen.getByLabelText('生成模型（LLM）');
+    const select = screen.getByLabelText('本地 LLM 模型');
     expect(select).not.toBeDisabled();
     expect(screen.getByText('qwen3.8-27b')).toBeInTheDocument();
   });
@@ -101,7 +101,7 @@ describe('OllamaStatusCard', () => {
     render(<OllamaStatusCard />);
     expect(screen.getByRole('status')).toHaveTextContent('○ Ollama 不可用');
     expect(screen.getByText('Ollama 服务未启动')).toBeInTheDocument();
-    expect(screen.getByLabelText('生成模型（LLM）')).toBeDisabled();
+    expect(screen.getByLabelText('本地 LLM 模型')).toBeDisabled();
   });
 
   it('shows probing state and disables re-detect button', () => {
@@ -131,31 +131,9 @@ describe('OllamaStatusCard', () => {
       embeddingModelOptions: ollamaOk.embedding_models,
     });
     render(<OllamaStatusCard />);
-    await user.selectOptions(screen.getByLabelText('生成模型（LLM）'), 'llama3.1');
+    await user.selectOptions(screen.getByLabelText('本地 LLM 模型'), 'llama3.1');
     expect(fileIpc.updateConfig).toHaveBeenCalledWith(
       expect.objectContaining({ llm_model: 'llama3.1' }),
     );
-  });
-
-  it('renders embedding availability list with installed/missing badges', () => {
-    seed({
-      ollamaStatus: ollamaOk,
-      llmModelOptions: ollamaOk.llm_models,
-      embeddingModelOptions: [
-        { name: 'bge-small-zh', dim: 512, version: 1, available: true },
-        { name: 'bge-large-zh-v1.5', dim: 1024, version: 1, available: false },
-      ],
-    });
-    render(<OllamaStatusCard />);
-    expect(screen.getByText(/dim 512 · v1/)).toBeInTheDocument();
-    expect(screen.getAllByText('已安装')).toHaveLength(1);
-    expect(screen.getAllByText('未安装')).toHaveLength(1);
-  });
-
-  it('shows empty embedding hint when no options', () => {
-    seed({ ollamaStatus: ollamaDown });
-    render(<OllamaStatusCard />);
-    expect(screen.getByText('暂无数据')).toBeInTheDocument();
-    expect(screen.getByText('未探测到模型列表')).toBeInTheDocument();
   });
 });

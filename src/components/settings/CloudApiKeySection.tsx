@@ -7,6 +7,7 @@
 // 云端模型：T12 打通后，用户可在设置页选择/输入云端推理模型，持久化到
 // AppConfig → Rust chat_stream 覆盖 llm_model → Sidecar Provider 按前缀路由。
 // RAG 问答和文件分类均为确定性任务，固定低温度（服务端默认），不对外开放调节。
+// 原型 05_交互原型 §设置页 AI 模型配置：.setting-row + .setting-label + .setting-control。
 
 import { useEffect, useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -111,94 +112,109 @@ export function CloudApiKeySection() {
   return (
     <section className="settings-section" aria-labelledby="settings-api-key-title">
       <h3 id="settings-api-key-title" className="settings-section__title">
-        云端 API Key
+        🤖 AI 模型配置
       </h3>
-      <p className="settings-section__desc">
-        云端模式需配置云服务商 API Key。Key 仅保存在系统钥匙串（Keychain），界面只显示末 4 位。
+      <p className="section-desc">
+        配置云端推理模型与 API Key。Key 仅保存在系统钥匙串（Keychain），界面只显示末 4 位。
       </p>
-      {/* T12 打通：云端模型可编辑，持久化到 AppConfig */}
-      <div className="settings-row">
-        <div className="settings-field">
-          <label htmlFor="cloud-model-select" className="settings-field__label">
-            云端模型
-          </label>
-          <div className="settings-model-combo">
-            <input
-              id="cloud-model-select"
-              className="settings-select settings-model-input"
-              list="cloud-model-options"
-              value={modelDraft}
-              onChange={(e) => setModelDraft(e.target.value)}
-              placeholder="选择或输入模型名"
-              aria-label="云端推理模型名"
-            />
-            <datalist id="cloud-model-options">
-              {CLOUD_MODEL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </datalist>
-          </div>
-          <p className="settings-field__hint">
-            选择预设或手动输入模型名（如 gpt-4o / deepseek-chat / claude-3-5-sonnet）
-          </p>
+
+      <div className="setting-row">
+        <div className="setting-label">
+          <div className="name">云端模型</div>
+          <div className="desc">API 推理使用的模型（选择预设或手动输入）</div>
+        </div>
+        <div className="setting-control">
+          <input
+            className="input"
+            list="cloud-model-options"
+            value={modelDraft}
+            onChange={(e) => setModelDraft(e.target.value)}
+            placeholder="选择或输入模型名"
+            aria-label="云端推理模型名"
+            style={{ width: 220 }}
+          />
+          <datalist id="cloud-model-options">
+            {CLOUD_MODEL_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </datalist>
         </div>
       </div>
-      <div className="settings-row settings-row--actions">
-        <button
-          type="button"
-          className="btn btn--primary btn--sm"
-          disabled={savingModel}
-          onClick={() => void saveModel()}
-        >
-          {savingModel ? '保存中...' : '保存模型设置'}
-        </button>
+      <div className="setting-row" style={{ borderBottom: 'none', paddingTop: 0 }}>
+        <div className="setting-label" />
+        <div className="setting-control">
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            disabled={savingModel}
+            onClick={() => void saveModel()}
+          >
+            {savingModel ? '保存中...' : '保存模型设置'}
+          </button>
+        </div>
       </div>
+
       {PROVIDERS.map(({ value, label }) => {
         const status = apiKeyStatus[value];
         const busy = busyProvider === value;
         const hasKey = status.has_key;
         return (
-          <div key={value} className="settings-row">
-            <span className="settings-api-key__provider">
-              {label}
-              {hasKey ? (
-                <span className="settings-mode-badge" title="已配置 API Key">
-                  已保存 {status.hint}
-                </span>
-              ) : (
-                <span className="settings-mode-badge settings-mode-badge--empty">未配置</span>
-              )}
-            </span>
-            <input
-              type="password"
-              className="settings-api-key__input"
-              aria-label={`${label} API Key 输入框`}
-              placeholder={hasKey ? '输入新 Key 可覆盖' : '粘贴 API Key'}
-              value={drafts[value]}
-              autoComplete="off"
-              disabled={busy}
-              onChange={(e) => setDrafts((d) => ({ ...d, [value]: e.target.value }))}
-            />
-            <button
-              type="button"
-              className="btn btn--primary"
-              disabled={busy || !drafts[value].trim()}
-              onClick={() => void save(value)}
+          <div key={value} className="setting-row">
+            <div className="setting-label">
+              <div className="name">
+                {label} API Key
+                {hasKey ? (
+                  <span
+                    className="tag tag-green"
+                    style={{ marginLeft: 8, fontSize: 10 }}
+                    title="已配置 API Key"
+                  >
+                    已保存 {status.hint}
+                  </span>
+                ) : (
+                  <span className="tag tag-gray" style={{ marginLeft: 8, fontSize: 10 }}>
+                    未配置
+                  </span>
+                )}
+              </div>
+              <div className="desc">云端模式需要配置 API Key</div>
+            </div>
+            <div
+              className="setting-control"
+              style={{ display: 'flex', gap: 8, alignItems: 'center' }}
             >
-              保存
-            </button>
-            {hasKey && (
+              <input
+                type="password"
+                className="input"
+                aria-label={`${label} API Key 输入框`}
+                placeholder={hasKey ? '输入新 Key 可覆盖' : '粘贴 API Key'}
+                value={drafts[value]}
+                autoComplete="off"
+                disabled={busy}
+                onChange={(e) => setDrafts((d) => ({ ...d, [value]: e.target.value }))}
+                style={{ width: 220 }}
+              />
               <button
                 type="button"
-                className="btn btn--ghost"
-                disabled={busy}
-                onClick={() => void remove(value)}
+                className="btn btn--primary btn--sm"
+                disabled={busy || !drafts[value].trim()}
+                onClick={() => void save(value)}
               >
-                删除
+                保存
               </button>
-            )}
+              {hasKey && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  disabled={busy}
+                  onClick={() => void remove(value)}
+                >
+                  删除
+                </button>
+              )}
+            </div>
           </div>
         );
       })}

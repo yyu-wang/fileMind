@@ -1,5 +1,6 @@
-// 文件管理主页：虚拟滚动列表 + 筛选排序 + 预览抽屉（设计稿 §4 / T6.4）。
+// 文件管理主页：虚拟滚动列表 + 筛选排序 + 预览抽屉（设计稿 05_交互原型 §文件管理）。
 //
+// 结构：main-header(h1 + subtitle + header-actions) → main-content(file-toolbar + file-table)
 // 筛选/排序为页面级 state（不污染 store）；选中与文件数据走 fileStore。
 
 import { useMemo, useState } from 'react';
@@ -130,29 +131,27 @@ export function FilesPage() {
   };
 
   return (
-    <div className="files-page">
-      <header className="files-page__header">
-        <div className="files-page__heading">
-          <h1 className="files-page__title">文件管理</h1>
-          {scanPath && (
-            <span className="files-page__path" title={scanPath}>
-              {scanPath}
-            </span>
-          )}
-        </div>
-        <div className="files-page__actions">
+    <div className="page files-page">
+      <header className="main-header">
+        <h1>文件管理</h1>
+        {scanPath && (
+          <span className="subtitle" title={scanPath}>
+            {scanPath}
+          </span>
+        )}
+        <div className="header-actions">
           {/* FE-C4：刷新也进 isScanning 态（store），狂点被防抖 */}
           <button
             type="button"
-            className="btn btn--ghost"
+            className="btn btn--ghost btn--sm"
             onClick={() => void loadAllFiles()}
             disabled={isScanning}
           >
-            {isScanning ? '刷新中…' : '刷新'}
+            刷新
           </button>
           <button
             type="button"
-            className="btn btn--primary"
+            className="btn btn--primary btn--sm"
             data-testid="files-scan"
             onClick={() => void handleScan()}
             disabled={isScanning}
@@ -176,84 +175,79 @@ export function FilesPage() {
         </div>
       )}
 
-      <div className="files-toolbar">
-        {/* 搜索框（对齐交互原型） */}
-        <div className="search-box">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <circle cx="11" cy="11" r="8" />
-            <path d="m21 21-4.3-4.3" />
-          </svg>
-          <input
-            type="text"
-            placeholder="搜索文件名..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-
-        <span className="files-toolbar__spacer" />
-
-        {/* 常驻筛选条件（与搜索框同级；去掉「筛选」展开按钮，一次点击即筛选） */}
-        <label className="filter-field">
-          <span>分类</span>
-          <select
-            className="files-toolbar__select"
-            aria-label="按分类筛选"
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-          >
-            <option value="">全部分类</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="filter-field">
-          <span>状态</span>
-          <select
-            className="files-toolbar__select"
-            aria-label="按状态筛选"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
-          >
-            <option value="">全部状态</option>
-            <option value="categorized">已分类</option>
-            <option value="uncategorized">未分类</option>
-          </select>
-        </label>
-
-        {/* 主操作：整理选中 + 清除选中（右侧，与检索条件同组） */}
-        {selectedIds.length > 0 && (
+      {/* 文件页主体：虚拟滚动自带滚动容器，不用 main-content 的 overflow */}
+      <div className="files-page__body">
+        <div className="file-toolbar">
+          {/* 工具栏顺序对齐文档：整理选中 → 搜索框 → 筛选 */}
           <button
             type="button"
-            className="btn btn--ghost"
-            onClick={handleClearSelection}
-            data-testid="files-clear-selection"
+            className="btn btn--sm"
+            onClick={handleClassifySelected}
+            disabled={selectedIds.length === 0}
           >
-            清除选中 ({selectedIds.length})
+            整理选中 ({selectedIds.length})
           </button>
-        )}
-        <button
-          type="button"
-          className="btn"
-          onClick={handleClassifySelected}
-          disabled={selectedIds.length === 0}
-        >
-          整理选中 ({selectedIds.length})
-        </button>
-      </div>
+          {selectedIds.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={handleClearSelection}
+              data-testid="files-clear-selection"
+            >
+              清除选中
+            </button>
+          )}
+          <div className="search-box">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            <input
+              type="text"
+              placeholder="搜索文件名..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <label className="filter-field">
+            <span>分类</span>
+            <select
+              className="files-toolbar__select"
+              aria-label="按分类筛选"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+            >
+              <option value="">全部分类</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>状态</span>
+            <select
+              className="files-toolbar__select"
+              aria-label="按状态筛选"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
+            >
+              <option value="">全部状态</option>
+              <option value="categorized">已分类</option>
+              <option value="uncategorized">未分类</option>
+            </select>
+          </label>
+        </div>
 
-      <div className="files-page__body">
         {files.length === 0 ? (
           <div className="files-page__empty">
             <p className="files-page__empty-title">

@@ -115,14 +115,16 @@ describe('SettingsPage', () => {
 
   it('renders all setting sections', async () => {
     renderPage();
-    expect(await screen.findByText('推理模式')).toBeInTheDocument();
-    expect(screen.getByText('云端 API Key')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 3, name: /推理模式/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: /AI 模型配置/ })).toBeInTheDocument();
     expect(screen.getByText('跟随系统')).toBeInTheDocument();
   });
 
-  it('shows local mode badge by default', () => {
+  it('shows local mode-option selected by default', () => {
     renderPage();
-    expect(screen.getByText('🛡️ 本地模式')).toBeInTheDocument();
+    const localOption = screen.getByTestId('mode-option-local');
+    expect(localOption).toHaveAttribute('aria-checked', 'true');
+    expect(localOption).toHaveAccessibleName(/本地模式（当前）/);
   });
 
   it('loads api key status on mount and shows 未配置', async () => {

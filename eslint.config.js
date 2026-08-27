@@ -33,6 +33,7 @@ export default [
         HTMLInputElement: 'readonly',
         Event: 'readonly',
         CustomEvent: 'readonly',
+        KeyboardEvent: 'readonly',
         __dirname: 'readonly',
       },
     },
