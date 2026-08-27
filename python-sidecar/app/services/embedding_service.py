@@ -104,7 +104,9 @@ async def embed_texts(texts: list[str], model: str = EMBEDDING_MODEL) -> list[li
                 f"{_ollama_model_name(model)}）"
             ) from exc
         raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ConnectionError) as exc:
+        # ollama SDK 在连接失败时抛出内置 ConnectionError（非 httpx.HTTPError），
+        # 需显式捕获，否则异常逃逸到 ASGI 层导致 SSE 流断裂、前端看门狗超时。
         raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
     except TimeoutError as exc:
         raise EmbeddingUnavailableError(f"Embedding 超时（>{EMBED_TIMEOUT}s）") from exc

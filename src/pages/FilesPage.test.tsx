@@ -155,4 +155,21 @@ describe('FilesPage', () => {
     await user.click(screen.getByLabelText('关闭错误提示'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+
+  it('hides 清除选中 button when nothing is selected', () => {
+    seed({ files: [file()], scanPath: '/tmp', selectedIds: [] });
+    renderPage();
+    expect(screen.queryByTestId('files-clear-selection')).not.toBeInTheDocument();
+  });
+
+  it('shows 清除选中 with count and clears selection on click', async () => {
+    const user = userEvent.setup();
+    seed({ files: [file()], scanPath: '/tmp', selectedIds: ['f1'] });
+    renderPage();
+    const btn = screen.getByTestId('files-clear-selection');
+    expect(btn).toHaveTextContent('清除选中 (1)');
+    await user.click(btn);
+    expect(useFileStore.getState().selectedIds).toEqual([]);
+    expect(screen.queryByTestId('files-clear-selection')).not.toBeInTheDocument();
+  });
 });

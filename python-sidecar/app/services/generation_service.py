@@ -291,7 +291,7 @@ async def stream_generate(
                     yield content
     except TimeoutError as exc:
         raise LLMUnavailableError(f"Ollama 流式生成超时（>{LOCAL_STREAM_TIMEOUT}s）") from exc
-    except (httpx.HTTPError, ResponseError) as exc:
+    except (httpx.HTTPError, ConnectionError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 流式生成失败: {exc}") from exc
 
 

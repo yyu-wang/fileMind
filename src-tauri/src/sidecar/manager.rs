@@ -789,17 +789,20 @@ impl Drop for SidecarManager {
 /// 子进程被 launchd 收养（ppid=1）继续占住 8765 端口 → 本次启动探活命中
 /// 旧进程（/health 无鉴权），新 PSK 握手必败 401 → 死循环只能手工杀进程。
 ///
-/// 双重防误杀：
-/// 1. `ps -o comm=` 进程名必须包含 `filemind-sidecar`（不杀无关程序）；
-/// 2. `ps -o ppid=` 必须为 1（真孤儿，父进程已死被 init 收养）。
+/// 三重防误杀：
+/// 1. 端口匹配：仅处理监听 `port`（默认 8765）的进程（`lsof -ti tcp:{port}` 前置过滤）；
+/// 2. 进程身份匹配（满足任一即可）：
+///    a. 打包模式：`ps -o comm=` 进程名包含 `filemind-sidecar`；或
+///    b. dev 模式：进程名包含 `python` 且完整命令行 `ps -o args=` 包含 `-m app`（Sidecar 启动入口特征）；
+/// 3. `ps -o ppid=` 必须为 1（真孤儿，父进程已死被 init 收养）。
 ///    活着的应用实例其 Sidecar ppid 是该实例主进程，不会被误杀——因此
 ///    「第二实例先于单实例插件启动 Sidecar」的竞态也是安全的：第二实例
 ///    不清掉第一实例的 Sidecar，自己 spawn 失败/握手失败后自我清理退出。
 ///
 /// 仅 Unix 实现；非 Unix 平台记日志跳过。工具（lsof/ps）缺失视为无可清理。
 pub fn cleanup_orphan_sidecar(port: u16) {
-    // 安全注释：kill 的目标经过「监听指定端口 + 名字匹配 + ppid==1」三重
-    // 校验，均为本应用残留 Sidecar；不涉及其他进程。
+    // 安全注释：kill 的目标经过「监听指定端口 + Sidecar 身份匹配（打包名或 python+-m app）
+    // + ppid==1」三重校验，均为本应用残留 Sidecar；不涉及其他进程。
     #[cfg(unix)]
     {
         let lsof = std::process::Command::new("lsof")
@@ -817,16 +820,30 @@ pub fn cleanup_orphan_sidecar(port: u16) {
             .filter_map(|s| s.parse::<u32>().ok())
             .collect::<Vec<u32>>();
         for pid in pids {
-            // 校验 1：进程名包含 filemind-sidecar
-            let comm = std::process::Command::new("ps")
+            // 校验 1：进程身份匹配（打包模式 OR dev 模式）
+            let comm_output = std::process::Command::new("ps")
                 .args(["-o", "comm=", "-p", &pid.to_string()])
                 .output();
-            let name_matches = comm.is_ok_and(|c| {
-                c.status.success()
-                    && String::from_utf8_lossy(&c.stdout).contains("filemind-sidecar")
-            });
-            if !name_matches {
-                log::info!("孤儿清理跳过 pid={pid}：进程名不匹配");
+            let comm_str = comm_output
+                .ok()
+                .filter(|c| c.status.success())
+                .map(|c| String::from_utf8_lossy(&c.stdout).to_lowercase());
+            let bundle_matches = comm_str
+                .as_deref()
+                .is_some_and(|s| s.contains("filemind-sidecar"));
+            // dev 模式：进程名是 python，且完整命令行带 `-m app` 入口
+            let dev_matches = if comm_str.as_deref().is_some_and(|s| s.contains("python")) {
+                let args_output = std::process::Command::new("ps")
+                    .args(["-o", "args=", "-p", &pid.to_string()])
+                    .output();
+                args_output.is_ok_and(|a| {
+                    a.status.success() && String::from_utf8_lossy(&a.stdout).contains("-m app")
+                })
+            } else {
+                false
+            };
+            if !bundle_matches && !dev_matches {
+                log::info!("孤儿清理跳过 pid={pid}：进程名/命令行不匹配");
                 continue;
             }
             // 校验 2：ppid == 1（父进程已死，被 init 收养的真孤儿）

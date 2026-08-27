@@ -757,29 +757,40 @@ fn scan_files_on_disk(root: &Path) -> AppResult<Vec<FileInfo>> {
 /// 入库会拖垮文件库规模与 UI 性能（见历史问题：63.9 万文件卡死）。
 const SKIP_DIR_NAMES: &[&str] = &[
     "node_modules",
-    ".git",
-    ".svn",
-    ".hg",
     "dist",
     "build",
     "target",
     "__pycache__",
-    ".venv",
     "venv",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".cache",
-    ".idea",
-    ".vscode",
     "vendor",
+    // Windows 系统目录
+    "$recycle.bin",
+    "system volume information",
+    // macOS 系统目录
+    "__macosx",
+    ".spotlight-v100",
+    ".fseventsd",
+    ".trashes",
+    // 通用缓存/日志目录
+    "cache",
+    "caches",
+    "logs",
 ];
 
 /// 扫描时跳过的文件（垃圾/临时文件，不区分大小写）。
 const SKIP_FILE_NAMES: &[&str] = &[".ds_store", "thumbs.db"];
 
 /// 判断目录名是否命中跳过黑名单。
+///
+/// 跳过优先级：
+/// 1. 隐藏目录（以 `.` 开头）——统一跳过，系统/应用数据，非用户文件
+/// 2. 显式黑名单目录（`SKIP_DIR_NAMES`）——工程依赖、系统目录
 fn is_skipped_dir(name: &str) -> bool {
+    // 隐藏目录兜底：以 `.` 开头的目录在 Finder 中默认不可见，
+    // 绝大多数是系统/应用数据，不应纳入文件整理范围
+    if name.starts_with('.') {
+        return true;
+    }
     let lower = name.to_lowercase();
     SKIP_DIR_NAMES.contains(&lower.as_str())
 }
@@ -1132,7 +1143,9 @@ mod tests {
 
     #[test]
     fn test_scan_skips_blacklist_dirs() -> Result<(), Box<dyn std::error::Error>> {
-        // 黑名单目录（node_modules/.git/dist/target/__pycache__/venv）整体跳过
+        // 黑名单目录：
+        // - node_modules / dist / target / __pycache__：显式列表跳过
+        // - .git / .venv：以 `.` 开头的隐藏目录，由 starts_with('.') 规则跳过
         let tmp = tempfile::tempdir()?;
         for dir in [
             "node_modules",
@@ -1161,6 +1174,43 @@ mod tests {
             "黑名单目录内文件不应被扫描: {names:?}"
         );
         assert!(!names.contains(&"deep.js"), "嵌套黑名单目录应跳过");
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_skips_hidden_dirs() -> Result<(), Box<dyn std::error::Error>> {
+        // 所有以 `.` 开头的目录应统一跳过（系统/应用数据，非用户文件）
+        let tmp = tempfile::tempdir()?;
+
+        // 隐藏目录及其文件
+        for dir in [".git", ".venv"] {
+            std::fs::create_dir_all(tmp.path().join(dir))?;
+            create_temp_file(&tmp.path().join(dir), "data.bin", "x")?;
+        }
+        // 嵌套隐藏目录：在 .git 下创建子目录和文件
+        std::fs::create_dir_all(tmp.path().join(".git/objects"))?;
+        create_temp_file(&tmp.path().join(".git/objects"), "nested.txt", "x")?;
+
+        // 正常文件应保留
+        create_temp_file(tmp.path(), "report.pdf", "pdf")?;
+        std::fs::create_dir_all(tmp.path().join("Documents"))?;
+        create_temp_file(&tmp.path().join("Documents"), "doc.txt", "doc")?;
+
+        let files = scan_files_on_disk(tmp.path())?;
+        let names: Vec<&str> = files.iter().map(|f| f.file_name.as_str()).collect();
+        assert!(names.contains(&"report.pdf"), "正常文件应保留: {names:?}");
+        assert!(
+            names.contains(&"doc.txt"),
+            "正常子目录文件应保留: {names:?}"
+        );
+        assert!(
+            !names.contains(&"data.bin"),
+            "隐藏目录内文件不应被扫描: {names:?}"
+        );
+        assert!(
+            !names.contains(&"nested.txt"),
+            "嵌套隐藏目录内文件不应被扫描: {names:?}"
+        );
         Ok(())
     }
 

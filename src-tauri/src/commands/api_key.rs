@@ -30,20 +30,43 @@ const ALL_PROVIDERS: [CloudProvider; 2] = [CloudProvider::Openai, CloudProvider:
 
 /// 查询所有云服务商的 API Key 状态（仅掩码提示，不含完整 Key）。
 ///
-/// # Errors
+/// # 错误降级（用户体验优化）
+/// 仅打开设置页查看时，若用户拒绝 Keychain 访问或 Keychain 临时锁定，
+/// **不向上层报错**——降级为所有 provider `has_key=false`（视为未配置），
+/// 只记 warning 日志。写入/删除（`set_api_key` / `delete_api_key`）与云端
+/// 请求才强制要求 Keychain 可用并返回错误，避免打开设置页就被 Keychain
+/// 弹窗与错误 toast 骚扰。
 ///
-/// Keychain 读取失败时返回错误。
+/// # Errors
+/// 本实现已将 Keychain 读取失败全部降级为空状态并以 `Ok` 返回；`Result::Err`
+/// 分支仅作为 IPC 类型契约保留（若未来新增错误路径可在此展开）。
 #[tauri::command(async)]
 #[specta::specta]
 pub fn get_api_key_status() -> Result<Vec<ApiKeyStatus>, String> {
-    ALL_PROVIDERS
+    let mut any_failed = false;
+    let statuses: Vec<ApiKeyStatus> = ALL_PROVIDERS
         .iter()
-        .map(|provider| {
-            let key = security::get_key(provider_key(*provider))
-                .map_err(|e| format!("KEY-001:API Key 读取失败 ({e})"))?;
-            Ok(build_status(*provider, key.as_deref()))
-        })
-        .collect()
+        .map(
+            |provider| match security::get_key(provider_key(*provider)) {
+                Ok(key) => build_status(*provider, key.as_deref()),
+                Err(e) => {
+                    any_failed = true;
+                    log::warn!(
+                    "get_api_key_status: Keychain 读取失败，降级为未配置 (provider={}, err={e})",
+                    provider_key(*provider)
+                );
+                    build_status(*provider, None)
+                }
+            },
+        )
+        .collect();
+    if any_failed {
+        log::warn!(
+            "get_api_key_status: 存在 Keychain 访问失败，已全部降级为空状态；\
+             若需要保存/使用 Key，请允许 Keychain 访问并重试"
+        );
+    }
+    Ok(statuses)
 }
 
 /// 保存指定云服务商的 API Key（覆盖旧值）。

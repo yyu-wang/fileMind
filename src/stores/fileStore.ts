@@ -9,6 +9,7 @@
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
 import type { FileInfo, FileStats } from '../types/ipc';
+import { useClassifyStore } from './classifyStore';
 
 // FE-C4：文件列表请求序号——scanFiles/loadAllFiles 共用。
 // 慢请求（大目录扫描）后发起的快请求先返回时，旧响应到达后序号失配被丢弃，
@@ -117,9 +118,18 @@ export const useFileStore = create<FileState>()((set) => ({
 
   setSelection: (ids) => set({ selectedIds: ids }),
 
-  clearSelection: () => set({ selectedIds: [] }),
+  clearSelection: () => {
+    // 清除选中意味放弃当前分类意图：同步作废 classifyStore 里上一批的预览缓存
+    // （preview / pendingIds / execSummary / 进度），防止返回分类页时仍显示旧结果。
+    useClassifyStore.getState().reset();
+    set({ selectedIds: [] });
+  },
 
-  clearFiles: () => set({ files: [], scanPath: null, selectedIds: [] }),
+  clearFiles: () => {
+    // 清空文件库也意味着之前的分类选择完全作废，同步重置分类页缓存
+    useClassifyStore.getState().reset();
+    set({ files: [], scanPath: null, selectedIds: [] });
+  },
 
   clearError: () => set({ error: null }),
 }));

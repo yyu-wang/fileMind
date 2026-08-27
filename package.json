@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "dev:tauri": "tauri dev",
+    "dev:tauri": "FILEMIND_DATA_HOME=\"/Users/wangyu/Desktop/个人/project/filemind/.filemind-dev\" FILEMIND_SIDECAR_BINARY=\"/Users/wangyu/Desktop/个人/project/filemind/filemind/binaries/filemind-sidecar-dev\" tauri dev",
     "build": "tsc --noEmit && vite build",
     "build:tauri": "tauri build",
     "build:tauri:dev": "tauri build --debug",

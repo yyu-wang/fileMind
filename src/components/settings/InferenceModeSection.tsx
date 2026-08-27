@@ -53,11 +53,11 @@ export function InferenceModeSection() {
     setError(null);
     try {
       await signCloudConsent(provider);
-      setConsentOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : '签署同意书失败');
     } finally {
       setBusy(false);
+      setConsentOpen(false);
     }
   };
 

@@ -4,6 +4,7 @@
 // - 推理模式标签（三色：紫=本地/蓝=云端/琥珀=混合，当前仅 Local/Cloud）
 // - 模型名
 // - 文件数 + 索引状态
+// - 选中数量 + 清除按钮（有选中时显示）
 // - 版本号
 
 import { useFileStore } from '../../stores/fileStore';
@@ -15,6 +16,8 @@ export function StatusBar() {
   const llmModel = useSettingsStore((s) => s.llmModel);
   const isLoadingSettings = useSettingsStore((s) => s.isLoading);
   const stats = useFileStore((s) => s.stats);
+  const selectedIds = useFileStore((s) => s.selectedIds);
+  const clearSelection = useFileStore((s) => s.clearSelection);
 
   const modeColor = MODE_COLORS[inferenceMode];
 
@@ -39,6 +42,25 @@ export function StatusBar() {
       <span className="status-bar__text" title="文件数与索引状态">
         {isLoadingSettings ? '加载中...' : stats ? `${stats.total_files} 文件` : '0 文件'}
       </span>
+      {selectedIds.length > 0 && (
+        <>
+          <span className="status-bar__sep" aria-hidden>
+            |
+          </span>
+          <span className="status-bar__text" title="已选中文件数">
+            选中 {selectedIds.length}
+          </span>
+          <button
+            type="button"
+            className="status-bar__link"
+            onClick={clearSelection}
+            title="清除所有选中"
+            aria-label="清除选中"
+          >
+            清除
+          </button>
+        </>
+      )}
       <span className="status-bar__spacer" />
       <span className="status-bar__text status-bar__text--muted" title="版本号">
         v0.1.0

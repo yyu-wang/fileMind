@@ -20,6 +20,7 @@ import {
 } from '@/lib/fileTable';
 import { useClassifyStore } from '@/stores/classifyStore';
 import { useFileStore } from '@/stores/fileStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import type { FileInfo } from '@/types/ipc';
 
 interface SortState {
@@ -39,6 +40,7 @@ export function FilesPage() {
   const setSelection = useFileStore((s) => s.setSelection);
   const clearSelection = useFileStore((s) => s.clearSelection);
   const clearError = useFileStore((s) => s.clearError);
+  const dataDirectory = useSettingsStore((s) => s.dataDirectory);
   const navigate = useNavigate();
 
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -86,7 +88,15 @@ export function FilesPage() {
       await scanFiles(testDir);
       return;
     }
-    const selected = await open({ directory: true, multiple: false, title: '选择要管理的目录' });
+    const dialogOptions: Parameters<typeof open>[0] = {
+      directory: true,
+      multiple: false,
+      title: '选择要管理的目录',
+    };
+    if (dataDirectory) {
+      dialogOptions.defaultPath = dataDirectory;
+    }
+    const selected = await open(dialogOptions);
     if (typeof selected === 'string') {
       await scanFiles(selected);
     }
@@ -105,6 +115,13 @@ export function FilesPage() {
     } else {
       setSelection(ids);
     }
+  };
+
+  const handleClearSelection = () => {
+    clearSelection();
+    // 清除选中语义上等价于放弃"这批待分类文件"，同步作废分类页的旧预览缓存，
+    // 否则用户返回分类页会看到上一批 12k+ 文件的旧预览树，误以为选中还残留。
+    useClassifyStore.getState().reset();
   };
 
   const handleClassifySelected = () => {
@@ -215,7 +232,17 @@ export function FilesPage() {
           </select>
         </label>
 
-        {/* 主操作：整理选中（右侧，与检索条件同组） */}
+        {/* 主操作：整理选中 + 清除选中（右侧，与检索条件同组） */}
+        {selectedIds.length > 0 && (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={handleClearSelection}
+            data-testid="files-clear-selection"
+          >
+            清除选中 ({selectedIds.length})
+          </button>
+        )}
         <button
           type="button"
           className="btn"

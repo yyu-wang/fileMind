@@ -65,6 +65,8 @@ npm-debug.log*
 
 # 本地开发数据目录（开发环境把 SQLite + LanceDB 迁到项目内，绕过沙箱限制目录）
 .filemind-local/
+.filemind-dev/
+src-tauri/.filemind-dev/
 
 # Sidecar onefile binaries (PyInstaller 产物，每平台 23-60MB，构建时生成；只保留 .gitkeep 占位)
 filemind/binaries/*

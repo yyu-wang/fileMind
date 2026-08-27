@@ -292,7 +292,7 @@ async def call_ollama_json(system: str, user: str, *, model: str = LLM_MODEL) ->
             think=False,
             options=Options(num_predict=256, temperature=0.0),
         )
-    except (httpx.HTTPError, ResponseError) as exc:
+    except (httpx.HTTPError, ConnectionError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc
     # 注意：ollama SDK 的 ChatResponse/Message 运行时并非 Mapping ABC（无
     # isinstance(resp, Mapping) 判定），但均继承 SubscriptableBaseModel.get()，

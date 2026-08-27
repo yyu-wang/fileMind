@@ -218,6 +218,22 @@ body {
   flex: 1;
 }
 
+.status-bar__link {
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+  color: var(--accent2);
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  line-height: inherit;
+}
+
+.status-bar__link:hover {
+  opacity: 0.8;
+}
+
 /* ========== T6.3 按钮基础类（设计稿 §3 按钮状态视觉规范） ========== */
 .btn {
   padding: 8px 16px;
