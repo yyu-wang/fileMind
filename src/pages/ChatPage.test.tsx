@@ -1,9 +1,11 @@
 // ChatPage 单元测试：空态、文件计数、建立索引成功/失败、消息渲染与清空、错误提示。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChatRole, type ChatMessage } from '@/types/models';
+import type { FileInfo } from '@/types/ipc';
 
 import { useChatStore } from '@/stores/chatStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -12,6 +14,7 @@ import { ChatPage } from './ChatPage';
 const mocks = vi.hoisted(() => ({
   readFilePreview: vi.fn(),
   searchByFilename: vi.fn(),
+  listAllFiles: vi.fn(),
   buildIndex: vi.fn(),
   chatStream: vi.fn(),
   listenChatEvent: vi.fn(),
@@ -23,6 +26,7 @@ vi.mock('@/lib/ipc', () => ({
   fileIpc: {
     readFilePreview: mocks.readFilePreview,
     searchByFilename: mocks.searchByFilename,
+    listAllFiles: mocks.listAllFiles,
     buildIndex: mocks.buildIndex,
   },
 }));
@@ -48,6 +52,23 @@ const msg: ChatMessage = {
 function seed(overrides: Partial<Parameters<typeof useChatStore.setState>[0]> = {}): void {
   localStorage.clear();
   vi.clearAllMocks();
+  // 默认返回空文件列表——ChatPage 初始化 loadAllFiles() 需要该 mock。
+  // 这样 ChatPage useEffect 异步 promise resolve 后不会抛 unhandled rejection
+  // （Vitest 把"测试结束后仍 pending/resolve 但状态被 mock 没定义"当 Unhandled Errors）。
+  mocks.listAllFiles.mockResolvedValue({ status: 'ok', data: [], total: 0 });
+  // 预览 IPC 默认返回 Unsupported——防止 readFilePreview() 返回 undefined
+  // 导致 FilePreviewDrawer useEffect 里 .then 访问 undefined.then 抛 uncaught。
+  mocks.readFilePreview.mockResolvedValue({
+    status: 'ok',
+    data: {
+      kind: 'Unsupported',
+      file_name: '',
+      file_size: 0,
+      text: null,
+      data_url: null,
+      truncated: false,
+    },
+  });
   useFileStore.setState({ files: [], total: 0 });
   useChatStore.setState({
     messages: [],
@@ -122,5 +143,86 @@ describe('ChatPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('请求失败');
     await user.click(screen.getByLabelText('关闭错误提示'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('opens preview overlay dialog when citation chip clicked', async () => {
+    const user = userEvent.setup();
+    const file: FileInfo = {
+      id: 'f1',
+      path: '/Users/demo/Documents/notes/设计规范.md',
+      file_name: '设计规范.md',
+      file_size: 1024,
+      content_hash: null,
+      category: '文档',
+      created_at: '',
+      updated_at: '',
+    };
+    const answer: ChatMessage = {
+      id: 'm2',
+      role: ChatRole.Assistant,
+      content: '答案',
+      citations: [{ id: 1, fileName: '设计规范.md', page: 2, text: '引用片段' }],
+      createdAt: '',
+    };
+    seed({ messages: [msg, answer] });
+    useFileStore.setState({ files: [file], total: 1 });
+    mocks.readFilePreview.mockResolvedValue({
+      status: 'ok',
+      data: {
+        kind: 'Text',
+        file_name: '设计规范.md',
+        file_size: 1024,
+        text: '# 设计规范正文',
+        data_url: null,
+        truncated: false,
+      },
+    });
+
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /设计规范\.md/ }));
+
+    // 右侧覆盖层弹窗（role=dialog）应出现：标题 + 正文预览 + 路径
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText('文件预览')).toBeInTheDocument();
+    expect(await screen.findByText('# 设计规范正文')).toBeInTheDocument();
+    // 抽屉头部 title 与底部 meta 各有一处完整路径
+    expect(
+      screen.getAllByTitle('/Users/demo/Documents/notes/设计规范.md').length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  // FE-m14 回归：StrictMode（dev 双跑 setup→cleanup→setup）下 isMountedRef
+  // 曾因 cleanup-only 写法永久停留在 false，点击引用静默 return、抽屉不弹。
+  // 用 StrictMode 包裹渲染复现真实 dev 行为。
+  it('opens preview when citation clicked under StrictMode', async () => {
+    const user = userEvent.setup();
+    const file: FileInfo = {
+      id: 'f1',
+      path: '/Users/demo/Documents/notes/设计规范.md',
+      file_name: '设计规范.md',
+      file_size: 1024,
+      content_hash: null,
+      category: '文档',
+      created_at: '',
+      updated_at: '',
+    };
+    const answer: ChatMessage = {
+      id: 'm2',
+      role: ChatRole.Assistant,
+      content: '答案',
+      citations: [{ id: 1, fileName: '设计规范.md', page: 2, text: '引用片段' }],
+      createdAt: '',
+    };
+    seed({ messages: [msg, answer] });
+    useFileStore.setState({ files: [file], total: 1 });
+
+    render(
+      <StrictMode>
+        <ChatPage />
+      </StrictMode>,
+    );
+    await user.click(screen.getByRole('button', { name: /设计规范\.md/ }));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 });

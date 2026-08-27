@@ -8,6 +8,7 @@ import { ChatBubble } from '@/components/chat/ChatBubble';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { SearchStatusBar } from '@/components/chat/SearchStatusBar';
 import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
+import { useToastStore } from '@/components/ui/Toast';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { fileIpc } from '@/lib/ipc';
 import { useChatStore } from '@/stores/chatStore';
@@ -24,15 +25,15 @@ interface PreviewTarget {
 async function findFileByName(
   fileName: string,
   fallbackFiles: FileInfo[],
-): Promise<FileInfo | null> {
+): Promise<{ file: FileInfo; fastPath: boolean } | null> {
   const nameLower = fileName.toLowerCase();
   const nameNoExt = nameLower.replace(/\.[^.]+$/, '');
 
   // 1) 精确匹配（大小写敏感→不敏感）
   const exactHit = fallbackFiles.find((f) => f.file_name === fileName);
-  if (exactHit) return exactHit;
+  if (exactHit) return { file: exactHit, fastPath: true };
   const ciHit = fallbackFiles.find((f) => f.file_name.toLowerCase() === nameLower);
-  if (ciHit) return ciHit;
+  if (ciHit) return { file: ciHit, fastPath: true };
 
   // 2) 去扩展名匹配（数据库里是 .md/.txt 但 citation 丢了后缀）
   if (nameNoExt.length > 0) {
@@ -40,22 +41,28 @@ async function findFileByName(
       const base = f.file_name.toLowerCase().replace(/\.[^.]+$/, '');
       return base === nameNoExt || base === nameLower;
     });
-    if (noExtHit) return noExtHit;
+    if (noExtHit) return { file: noExtHit, fastPath: true };
   }
 
-  // 3) 共享前缀/子串包含匹配——应对 UI 里文件名为了显示会追加 "…" 但
-  //    citation.fileName 实际是完整的；主要场景是文件名中带 emoji/-/_ 变体。
+  // 3) 共享前缀/子串包含匹配
   const looseHit = fallbackFiles.find((f) => {
     const db = f.file_name.toLowerCase();
     return db.includes(nameLower) || nameLower.includes(db);
   });
-  if (looseHit) return looseHit;
+  if (looseHit) return { file: looseHit, fastPath: true };
 
-  // 4) 兜底：Rust FTS/文件名 LIKE 模糊搜索
-  const result = await fileIpc.searchByFilename(fileName, 3);
+  // 4) 兜底：Rust FTS/文件名 LIKE 模糊搜索（慢速 IPC 路径）。
+  //    加 3s 超时：防止 Tauri invoke 卡死/无响应时永久 pending（用户感知"点了没反应"）。
+  const timeout = new Promise<never>((_, reject) => {
+    const id = setTimeout(() => {
+      clearTimeout(id);
+      reject(new Error('搜索引用文件超时（3s）'));
+    }, 3000);
+  });
+  const result = await Promise.race([fileIpc.searchByFilename(fileName, 5), timeout]);
   if (result.status === 'ok' && result.data.length > 0) {
-    // 返回结果中优先挑和原文件名相似度最高的（命中包含后缀全匹配）
-    return result.data.find((f) => f.file_name.toLowerCase() === nameLower) ?? result.data[0];
+    const file = result.data.find((f) => f.file_name.toLowerCase() === nameLower) ?? result.data[0];
+    return { file, fastPath: false };
   }
   return null;
 }
@@ -87,9 +94,14 @@ export function ChatPage() {
   // 建立索引：请求状态 + 结果提示（T7.x）
   const [building, setBuilding] = useState(false);
   const [indexMessage, setIndexMessage] = useState<string | null>(null);
-  // FE-m14：await 后 setState 的卸载守卫，防组件卸载后 setState warning
+  // FE-m14：await 后 setState 的卸载守卫，防组件卸载后 setState warning。
+  // 注意必须在 setup 里显式置 true：StrictMode（dev 双跑 setup→cleanup→setup）
+  // 和 Vite HMR Fast Refresh（重跑 effect 但保留 ref）都会先执行 cleanup，
+  // 若只在初始化 useRef(true) 里赋值，ref 会永久停留在 false，
+  // 导致 handleCitationClick 在挂载守卫处静默 return（点击引用无任何反应）。
   const isMountedRef = useRef(true);
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
@@ -97,10 +109,19 @@ export function ChatPage() {
 
   // ChatPage 可能是用户进入 App 的第一个路由页（直接导航 / 链接跳 / 刷新），
   // fileStore.files 初始化是 []，本地精确匹配永远失败；在此兜底拉一次全量列表。
+  // 注意：必须用 ref 防重入——若 listAllFiles 返回空列表，isScanning 会从 true→false
+  // 反复变化，effect 依赖 [files.length, filesReady] 每轮都变 → 无限 loadAllFiles 循环
+  // （真实环境表现为 IPC 刷屏 + 页面反复重渲染；测试环境直接把 worker 挂死）。
+  const bootstrappedRef = useRef(false);
   useEffect(() => {
-    if (files.length === 0 && filesReady) {
-      void loadAllFiles();
+    if (bootstrappedRef.current || !filesReady || files.length > 0) {
+      return;
     }
+    bootstrappedRef.current = true;
+    void loadAllFiles().catch(() => {
+      // 拉取失败时解除门闩，允许下次依赖变化时重试；点击引用另有兜底加载路径
+      bootstrappedRef.current = false;
+    });
   }, [files.length, filesReady, loadAllFiles]);
 
   // T6.10 快捷键：⌘N 新建对话（清空当前会话）
@@ -128,18 +149,82 @@ export function ChatPage() {
   };
 
   const handleCitationClick = async (citation: ChatCitation) => {
-    const file = await findFileByName(citation.fileName, files);
-    if (!isMountedRef.current) return;
-    if (file) {
-      // FE-M6（修复 PDF 缩放后再次点击无响应）：先写 null 卸载上一次实例，
-      // 再 +1 换 key 再写 target → 保证 phase 从 loading 重新开始，
-      // 杜绝 react-pdf Document 复用旧 canvas/worker 导致的空白/卡死。
-      setPreviewTarget(null);
+    // 最外层兜底：任何 throw 都转为 error toast——异步 unhandled rejection 会让用户以为"点了没反应"。
+    try {
+      const toastState = useToastStore.getState();
+      const showToast = toastState.show;
+      const removeToast = toastState.remove;
+
+      if (!citation || typeof citation.fileName !== 'string' || citation.fileName.length === 0) {
+        showToast({ message: '引用文件名为空，请检查回答内容格式', variant: 'error' });
+        return;
+      }
+
+      // ① 是否需要"等待中"toast：只要要走 IPC 慢路径才显示
+      const needSlowPath = files.length === 0;
+      let loadingToastId: string | null = null;
+      if (needSlowPath) {
+        loadingToastId = showToast({
+          message: `正在定位「${citation.fileName}」…`,
+          variant: 'info',
+          duration: 0,
+        });
+      }
+
+      // ② 如需补全文件列表，主动 await（不再依赖 filesReady 门槛）
+      let localFiles = files;
+      if (localFiles.length === 0) {
+        try {
+          await loadAllFiles();
+        } catch {
+          if (loadingToastId) removeToast(loadingToastId);
+          showToast({ message: '文件列表加载失败，稍后重试', variant: 'error' });
+          return;
+        }
+        if (!isMountedRef.current) {
+          if (loadingToastId) removeToast(loadingToastId);
+          return;
+        }
+        localFiles = useFileStore.getState().files;
+      }
+
+      // ③ findFileByName 返回 {file, fastPath}：fastPath=true=本地前 3 级命中（<1ms）
+      const found = await findFileByName(citation.fileName, localFiles);
+      if (!isMountedRef.current) {
+        if (loadingToastId) removeToast(loadingToastId);
+        return;
+      }
+
+      if (!found) {
+        if (loadingToastId) removeToast(loadingToastId);
+        showToast({
+          message: `未找到引用文件「${citation.fileName}」，请先在文件管理中扫描该目录`,
+          variant: 'warn',
+          duration: 4500,
+        });
+        return;
+      }
+
+      // ④ 命中：IPC 慢路径 → 补 loading toast
+      if (!found.fastPath && !loadingToastId) {
+        loadingToastId = showToast({
+          message: `正在加载「${citation.fileName}」预览…`,
+          variant: 'info',
+          duration: 0,
+        });
+      }
+
+      // ⑤ 一步到位：setPreviewKey(k+1)（强制卸旧实例清理 PDF 缓存）
+      //    + setPreviewTarget(file)（React 批处理一次渲染）
       setPreviewKey((k) => k + 1);
-      // 下一帧再挂载：让 null 状态 flush 一次，React 才会真正重建组件树
-      window.requestAnimationFrame(() => {
-        if (!isMountedRef.current) return;
-        setPreviewTarget({ file, initialPage: citation.page });
+      setPreviewTarget({ file: found.file, initialPage: citation.page });
+      if (loadingToastId) removeToast(loadingToastId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      useToastStore.getState().show({
+        message: `打开预览失败：${message}`,
+        variant: 'error',
+        duration: 5000,
       });
     }
   };

@@ -6,7 +6,7 @@
 // props 受控：file 为 null 时不渲染；file 变化时重新拉取预览内容。
 // PDF 走 react-pdf，worker 用同源 URL（CSP script-src 'self' 禁 blob:）。
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 
 import { formatFileSize } from '@/lib/format';
@@ -56,6 +56,16 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
     setPageNumber(initialPage);
   }
 
+  // 原型 §Drawer：ESC 关闭
+  useEffect(() => {
+    if (!file) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [file, onClose]);
+
   // 状态在 useState 初始化（loading / 第 1 页）；文件切换由父级 key 触发重挂载重置。
   useEffect(() => {
     if (!file) {
@@ -63,10 +73,13 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
     }
     let cancelled = false;
 
-    // FE-m6：加 catch——IPC 层 reject 时无 catch 会断 promise 链，state 卡 loading
-    fileIpc
-      .readFilePreview(file.path)
-      .then((result) => {
+    // IPC 是系统边界：tauri-specta 生成的 commands 是 `typedError(invoke(...))`，
+    // invoke(...) 在 typedError 包装前同步执行——若 __TAURI_INTERNALS 未就绪/
+    // 参数异常会同步 throw，直接炸掉 useEffect → React 卸载整棵组件树
+    // （用户看到"弹窗闪没/页面白屏"）。故用 try + Promise.resolve() 双保险。
+    const fetchPreview = async () => {
+      try {
+        const result = await fileIpc.readFilePreview(file.path);
         if (cancelled) {
           return;
         }
@@ -75,14 +88,15 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
         } else {
           setState({ phase: 'error', message: result.error });
         }
-      })
-      .catch((err: unknown) => {
+      } catch (err) {
         if (cancelled) return;
         setState({
           phase: 'error',
           message: err instanceof Error ? err.message : '读取预览失败',
         });
-      });
+      }
+    };
+    void fetchPreview();
     return () => {
       cancelled = true;
     };
@@ -92,63 +106,78 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
     return null;
   }
 
+  // 原型 §Drawer：半透明遮罩（点击遮罩关闭）+ 右侧滑入抽屉（460px 宽、100vh 高）
+  // 不参与页面 flex 布局，从根本上避免"chat-page column 布局把抽屉挤出视口外"
+  // 同时恢复用户期望的『弹出预览』形态，而不是常驻右侧 panel。
+  const handleOverlayClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
   return (
-    <div className="files-preview" role="complementary" aria-label="文件预览">
-      <div className="files-preview__head">
-        <span className="files-preview__title" title={file.path}>
-          {file.file_name}
-        </span>
-        <div className="files-preview__head-actions">
-          <button
-            type="button"
-            className="files-preview__close"
-            aria-label="关闭预览"
-            onClick={onClose}
-          >
-            ×
-          </button>
+    <div
+      className="files-preview__overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="文件预览弹窗"
+      onClick={handleOverlayClick}
+    >
+      <div className="files-preview" role="complementary" aria-label="文件预览">
+        <div className="files-preview__head">
+          <span className="files-preview__title" title={file.path}>
+            {file.file_name}
+          </span>
+          <div className="files-preview__head-actions">
+            <button
+              type="button"
+              className="files-preview__close"
+              aria-label="关闭预览"
+              onClick={onClose}
+            >
+              ×
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div className="files-preview__body">
-        {/* 预览内容区：固定 2/3 高度；loading 阶段在这一整块内显示 loading 占位，
-            避免 iframe/PDF 加载大文件时整行空白→用户以为无反应 */}
-        <div className="files-preview__content-slot">
-          {state.phase === 'loading' && (
-            <div className="files-preview__loading" role="status" aria-live="polite">
-              <span className="files-preview__spinner" aria-hidden />
-              <span>正在加载文件内容…</span>
-            </div>
+        <div className="files-preview__body">
+          {/* 预览内容区：固定 2/3 高度；loading 阶段在这一整块内显示 loading 占位，
+              避免 iframe/PDF 加载大文件时整行空白→用户以为无反应 */}
+          <div className="files-preview__content-slot">
+            {state.phase === 'loading' && (
+              <div className="files-preview__loading" role="status" aria-live="polite">
+                <span className="files-preview__spinner" aria-hidden />
+                <span>正在加载文件内容…</span>
+              </div>
+            )}
+            {state.phase === 'error' && <div className="files-preview__error">{state.message}</div>}
+            {state.phase === 'ready' && (
+              <PreviewContent
+                preview={state.preview}
+                pageNumber={pageNumber}
+                numPages={numPages}
+                onDocumentLoad={setNumPages}
+                onDocumentError={(message) => setState({ phase: 'error', message })}
+                onPageChange={setPageNumber}
+              />
+            )}
+          </div>
+
+          {/* 文件所在位置：目录树，固定 1/3 高度；总是显示（让用户先看到位置再等内容加载完） */}
+          <div className="files-preview__tree-slot">
+            <FilePathTree path={file.path} fileName={file.file_name} />
+          </div>
+        </div>
+
+        <div className="files-preview__meta">
+          <span className="files-preview__meta-item" title={file.path}>
+            {file.path}
+          </span>
+          {file.file_size != null && (
+            <span className="files-preview__meta-item">{formatFileSize(file.file_size)}</span>
           )}
-          {state.phase === 'error' && <div className="files-preview__error">{state.message}</div>}
-          {state.phase === 'ready' && (
-            <PreviewContent
-              preview={state.preview}
-              pageNumber={pageNumber}
-              numPages={numPages}
-              onDocumentLoad={setNumPages}
-              onDocumentError={(message) => setState({ phase: 'error', message })}
-              onPageChange={setPageNumber}
-            />
+          {file.category !== undefined && (
+            <span className="files-preview__meta-item">{file.category ?? '未分类'}</span>
           )}
         </div>
-
-        {/* 文件所在位置：目录树，固定 1/3 高度；总是显示（让用户先看到位置再等内容加载完） */}
-        <div className="files-preview__tree-slot">
-          <FilePathTree path={file.path} fileName={file.file_name} />
-        </div>
-      </div>
-
-      <div className="files-preview__meta">
-        <span className="files-preview__meta-item" title={file.path}>
-          {file.path}
-        </span>
-        {file.file_size != null && (
-          <span className="files-preview__meta-item">{formatFileSize(file.file_size)}</span>
-        )}
-        {file.category !== undefined && (
-          <span className="files-preview__meta-item">{file.category ?? '未分类'}</span>
-        )}
       </div>
     </div>
   );

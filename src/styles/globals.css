@@ -226,9 +226,10 @@ code,
   display: flex;
   flex-direction: column;
   height: 100vh;
+  width: 100%;
   background: var(--bg);
-  max-width: 1440px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   box-shadow: 0 0 0 1px var(--rule);
 }
 
@@ -1636,22 +1637,46 @@ code,
   color: var(--muted);
 }
 
-/* 预览抽屉 */
+/* ========== 预览抽屉（设计稿 §Drawer：右侧滑出覆盖层形态） ========== */
+/* 遮罩层：fixed 全遮罩，点击空白关闭（组件里 e.target===currentTarget）。
+   不参与任何父级 flex/grid 布局，从根本上避免 chat-page column 把抽屉挤出视口。
+   z-index 60：低于 progress-overlay(95)/onboarding(90)/modal-overlay(70)，高于 toast 与主内容 */
+.files-preview__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 18, 0.48);
+  backdrop-filter: blur(2px);
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  z-index: 60;
+  animation: fadeIn 0.16s var(--ease-out);
+}
+
+/* 抽屉本体：右侧 460px（窄屏最多 92vw 不越界）、100vh 满高、左侧分隔线。
+   滑入动画：translateX(24px) → 0 */
 .files-preview {
-  width: 400px;
+  width: 460px;
+  max-width: 92vw;
+  height: 100vh;
   flex-shrink: 0;
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  background: var(--bg2);
+  margin-left: auto;
+  border-left: 1px solid var(--rule);
+  border-right: none;
+  border-top: none;
+  border-bottom: none;
+  border-radius: 0;
+  background: var(--bg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  animation: drawer-slide-in 0.18s ease-out;
+  animation: drawer-slide-in 0.22s var(--ease-out);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.28);
 }
 
 @keyframes drawer-slide-in {
   from {
-    transform: translateX(24px);
+    transform: translateX(36px);
     opacity: 0;
   }
   to {
@@ -2820,15 +2845,14 @@ code,
   line-height: 1;
 }
 
-/* 主体区：消息列 + 预览抽屉并排（flex-row），保证预览始终在视口内 */
+/* 聊天主体：消息区（100% 宽度，列布局）。
+   预览抽屉现在是 fixed overlay，不再并排，恢复原型 column 形态。 */
 .chat-page__main {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  gap: 12px;
+  flex-direction: column;
   padding: 0 24px 12px;
 }
 
@@ -2866,8 +2890,9 @@ code,
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 860px;
+  max-width: min(100%, 1200px);
   margin: 0 auto;
+  width: 100%;
 }
 
 /* 消息行（文档 .msg） */
@@ -3157,7 +3182,7 @@ code,
 .chat-input {
   display: flex;
   gap: 8px;
-  max-width: 860px;
+  max-width: min(100%, 1200px);
   margin: 0 auto;
 }
 
