@@ -12,6 +12,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import { formatFileSize } from '@/lib/format';
 import { fileIpc } from '@/lib/ipc';
 import type { FilePreview } from '@/types/ipc';
+import { FilePathTree } from './FilePathTree';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -97,29 +98,45 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
         <span className="files-preview__title" title={file.path}>
           {file.file_name}
         </span>
-        <button
-          type="button"
-          className="files-preview__close"
-          aria-label="关闭预览"
-          onClick={onClose}
-        >
-          ×
-        </button>
+        <div className="files-preview__head-actions">
+          <button
+            type="button"
+            className="files-preview__close"
+            aria-label="关闭预览"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
       </div>
 
       <div className="files-preview__body">
-        {state.phase === 'loading' && <div className="files-preview__loading">加载中…</div>}
-        {state.phase === 'error' && <div className="files-preview__error">{state.message}</div>}
-        {state.phase === 'ready' && (
-          <PreviewContent
-            preview={state.preview}
-            pageNumber={pageNumber}
-            numPages={numPages}
-            onDocumentLoad={setNumPages}
-            onDocumentError={(message) => setState({ phase: 'error', message })}
-            onPageChange={setPageNumber}
-          />
-        )}
+        {/* 预览内容区：固定 2/3 高度；loading 阶段在这一整块内显示 loading 占位，
+            避免 iframe/PDF 加载大文件时整行空白→用户以为无反应 */}
+        <div className="files-preview__content-slot">
+          {state.phase === 'loading' && (
+            <div className="files-preview__loading" role="status" aria-live="polite">
+              <span className="files-preview__spinner" aria-hidden />
+              <span>正在加载文件内容…</span>
+            </div>
+          )}
+          {state.phase === 'error' && <div className="files-preview__error">{state.message}</div>}
+          {state.phase === 'ready' && (
+            <PreviewContent
+              preview={state.preview}
+              pageNumber={pageNumber}
+              numPages={numPages}
+              onDocumentLoad={setNumPages}
+              onDocumentError={(message) => setState({ phase: 'error', message })}
+              onPageChange={setPageNumber}
+            />
+          )}
+        </div>
+
+        {/* 文件所在位置：目录树，固定 1/3 高度；总是显示（让用户先看到位置再等内容加载完） */}
+        <div className="files-preview__tree-slot">
+          <FilePathTree path={file.path} fileName={file.file_name} />
+        </div>
       </div>
 
       <div className="files-preview__meta">
@@ -146,6 +163,70 @@ interface PreviewContentProps {
   onPageChange: (page: number) => void;
 }
 
+/** 从文件名取出扩展名（小写，不含点）。 */
+function fileExt(fileName: string): string | null {
+  const idx = fileName.lastIndexOf('.');
+  if (idx < 0 || idx === fileName.length - 1) return null;
+  return fileName.slice(idx + 1).toLowerCase();
+}
+
+interface TextPreviewProps {
+  text: string | null;
+  fileName: string;
+  truncated: boolean;
+}
+
+/**
+ * 文本 / HTML 预览。独立组件定义在 switch 外部，避免 React Hooks 出现在
+ * switch case 分支里（违反 rules-of-hooks 顺序不变性 + 触发 setState-in-effect）。
+ */
+function TextPreview({ text, fileName, truncated }: TextPreviewProps) {
+  const ext = fileExt(fileName);
+  const isHtml = ext === 'html' || ext === 'htm';
+  // 用 text+fileName 作为 key：当文件/内容变更时 React 自动重建该子组件，
+  // useState 自动回到初始 true，无需用 useEffect + setState 去"重置 loading"，
+  // 也就避免了 react-hooks/set-state-in-effect lint 报错。
+  const loadKey = `${fileName}::${text?.length ?? 0}`;
+  return (
+    <div className="files-preview__text" key={loadKey}>
+      {truncated && <div className="files-preview__hint">内容过长，仅预览前 512KB</div>}
+      {isHtml ? <HtmlFrame text={text} fileName={fileName} /> : <pre>{text ?? ''}</pre>}
+    </div>
+  );
+}
+
+interface HtmlFrameProps {
+  text: string | null;
+  fileName: string;
+}
+
+/**
+ * HTML iframe 沙箱渲染。组件的挂载/卸载由父层 key={loadKey} 控制，
+ * 每次切文件/改内容都重建：useState 初始 true，onload 后 false，
+ * 不需要 effect 去 reset loading。
+ */
+function HtmlFrame({ text, fileName }: HtmlFrameProps) {
+  const [htmlLoading, setHtmlLoading] = useState(true);
+  return (
+    <div className="files-preview__html-wrap">
+      {htmlLoading && (
+        <div className="files-preview__html-loading" role="status" aria-live="polite">
+          <span className="files-preview__spinner" aria-hidden />
+          <span>HTML 渲染中…</span>
+        </div>
+      )}
+      <iframe
+        title={fileName}
+        className="files-preview__html"
+        sandbox=""
+        srcDoc={text ?? ''}
+        referrerPolicy="no-referrer"
+        onLoad={() => setHtmlLoading(false)}
+      />
+    </div>
+  );
+}
+
 function PreviewContent({
   preview,
   pageNumber,
@@ -157,10 +238,11 @@ function PreviewContent({
   switch (preview.kind) {
     case 'Text':
       return (
-        <div className="files-preview__text">
-          {preview.truncated && <div className="files-preview__hint">内容过长，仅预览前 512KB</div>}
-          <pre>{preview.text ?? ''}</pre>
-        </div>
+        <TextPreview
+          text={preview.text}
+          fileName={preview.file_name}
+          truncated={preview.truncated}
+        />
       );
     case 'Image':
       return preview.data_url ? (

@@ -20,11 +20,42 @@ interface PreviewTarget {
   initialPage: number;
 }
 
-/** 按文件名查找 FileInfo：本地列表优先，兜底走 Rust 文件名搜索。 */
-async function findFileByName(fileName: string): Promise<FileInfo | null> {
-  const result = await fileIpc.searchByFilename(fileName, 1);
+/** 按文件名查找 FileInfo：本地列表优先，兜底走 Rust 文件名搜索（多策略匹配）。 */
+async function findFileByName(
+  fileName: string,
+  fallbackFiles: FileInfo[],
+): Promise<FileInfo | null> {
+  const nameLower = fileName.toLowerCase();
+  const nameNoExt = nameLower.replace(/\.[^.]+$/, '');
+
+  // 1) 精确匹配（大小写敏感→不敏感）
+  const exactHit = fallbackFiles.find((f) => f.file_name === fileName);
+  if (exactHit) return exactHit;
+  const ciHit = fallbackFiles.find((f) => f.file_name.toLowerCase() === nameLower);
+  if (ciHit) return ciHit;
+
+  // 2) 去扩展名匹配（数据库里是 .md/.txt 但 citation 丢了后缀）
+  if (nameNoExt.length > 0) {
+    const noExtHit = fallbackFiles.find((f) => {
+      const base = f.file_name.toLowerCase().replace(/\.[^.]+$/, '');
+      return base === nameNoExt || base === nameLower;
+    });
+    if (noExtHit) return noExtHit;
+  }
+
+  // 3) 共享前缀/子串包含匹配——应对 UI 里文件名为了显示会追加 "…" 但
+  //    citation.fileName 实际是完整的；主要场景是文件名中带 emoji/-/_ 变体。
+  const looseHit = fallbackFiles.find((f) => {
+    const db = f.file_name.toLowerCase();
+    return db.includes(nameLower) || nameLower.includes(db);
+  });
+  if (looseHit) return looseHit;
+
+  // 4) 兜底：Rust FTS/文件名 LIKE 模糊搜索
+  const result = await fileIpc.searchByFilename(fileName, 3);
   if (result.status === 'ok' && result.data.length > 0) {
-    return result.data[0];
+    // 返回结果中优先挑和原文件名相似度最高的（命中包含后缀全匹配）
+    return result.data.find((f) => f.file_name.toLowerCase() === nameLower) ?? result.data[0];
   }
   return null;
 }
@@ -46,8 +77,13 @@ export function ChatPage() {
   const clearError = useChatStore((s) => s.clearError);
   const totalFiles = useFileStore((s) => s.total);
   const files = useFileStore((s) => s.files);
+  const filesReady = useFileStore((s) => !s.isScanning);
+  const loadAllFiles = useFileStore((s) => s.loadAllFiles);
 
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
+  // 预览抽屉挂载 key：每次打开/切引用 +1，保证 react-pdf 的 Document/Page 组件彻底重挂载，
+  // 避免 PDF 缩放/翻页后残留状态导致下一次点击 phase='ready' 不刷新 & 页面卡死。
+  const [previewKey, setPreviewKey] = useState(0);
   // 建立索引：请求状态 + 结果提示（T7.x）
   const [building, setBuilding] = useState(false);
   const [indexMessage, setIndexMessage] = useState<string | null>(null);
@@ -58,6 +94,14 @@ export function ChatPage() {
       isMountedRef.current = false;
     };
   }, []);
+
+  // ChatPage 可能是用户进入 App 的第一个路由页（直接导航 / 链接跳 / 刷新），
+  // fileStore.files 初始化是 []，本地精确匹配永远失败；在此兜底拉一次全量列表。
+  useEffect(() => {
+    if (files.length === 0 && filesReady) {
+      void loadAllFiles();
+    }
+  }, [files.length, filesReady, loadAllFiles]);
 
   // T6.10 快捷键：⌘N 新建对话（清空当前会话）
   useHotkeys([{ key: 'n', meta: true, handler: clearHistory }]);
@@ -84,11 +128,19 @@ export function ChatPage() {
   };
 
   const handleCitationClick = async (citation: ChatCitation) => {
-    const local = files.find((f) => f.file_name === citation.fileName);
-    const file = local ?? (await findFileByName(citation.fileName));
+    const file = await findFileByName(citation.fileName, files);
     if (!isMountedRef.current) return;
     if (file) {
-      setPreviewTarget({ file, initialPage: citation.page });
+      // FE-M6（修复 PDF 缩放后再次点击无响应）：先写 null 卸载上一次实例，
+      // 再 +1 换 key 再写 target → 保证 phase 从 loading 重新开始，
+      // 杜绝 react-pdf Document 复用旧 canvas/worker 导致的空白/卡死。
+      setPreviewTarget(null);
+      setPreviewKey((k) => k + 1);
+      // 下一帧再挂载：让 null 状态 flush 一次，React 才会真正重建组件树
+      window.requestAnimationFrame(() => {
+        if (!isMountedRef.current) return;
+        setPreviewTarget({ file, initialPage: citation.page });
+      });
     }
   };
 
@@ -148,52 +200,57 @@ export function ChatPage() {
         </div>
       )}
 
-      {messages.length === 0 && !isStreaming ? (
-        <div className="chat-empty">
-          <div className="icon">💬</div>
-          <h3>开始知识问答</h3>
-          <p>基于已索引文档回答问题，答案会标注可跳转的引用来源；多轮对话自动带入上下文</p>
-        </div>
-      ) : (
-        <div className="chat-messages">
-          {messages.map((message) => (
-            <ChatBubble
-              key={message.id}
-              message={message}
-              onCitationClick={(c) => void handleCitationClick(c)}
-            />
-          ))}
-          {streamingMessage && (
-            <ChatBubble
-              key="streaming"
-              message={streamingMessage}
-              streaming
-              onCitationClick={(c) => void handleCitationClick(c)}
-            />
+      {/* 主体：消息区 + 预览抽屉并排（flex-row），防止预览被挤出视口外 */}
+      <div className="chat-page__main">
+        <div className="chat-page__content">
+          {messages.length === 0 && !isStreaming ? (
+            <div className="chat-empty">
+              <div className="icon">💬</div>
+              <h3>开始知识问答</h3>
+              <p>基于已索引文档回答问题，答案会标注可跳转的引用来源；多轮对话自动带入上下文</p>
+            </div>
+          ) : (
+            <div className="chat-messages">
+              {messages.map((message) => (
+                <ChatBubble
+                  key={message.id}
+                  message={message}
+                  onCitationClick={(c) => void handleCitationClick(c)}
+                />
+              ))}
+              {streamingMessage && (
+                <ChatBubble
+                  key="streaming"
+                  message={streamingMessage}
+                  streaming
+                  onCitationClick={(c) => void handleCitationClick(c)}
+                />
+              )}
+            </div>
           )}
-        </div>
-      )}
 
-      <SearchStatusBar
-        status={status}
-        rewrittenQuery={rewrittenQuery}
-        searchInfo={searchInfo}
-        retries={retries}
-        retryReason={retryReason}
-        lowConfidence={lowConfidence}
-        hasTokens={currentStream.length > 0}
-      />
+          <SearchStatusBar
+            status={status}
+            rewrittenQuery={rewrittenQuery}
+            searchInfo={searchInfo}
+            retries={retries}
+            retryReason={retryReason}
+            lowConfidence={lowConfidence}
+            hasTokens={currentStream.length > 0}
+          />
+        </div>
+
+        <FilePreviewDrawer
+          key={previewKey}
+          file={previewTarget?.file ?? null}
+          {...(previewTarget ? { initialPage: previewTarget.initialPage } : {})}
+          onClose={() => setPreviewTarget(null)}
+        />
+      </div>
 
       <div className="chat-input-area">
         <ChatInput disabled={isStreaming} onSend={(content) => void sendMessage(content)} />
       </div>
-
-      <FilePreviewDrawer
-        key={previewTarget?.file.id ?? 'none'}
-        file={previewTarget?.file ?? null}
-        {...(previewTarget ? { initialPage: previewTarget.initialPage } : {})}
-        onClose={() => setPreviewTarget(null)}
-      />
     </div>
   );
 }
