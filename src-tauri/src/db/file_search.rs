@@ -1,10 +1,25 @@
 //! 文件搜索：FTS5 全文搜索与文件名模糊搜索。
+//! 以及 FTS5 内容填充（文件正文入索引，支撑关键词检索）。
+
+use std::fs;
+use std::io::Read;
+use std::path::Path;
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::db::models::FileRecord;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+
+/// 单文件读取上限（2MB，对齐 Python sidecar `MAX_FILE_BYTES`）。
+const MAX_FTS_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 文本文件扩展名白名单（与 Python sidecar 保持一致）。
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "md", "markdown", "log", "json", "yaml", "yml", "csv", "xml", "html", "htm", "css",
+    "js", "ts", "tsx", "py", "rs", "go", "java", "c", "h", "cpp", "hpp", "sql", "ini", "cfg",
+    "toml", "sh", "bash", "zsh", "conf", "jsx", "bat",
+];
 
 /// 搜索入口：全文搜索走 FTS5，文件名搜索走 LIKE。
 pub struct FileSearch;
@@ -21,7 +36,9 @@ impl FileSearch {
             return Ok(Vec::new());
         }
 
-        let fts_query = format!("\"{sanitized}\"*");
+        // 构造 FTS5 查询：对长查询截断到前 2~3 字做前缀匹配，
+        // 避免整句作为单 token 导致无匹配（unicode61 把连续 CJK 合并为一个 token）。
+        let fts_query = build_fts_query(&sanitized);
 
         let mut stmt = conn.prepare(
             "SELECT f.id, f.path, f.file_name, f.file_size, f.content_hash,
@@ -101,6 +118,87 @@ impl FileSearch {
         }
         Ok(files)
     }
+
+    /// 填充 FTS5 content 列：读取文件正文并写入索引，支撑关键词检索。
+    ///
+    /// 逐个读取文件内容，对 FTS5 表执行「删旧→插新」保证幂等。
+    /// 非文本文件 / 读取失败文件跳过，不中断整体流程。
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - `SQLite` 连接
+    /// * `files` - 需要填充的文件记录列表
+    ///
+    /// # Returns
+    ///
+    /// `(indexed_count, skipped_count)` — 成功读取的文件数 / 跳过的文件数
+    ///
+    /// # Errors
+    ///
+    /// FTS5 删旧 / 插新 SQL 执行失败时返回 `Database` 错误。
+    pub fn populate_fts_content(conn: &Connection, files: &[FileRecord]) -> AppResult<(i64, i64)> {
+        let mut indexed: i64 = 0;
+        let mut skipped: i64 = 0;
+
+        for file in files {
+            let path = Path::new(&file.path);
+            if !path.is_file() {
+                skipped += 1;
+                continue;
+            }
+
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_lowercase)
+                .unwrap_or_default();
+
+            if !TEXT_EXTENSIONS.contains(&ext.as_str()) {
+                skipped += 1;
+                continue;
+            }
+
+            let Ok(metadata) = fs::metadata(path) else {
+                skipped += 1;
+                continue;
+            };
+
+            if metadata.len() > MAX_FTS_FILE_BYTES {
+                skipped += 1;
+                continue;
+            }
+
+            let Ok(mut file_handle) = fs::File::open(path) else {
+                skipped += 1;
+                continue;
+            };
+
+            let mut contents = String::new();
+            if file_handle.read_to_string(&mut contents).is_err() {
+                skipped += 1;
+                continue;
+            }
+
+            if contents.trim().is_empty() {
+                skipped += 1;
+                continue;
+            }
+
+            // FTS5 contentless 表：先删后插（幂等）
+            conn.execute("DELETE FROM file_fts WHERE file_id = ?1", params![file.id])
+                .map_err(AppError::Database)?;
+
+            conn.execute(
+                "INSERT INTO file_fts(file_id, file_name, content, path) VALUES (?1, ?2, ?3, ?4)",
+                params![file.id, file.file_name, contents, file.path],
+            )
+            .map_err(AppError::Database)?;
+
+            indexed += 1;
+        }
+
+        Ok((indexed, skipped))
+    }
 }
 
 /// 全文搜索命中结果。
@@ -127,6 +225,29 @@ fn sanitize_query(query: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// 构造 FTS5 查询字符串：对长 CJK 查询截断到前 2 字做前缀匹配。
+///
+/// 背景：sqlite FTS5 的 ``unicode61`` 分词器把连续 CJK 字符合并为一个 token。
+/// 若整句作为前缀搜索（如 ``"分类整理的流程是什么"*``），需要文档里存在
+/// 完整的长 token 才能命中——实际文档极少出现整句，导致检索为零。
+/// 截断到前 2 字后（``"分类"*``），以词缀匹配即可找到包含该前缀的所有 token。
+///
+/// 策略：
+/// - 包含 CJK 字符的查询（codepoint > 127）：取前 2 字做前缀
+/// - 纯 ASCII 查询：保持整句前缀匹配（英文空格天然分词，整句效果好）
+fn build_fts_query(sanitized: &str) -> String {
+    if sanitized.is_empty() {
+        return String::new();
+    }
+    let has_cjk = sanitized.chars().any(|c| c as u32 > 127);
+    if has_cjk {
+        let prefix: String = sanitized.chars().take(2).collect();
+        format!("\"{prefix}\"*")
+    } else {
+        format!("\"{sanitized}\"*")
+    }
 }
 
 #[cfg(test)]
@@ -212,5 +333,18 @@ mod tests {
         assert_eq!(sanitize_query("my_report"), "my_report");
         // FTS5 通配符与引号被过滤，防止语法注入
         assert_eq!(sanitize_query("hello*\" OR 1=1"), "hello OR 11");
+    }
+
+    #[test]
+    fn test_build_fts_query() {
+        // 空字符串
+        assert_eq!(build_fts_query(""), "");
+        // 纯 ASCII 查询：保持整句前缀匹配
+        assert_eq!(build_fts_query("hello"), "\"hello\"*");
+        assert_eq!(build_fts_query("hello world"), "\"hello world\"*");
+        // 含 CJK 字符：取前 2 字作前缀
+        assert_eq!(build_fts_query("分类"), "\"分类\"*");
+        assert_eq!(build_fts_query("文件管理"), "\"文件\"*");
+        assert_eq!(build_fts_query("分类整理的流程是什么"), "\"分类\"*");
     }
 }

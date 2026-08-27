@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::db::file_search::FileSearch;
 use crate::db::{ConfigRepo, FileRepo};
 use crate::error::{AppError, AppResult};
 use crate::sidecar::proxy;
@@ -68,7 +69,7 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
         (model, table)
     };
 
-    // 2. 全量读取未删除文件（id + path）
+    // 2. 全量读取未删除文件
     let files = {
         let guard = state
             .db
@@ -83,7 +84,16 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
         });
     }
 
-    // 3. 构造请求 → HMAC 代理调 sidecar /index/build
+    // 3. 填充 FTS5 content 列（文件正文入索引，支撑关键词检索）
+    let (fts_indexed, fts_skipped) = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileSearch::populate_fts_content(guard.conn(), &files)?
+    };
+
+    // 4. 构造请求 → HMAC 代理调 sidecar /index/build（向量索引）
     let psk = state
         .sidecar_psk
         .lock()
@@ -108,7 +118,15 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
     let body = serde_json::to_string(&request)?;
     let resp = proxy::forward_post("/index/build", &body, &psk, seq).await?;
     let parsed: IndexBuildResponse = serde_json::from_str(&resp)?;
-    Ok(parsed)
+
+    // 合并 FTS5 + LanceDB 结果：取较大值（两部分成功即可）
+    let indexed_count = parsed.indexed_count.max(fts_indexed);
+    let skipped_count = parsed.skipped_count + fts_skipped;
+
+    Ok(IndexBuildResponse {
+        indexed_count,
+        skipped_count,
+    })
 }
 
 #[cfg(test)]

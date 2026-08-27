@@ -65,16 +65,22 @@ export function ChatPage() {
   const handleBuildIndex = async () => {
     setBuilding(true);
     setIndexMessage(null);
-    const result = await fileIpc.buildIndex();
-    if (!isMountedRef.current) return;
-    if (result.status === 'ok') {
-      setIndexMessage(
-        `索引完成：${result.data.indexed_count} 个文件，跳过 ${result.data.skipped_count} 个`,
-      );
-    } else {
-      setIndexMessage(result.error);
+    try {
+      const result = await fileIpc.buildIndex();
+      if (!isMountedRef.current) return;
+      if (result.status === 'ok') {
+        setIndexMessage(
+          `索引完成：${result.data.indexed_count} 个文件，跳过 ${result.data.skipped_count} 个`,
+        );
+      } else {
+        setIndexMessage(`索引失败：${result.error}`);
+      }
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      setIndexMessage(`构建索引时出错：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBuilding(false);
     }
-    setBuilding(false);
   };
 
   const handleCitationClick = async (citation: ChatCitation) => {

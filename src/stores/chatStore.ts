@@ -294,6 +294,12 @@ export const useChatStore = create<ChatState>()(
               },
             });
             break;
+          case 'search_warning':
+            set({
+              error: event.data.message,
+              status: 'searching',
+            });
+            break;
           case 'token':
             get().appendStreamChunk(event.data.content);
             break;

@@ -67,6 +67,7 @@ async def hybrid_search(
     model: str = EMBEDDING_MODEL,
     top_k: int = 20,
     k: int = 60,
+    skip_vector: bool = False,
 ) -> list[FusedHit]:
     """混合检索编排：查询向量化 → 向量检索 → 与 FTS 命中 RRF 融合。
 
@@ -78,10 +79,14 @@ async def hybrid_search(
         model: Embedding 模型名（默认注册表默认值）。
         top_k: 向量路截断候选数（默认 20）。
         k: RRF 常数（默认 60）。
+        skip_vector: 跳过向量检索（Embedding 不可用时云端模式降级用）。
 
     Returns:
         按 ``rrf_score`` 降序的融合命中；向量表不存在时退化为纯 FTS 排序。
     """
+    if skip_vector:
+        return _fts_only_fusion(fts_chunk_ids, k=k)
+
     # SC-m24：bge-large-zh 检索需加指令前缀（BAAI 模型卡要求），其他模型不需要
     instruction = QUERY_INSTRUCTION if model.startswith("bge-large") else ""
     query_vec = await embed_text(instruction + query, model=model)
@@ -103,3 +108,19 @@ async def hybrid_search(
             )
         )
     return enriched
+
+
+def _fts_only_fusion(fts_chunk_ids: Sequence[str], k: int = 60) -> list[FusedHit]:
+    """纯 FTS5 降级：跳过向量检索，仅用 BM25 排序作为 RRF 结果。
+
+    Args:
+        fts_chunk_ids: Rust 层 FTS5 命中，按 BM25 相关性降序。
+        k: RRF 常数（默认 60）。
+
+    Returns:
+        按 BM25 排序的 FusedHit 列表（rrf_score = 1/(k+rank)）。
+    """
+    return [
+        FusedHit(chunk_id=cid, rrf_score=1.0 / (k + rank))
+        for rank, cid in enumerate(fts_chunk_ids, start=1)
+    ]

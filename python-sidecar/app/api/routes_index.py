@@ -7,11 +7,13 @@ POST /index/incremental — 增量索引（T2.3：双重判断 content_hash + em
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 from fastapi import APIRouter, HTTPException
 
 from app import state
+from app.core.embedding_models import get_model_dim
 from app.models import (
     IncrementalChangeRequest,
     IncrementalIndexResponse,
@@ -32,6 +34,17 @@ from app.services.query_cache import get_query_cache
 router = APIRouter(prefix="/index", tags=["索引"])
 
 
+def _parse_version_from_table_name(table_name: str) -> int:
+    """从表名解析版本号：documents_{model}_v{version}。
+
+    如 ``documents_bge-small-zh-v1.5_v1`` → 1。解析失败返回默认值 1。
+    """
+    match = re.search(r"_v(\d+)$", table_name)
+    if match:
+        return int(match.group(1))
+    return 1
+
+
 @router.post("/build", response_model=IndexBuildResponse)
 async def build_index(req: IndexBuildRequest) -> IndexBuildResponse:
     """建立文件索引：读取 → 分块 → Embedding → 写入 LanceDB。
@@ -50,6 +63,15 @@ async def build_index(req: IndexBuildRequest) -> IndexBuildResponse:
         raise HTTPException(status_code=503, detail="向量库未初始化")
     if not req.table_name:
         raise HTTPException(status_code=400, detail="table_name 不能为空")
+
+    # 确保 LanceDB 表存在（首次建索引时自动创建）
+    # 版本号从表名解析：documents_{model}_v{version}
+    version = _parse_version_from_table_name(req.table_name)
+    try:
+        dim = get_model_dim(req.embedding_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    mgr.ensure_table(req.embedding_model, version, dim)
 
     files = [(f.file_id, f.path) for f in req.files]
     try:

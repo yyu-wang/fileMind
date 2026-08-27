@@ -84,7 +84,7 @@ export function EmbeddingModelSection() {
                 >
                   {m.available ? '已安装' : '未安装'}
                 </span>
-                {!m.available && !isCurrent && (
+                {!m.available && (
                   <button
                     type="button"
                     className="btn btn--primary btn--sm"
@@ -95,7 +95,7 @@ export function EmbeddingModelSection() {
                     {isInstalling ? '安装中...' : '安装'}
                   </button>
                 )}
-                {isCurrent && (
+                {isCurrent && m.available && (
                   <button
                     type="button"
                     className="btn btn--ghost btn--sm"

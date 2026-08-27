@@ -6,14 +6,21 @@
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::db::file_search::FileSearch;
 use crate::error::{AppError, AppResult};
 use crate::events::emit_chat_event;
 use crate::sidecar::proxy;
 use crate::sidecar::sse::SseParser;
 use crate::AppState;
+
+/// FTS5 单文件读取上限（1MB，避免大文件撑爆请求体）。
+const MAX_CHAT_FTS_BYTES: u64 = 1_048_576;
 
 /// 一轮对话历史（P-02 查询改写输入），对齐 Sidecar `ChatTurn`。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -132,9 +139,12 @@ fn chat_stream_inner(
     // （云端 Provider 按 llm_model 前缀路由，所以 llm_model 即云端模型名）
     if request.inference_mode.eq_ignore_ascii_case("cloud") && !request.cloud_model.is_empty() {
         request.llm_model.clone_from(&request.cloud_model);
-        // cloud_model 已合并进 llm_model，清空避免冗余序列化
         request.cloud_model = String::new();
     }
+
+    // FTS5 检索：在 Rust 层执行全文搜索，将命中文件内容注入 fts_chunks，
+    // 供 Sidecar 做 RRF 融合检索（向量 + 关键词）。
+    populate_fts_chunks(state, &mut request)?;
 
     let psk = state
         .sidecar_psk
@@ -150,6 +160,73 @@ fn chat_stream_inner(
         }
     });
     Ok(seq)
+}
+
+/// FTS5 全文搜索并填充 `fts_chunks`：读取命中文件正文，注入请求体。
+///
+/// Sidecar 永不碰 SQLite，FTS5 由 Rust 层执行。命中文件的正文在 Rust 侧读取后
+/// 以 `ChatChunkInput` 形式注入 `request.fts_chunks`，供 Sidecar 的混合检索
+/// （RRF 融合）使用。
+///
+/// # 降级策略
+///
+/// - FTS5 无命中 → `fts_chunks` 保持空数组（后续 Sidecar 纯向量检索兜底）
+/// - 文件不可读 / 超大 → 跳过，不中断整体流程
+/// - 数据库锁失败 → 直接返回错误（非降级）
+fn populate_fts_chunks(state: &AppState, request: &mut ChatStreamRequest) -> AppResult<()> {
+    let fts_results = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileSearch::search(guard.conn(), &request.query, 20)?
+    };
+
+    if fts_results.is_empty() {
+        return Ok(());
+    }
+
+    let mut chunks: Vec<ChatChunkInput> = Vec::with_capacity(fts_results.len());
+    for result in &fts_results {
+        let path = Path::new(&result.file.path);
+        if !path.is_file() {
+            continue;
+        }
+
+        let Ok(metadata) = fs::metadata(path) else {
+            continue;
+        };
+
+        if metadata.len() > MAX_CHAT_FTS_BYTES {
+            continue;
+        }
+
+        let Ok(mut file_handle) = fs::File::open(path) else {
+            continue;
+        };
+
+        let mut contents = String::new();
+        if file_handle.read_to_string(&mut contents).is_err() {
+            continue;
+        }
+
+        if contents.trim().is_empty() {
+            continue;
+        }
+
+        chunks.push(ChatChunkInput {
+            chunk_id: result.file.id.clone(),
+            text: contents,
+            file_path: result.file.path.clone(),
+            page: 0,
+        });
+    }
+
+    if !chunks.is_empty() {
+        request.fts_chunks = chunks;
+    }
+
+    Ok(())
 }
 
 /// 后台流式任务失败时下发给前端的 error 事件载荷。

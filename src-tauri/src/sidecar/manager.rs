@@ -170,6 +170,11 @@ impl SidecarManager {
 
         let mut cmd = std::process::Command::new(&self.binary_path_);
         cmd.env("SIDECAR_PORT", self.port.to_string());
+        // 数据目录：传递 FILEMIND_DATA_HOME 给 Python Sidecar，保证 SQLite 与 LanceDB 落在同一根
+        // 未设置时不传递，Python 端会使用默认的 ~/.filemind
+        if let Ok(data_home) = std::env::var("FILEMIND_DATA_HOME") {
+            cmd.env("FILEMIND_DATA_HOME", data_home);
+        }
         // T7.4：云端模式注入代理地址/token/脱敏开关（重启后经字段保持）
         if let Some(cloud) = &self.cloud_env {
             cmd.env("FILEMIND_CLOUD_PROXY_URL", &cloud.proxy_url);
