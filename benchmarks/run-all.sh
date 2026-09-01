@@ -112,6 +112,7 @@ report = {
     "scan_incremental_unchanged_ms": scan.get("scan_incremental_ms"),
     "sidecar_rss_mb": rag.get("sidecar_rss_mb"),
     "threshold_mb": rag.get("threshold_mb"),
+    "rag_llm_model": rag.get("llm_model"),
     "rag_ttft_ms": rag.get("rag_ttft_ms"),
     "rag_retrieve_ms": rag.get("rag_retrieve_ms"),
     "rag_index_ms": rag.get("rag_index_ms"),
