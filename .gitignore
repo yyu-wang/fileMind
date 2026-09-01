@@ -28,6 +28,9 @@ coverage/
 src-tauri/coverage/
 .cache/
 
+# Rust 覆盖率插桩产物（cargo test / tarpaulin 生成于工作目录）
+*.profraw
+
 # IDE
 .idea/
 .vscode/
