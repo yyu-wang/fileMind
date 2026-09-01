@@ -226,7 +226,7 @@ async def test_build_clears_query_cache(tmp_path: Path) -> None:
         txt.write_text("第一段", encoding="utf-8")
 
         mgr = SimpleNamespace(
-            ensure_table=lambda *a, **k: TABLE,
+            ensure_table_named=lambda *a, **k: TABLE,
             add_chunks=lambda t, c: len(c),
             delete_chunks_by_file_id=lambda t, f: 0,
         )
@@ -248,3 +248,40 @@ async def test_build_clears_query_cache(tmp_path: Path) -> None:
         assert len(cache) == 0, "build 成功后查询缓存应被清空（SC-M5）"
     finally:
         reset_query_cache()
+
+
+@pytest.mark.asyncio
+async def test_build_ensures_requested_table_name(tmp_path: Path) -> None:
+    """/index/build 应按请求的 table_name 建表（非规范名如 ..._bench 不再
+    因 ensure_table 只建规范名而写入失败——T10.5 基准隔离表回归）。"""
+    from app.api.routes_index import build_index as route_build
+    from app.models import IndexBuildFile, IndexBuildRequest
+
+    txt = tmp_path / "note.md"
+    txt.write_text("第一段", encoding="utf-8")
+
+    ensured: list[tuple[str, int]] = []
+
+    def _ensure_named(table_name: str, dim: int) -> str:
+        ensured.append((table_name, dim))
+        return table_name
+
+    mgr = SimpleNamespace(
+        ensure_table_named=_ensure_named,
+        add_chunks=lambda t, c: len(c),
+        delete_chunks_by_file_id=lambda t, f: 0,
+    )
+    req = IndexBuildRequest(
+        files=[IndexBuildFile(file_id="f1", path=str(txt))],
+        embedding_model="bge-large-zh-v1.5",
+        table_name="documents_bge-large-zh-v1.5_bench",
+    )
+    with (
+        patch("app.state.get_lancedb", return_value=mgr),
+        patch.object(ingest_service, "embed_texts", side_effect=_fake_embed_texts),
+    ):
+        resp = await route_build(req)
+
+    assert resp.indexed_count == 1
+    # 按请求表名（而非 documents_{model}_v{version} 规范名）建表
+    assert ensured == [("documents_bge-large-zh-v1.5_bench", 1024)]

@@ -103,14 +103,19 @@ def _to_ollama_model_info(model: _OllamaTagModel) -> OllamaModelInfo:
 
 
 def _to_embedding_availability(model_name: str, installed: set[str]) -> EmbeddingModelAvailability:
-    """按注册表模型名检查其 Ollama 模型是否已安装。"""
+    """按注册表模型名检查其 Ollama 模型是否已安装（原名或别名单一命中即可）。
+
+    注册表名（``bge-small-zh-v1.5``）与社区命名空间别名
+    （``qllama/bge-small-zh-v1.5``）任一安装即视为可用——用户两种拉取
+    方式（官方库原名 / 社区命名空间）都不应被误判为"未安装"。
+    """
     info = get_model_info(model_name)
-    ollama_name = _OLLAMA_MODEL_ALIASES.get(model_name, model_name)
+    candidates = {model_name, _OLLAMA_MODEL_ALIASES.get(model_name, model_name)}
     return EmbeddingModelAvailability(
         name=model_name,
         dim=info.dim,
         version=info.default_version,
-        available=ollama_name in installed,
+        available=any(name in installed for name in candidates),
     )
 
 

@@ -290,7 +290,9 @@ async def call_ollama_json(system: str, user: str, *, model: str = LLM_MODEL) ->
             ],
             format="json",
             think=False,
-            options=Options(num_predict=256, temperature=0.0),
+            # keep_alive 是 chat 顶层参数（模型常驻，T10.2），num_ctx 在 Options 里
+            keep_alive=OLLAMA_KEEP_ALIVE,
+            options=Options(num_predict=256, temperature=0.0, num_ctx=OLLAMA_NUM_CTX),
         )
     except (httpx.HTTPError, ConnectionError, ResponseError) as exc:
         raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc

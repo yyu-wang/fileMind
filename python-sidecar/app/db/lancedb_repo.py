@@ -181,7 +181,7 @@ class LanceDBManager:
         version: int,
         dim: int,
     ) -> str:
-        """确保指定模型版本的表存在。
+        """确保指定模型版本的表存在（规范化表名）。
 
         步骤：
             1. 计算规范化表名
@@ -200,12 +200,34 @@ class LanceDBManager:
         Raises:
             ValueError: dim < 1 / version < 1 / 模型名非法
         """
+        tname = self.table_name(model, version)
+        return self.ensure_table_named(tname, dim)
+
+    def ensure_table_named(self, table_name: str, dim: int) -> str:
+        """确保指定名称的向量表存在（幂等，不做名称规范化）。
+
+        与 :meth:`ensure_table` 的区别：直接按调用方给出的表名建表，
+        不套用 ``documents_{model}_v{version}`` 规范——供基准隔离表
+        （``..._bench``）等非规范表名使用；规范名场景两者等价。
+
+        Args:
+            table_name: 目标表名（原样使用）。
+            dim: 向量维度（建表时写入一条长度为 dim 的零向量作为 schema 锚点）。
+
+        Returns:
+            建表/已存在的表名（等于 ``table_name``）。
+
+        Raises:
+            ValueError: dim < 1 或 table_name 为空。
+        """
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
         if dim < 1:
             raise ValueError(f"dim 必须 >= 1，当前={dim}")
+        if not table_name:
+            raise ValueError("table_name 不能为空")
+        tname = table_name
 
-        tname = self.table_name(model, version)
         if self.is_table_exists(tname):
             return tname
 

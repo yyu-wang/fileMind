@@ -122,6 +122,35 @@ def test_ensure_table_idempotent(ldb: LanceDBManager) -> None:
     assert row_count == 0
 
 
+def test_ensure_table_named_exact_name_and_idempotent(ldb: LanceDBManager) -> None:
+    """ensure_table_named 按原样表名建表（不做规范化）且幂等。"""
+    name = "documents_bge-large-zh-v1.5_bench"
+    t1 = ldb.ensure_table_named(name, dim=8)
+    t2 = ldb.ensure_table_named(name, dim=8)
+    assert t1 == t2 == name
+    assert ldb.is_table_exists(name)
+    # 非规范表名不在 table_name() 规范化产物之列（同名不冲突即可共存）
+    assert name != ldb.table_name("bge-large-zh-v1.5", 1)
+    # 规范名场景与 ensure_table 等价：同名表已存在时直接返回
+    canon = ldb.table_name("bge-large-zh-v1.5", 1)
+    assert ldb.ensure_table("bge-large-zh-v1.5", 1, 8) == canon
+
+    tbl = ldb.open_table(name)
+    try:
+        row_count = tbl.count_rows()
+    except AttributeError:
+        row_count = len(tbl)
+    assert row_count == 0, "schema 锚点行应被删除"
+
+
+def test_ensure_table_named_rejects_invalid_args(ldb: LanceDBManager) -> None:
+    """ensure_table_named 参数校验：dim < 1 或空表名抛 ValueError。"""
+    with pytest.raises(ValueError, match="dim 必须"):
+        ldb.ensure_table_named("t_valid", dim=0)
+    with pytest.raises(ValueError, match="table_name 不能为空"):
+        ldb.ensure_table_named("", dim=4)
+
+
 def test_list_document_tables_filters_only_documents(ldb: LanceDBManager) -> None:
     """list_document_tables 只返回 documents_ 前缀的表。"""
     ldb.ensure_table("m_a", version=1, dim=2)
