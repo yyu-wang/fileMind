@@ -28,8 +28,8 @@ interface RuleState {
 
   /** 加载规则 + 分类 */
   load: () => Promise<void>;
-  /** 新建（id 空）或更新规则 */
-  saveRule: (rule: Rule) => Promise<void>;
+  /** 新建（id 空）或更新规则。返回保存后的 Rule（含后端生成的 id）。 */
+  saveRule: (rule: Rule) => Promise<Rule>;
   /** 删除规则 */
   deleteRule: (id: string) => Promise<void>;
   /** 拖拽排序后重排优先级 */
@@ -73,10 +73,10 @@ export const useRuleStore = create<RuleState>()((set, get) => ({
       // 规则变化会改变后端分类集合：同步失效 classifyStore 的幂等缓存，
       // 否则分类页手动分类下拉会显示过期分类（双缓存不一致）
       void useClassifyStore.getState().refreshCategories();
-    } else {
-      set({ error: result.error });
-      throw new Error(result.error);
+      return result.data;
     }
+    set({ error: result.error });
+    throw new Error(result.error);
   },
 
   deleteRule: async (id) => {

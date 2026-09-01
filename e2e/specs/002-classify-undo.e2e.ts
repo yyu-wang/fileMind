@@ -37,12 +37,12 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
     });
     await expect($(sel.filesScan)).toHaveText('扫描目录'); // 扫描态已结束
     // toHaveText 传正则做局部匹配（expect-webdriverio v6 无 toHaveTextContaining）
-    await expect($('.status-bar__text[title="文件数与索引状态"]')).toHaveText(/6 文件/);
+    await expect($(sel.statusFiles)).toHaveText(/6 文件/);
   });
 
   it('智能分类：预览 3 个分组、零待确认', async () => {
-    await $('a.sidebar__item[title*="智能分类"]').click();
-    await $(sel.classifyStart).waitForClickable({ timeout: 15000 });
+    await $(`${sel.sidebarItem}[title*="智能分类"]`).click();
+    await $(sel.classifyStart).waitForExist({ timeout: 15000 });
     await $(sel.classifyStart).click();
 
     // 预览树（classify_preview 对 6 个 fixture 全部启发式命中 → 无需 LLM 兜底）
@@ -61,7 +61,7 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
 
     // 确认执行全部 → 弹「选择分类方式」→ 移动分类
     await $(sel.classifyExecute).click();
-    await $(sel.classifyModeMove).waitForClickable({ timeout: 10000 });
+    await $(sel.classifyModeMove).waitForExist({ timeout: 10000 });
     await $(sel.classifyModeMove).click();
 
     // 执行完成 → DonePanel「分类完成」

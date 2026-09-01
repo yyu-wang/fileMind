@@ -35,7 +35,10 @@ export function EmbeddingModelSection() {
       <div className="panel" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+            <div
+              style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}
+              data-testid="embedding-current"
+            >
               当前模型: {embeddingModel}
               {current ? ` · dim ${current.dim} · v${current.version}` : ''}
             </div>

@@ -31,15 +31,54 @@ RAG_ENABLED=$([ "$RUN_RAG" = 1 ] && [ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
 fail_count=0
 ran_any=0
 
-# —— 孤儿 sidecar 清理 ——
+# —— Vite dev server 自举 ——
+# 本地 E2E 用 cargo 构建的 debug 二进制（未开 custom-protocol 特性），前端页面
+# 从 devUrl（http://localhost:1420，Vite 开发服务器）加载，而非内嵌 dist。
+# Vite 未运行时 WKWebView 会得到错误页（opaque origin：localStorage 抛
+# "The operation is insecure"、#root 为空），所有 spec 必挂。
+# CI 的二进制由 `tauri build --debug` 产出（custom-protocol 开启、内嵌资源），
+# 不依赖 Vite；这里拉起一个也仅是多占一个端口，无副作用。
+VITE_PID=""
+vite_log="${TMPDIR:-/tmp}/fm-e2e-vite-$$.log"
+# lsof 按端口探测（协议无关）：Vite 只监听 IPv6 ::1，`nc -z 127.0.0.1` 会误报未就绪
+_vite_ready() { lsof -iTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; }
+if ! _vite_ready; then
+  echo "── Vite 未运行（端口 1420），自动拉起 ──"
+  set -m                       # 后台任务独立进程组，结束时整组回收（含 vite 子进程）
+  npm run dev >"$vite_log" 2>&1 &
+  VITE_PID=$!
+  set +m
+  for _ in $(seq 1 60); do    # 最长等 30s
+    _vite_ready && break
+    sleep 0.5
+  done
+  if ! _vite_ready; then
+    echo "❌ Vite 30s 内未就绪，日志：$vite_log"
+    kill -- "-$VITE_PID" 2>/dev/null || true
+    exit 1
+  fi
+fi
+_cleanup_vite() {
+  if [ -n "$VITE_PID" ]; then
+    kill -- "-$VITE_PID" 2>/dev/null || true
+    echo "── 已停止本次拉起的 Vite（PID ${VITE_PID}）──"
+  fi
+}
+trap _cleanup_vite EXIT
+
+# —— 孤儿 sidecar / 应用清理 ——
 # 应用被 wdio 强杀时其子进程 sidecar 会残留并占用 SIDECAR_PORT(8765)，
 # 使下一次启动无法绑定 → 握手失败退出。每个 spec 前清一次本项目的 sidecar。
 # 两个模式都清：真实 PyInstaller 二进制（本地）与 CI stub（python3 sidecar_stub.py）。
 # 注意：E2E 运行期间请勿同时运行真实 FileMind（两者共用同一 sidecar 端口）。
+# 应用本体也要清：wdio teardown 偶发杀不掉 debug 二进制，孤儿 app 会占用
+# 云端代理端口 8766，使下一个 spec 的应用启动即退出（code=1）。
 _cleanup_sidecars() {
   pkill -f 'filemind-sidecar-aarch64-apple-darwin' 2>/dev/null || true
   pkill -f 'sidecar_stub.py' 2>/dev/null || true
-  sleep 0.5
+  # 只杀本项目 debug 二进制的孤儿，不误伤正式安装的 FileMind.app
+  pkill -f 'src-tauri/target/debug/filemind' 2>/dev/null || true
+  sleep 1
 }
 
 for spec in e2e/specs/*.e2e.ts; do

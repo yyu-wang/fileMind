@@ -135,7 +135,7 @@ describe('RulesPage', () => {
     expect(form).toHaveTextContent('PDF 归档');
   });
 
-  it('saves a new rule and closes the form', async () => {
+  it('saves a new rule and switches form to edit mode with saved rule', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('PDF 归档');
@@ -146,6 +146,10 @@ describe('RulesPage', () => {
     expect(mocks.upsertRule).toHaveBeenCalledWith(
       expect.objectContaining({ name: '新规则', pattern: 'doc' }),
     );
+    // 保存后表单切换为编辑态：h3 显示保存的规则名，删除按钮出现
+    const form = await screen.findByTestId('rule-form');
+    expect(form.querySelector('h3')).toHaveTextContent('PDF 归档');
+    expect(screen.getByRole('button', { name: '删除规则' })).toBeInTheDocument();
   });
 
   it('deletes rule only after confirm from detail panel', async () => {

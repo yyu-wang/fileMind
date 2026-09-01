@@ -92,14 +92,16 @@ describe('ruleStore', () => {
     expect(useRuleStore.getState().error).toBe('CAT-E-002');
   });
 
-  it('saveRule 成功：upsert 后重新拉取列表', async () => {
-    (fileIpc.upsertRule as Mock).mockResolvedValue({ status: 'ok', data: rule('r3') });
+  it('saveRule 成功：upsert 后重新拉取列表并返回保存后的 Rule', async () => {
+    const saved = rule('r3');
+    (fileIpc.upsertRule as Mock).mockResolvedValue({ status: 'ok', data: saved });
 
-    await useRuleStore.getState().saveRule(rule('r3', { id: '' }));
+    const result = await useRuleStore.getState().saveRule(rule('r3', { id: '' }));
 
     expect(fileIpc.upsertRule).toHaveBeenCalledWith(rule('r3', { id: '' }));
     expect(fileIpc.listRules).toHaveBeenCalled(); // 保存后 reload
     expect(useRuleStore.getState().error).toBeNull();
+    expect(result).toEqual(saved);
   });
 
   it('saveRule 失败：置错并抛出', async () => {

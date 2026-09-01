@@ -58,9 +58,9 @@ export function RulesPage() {
 
   const handleSave = async (rule: Rule) => {
     try {
-      await saveRule(rule);
-      // 保存后选中该规则（新建态下 rule.id 在 store 中已生成）
-      setSelectedId(rule.id || selectedId);
+      // saveRule 返回保存后的 Rule（含后端生成的 id），用于切换到编辑态
+      const saved = await saveRule(rule);
+      setSelectedId(saved.id);
       setFormOpen(false);
     } catch {
       // 保存失败时错误已由 store 记录，保持表单打开供用户重试
