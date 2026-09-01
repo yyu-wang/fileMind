@@ -655,6 +655,130 @@ code,
   font-size: 12px;
 }
 
+/* ========== T6.3 输入控件：.input 统一 input / select 视觉 ========== */
+/* 组件统一使用 className="input"，覆盖浏览器默认样式导致的
+   暗色模式深灰底 + 蓝框不融合问题 */
+.input {
+  /* 盒模型 + 尺寸 */
+  display: inline-block;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule2);
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  line-height: 30px; /* height - padding 配合垂直居中 */
+  /* 交互 */
+  cursor: text;
+  transition:
+    border-color 0.15s var(--ease),
+    box-shadow 0.15s var(--ease),
+    background 0.15s var(--ease);
+  outline: none;
+  /* select 下拉箭头清理（浏览器默认太丑）*/
+  appearance: none;
+  -webkit-appearance: none;
+  /* 避免 flex 父容器里被拉伸 */
+  flex-shrink: 0;
+}
+
+/* 原生 <input> 用 box-sizing content-box 会撑破 padding，重置一下 */
+input.input {
+  box-sizing: border-box;
+}
+
+/* hover：边框加深 */
+.input:hover:not(:disabled) {
+  border-color: var(--muted2);
+}
+
+/* focus：accent 蓝框 + 柔和外发光 */
+.input:focus,
+.input:focus-visible {
+  border-color: var(--accent3);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+
+/* 禁用态：灰底 + 斜纹 + not-allowed
+   注意：此处绝对不能用 `background` 简写——简写会重置 background-image，
+   导致后续 select.input 的下拉箭头 background-image 被吞掉（见 git history）*/
+.input:disabled {
+  background-color: var(--bg3);
+  color: var(--disabled-text);
+  border-color: var(--rule);
+  cursor: not-allowed;
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 4px,
+    rgba(0, 0, 0, 0.035) 4px,
+    rgba(0, 0, 0, 0.035) 8px
+  );
+  background-repeat: repeat;
+  background-position: 0 0;
+}
+
+/* placeholder 文字色 */
+.input::placeholder {
+  color: var(--muted2);
+  opacity: 0.8;
+}
+
+/* select 专属：右边加自定义下拉箭头 SVG（内嵌 data URI，主题无关）
+   核心：多层 background-image，箭头在上、斜纹在下，互不覆盖 */
+select.input {
+  padding-right: var(--sp-8); /* 腾出箭头空间 */
+  cursor: pointer;
+  /* 激活态只有箭头，没有斜纹 */
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3e%3cpath fill='none' stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M3 4.5l3 3 3-3'/%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right var(--sp-3) center;
+}
+
+/* select 禁用态：灰色箭头 + 斜纹叠加（两层 background-image）
+   第一个 url 是箭头（在上层，no-repeat），第二个 repeating-linear-gradient 是斜纹（在下层，repeat）*/
+select.input:disabled {
+  cursor: not-allowed;
+  /* 灰色箭头 + 斜纹叠加 */
+  background-image:
+    url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3e%3cpath fill='none' stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M3 4.5l3 3 3-3'/%3e%3c/svg%3e"),
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 4px,
+      rgba(0, 0, 0, 0.035) 4px,
+      rgba(0, 0, 0, 0.035) 8px
+    );
+  background-repeat: no-repeat, repeat;
+  background-position:
+    right var(--sp-3) center,
+    0 0;
+}
+
+/* 暗色主题下 select 激活态箭头颜色适配 */
+[data-theme='dark'] select.input {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3e%3cpath fill='none' stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M3 4.5l3 3 3-3'/%3e%3c/svg%3e");
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-theme='dark']) select.input {
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3e%3cpath fill='none' stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M3 4.5l3 3 3-3'/%3e%3c/svg%3e");
+  }
+  :root:not([data-theme='light']):not([data-theme='dark']) select.input:disabled {
+    background-image:
+      url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3e%3cpath fill='none' stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M3 4.5l3 3 3-3'/%3e%3c/svg%3e"),
+      repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 4px,
+        rgba(255, 255, 255, 0.04) 4px,
+        rgba(255, 255, 255, 0.04) 8px
+      );
+  }
+}
+
 /* ========== T6.3 首次启动引导流（对齐交互原型 §Onboarding） ========== */
 .onboarding {
   position: fixed;
