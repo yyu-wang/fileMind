@@ -1,19 +1,24 @@
 // 知识问答页（设计稿 §6 / T6.6）：对话气泡 + 流式光标 + 引用标签 + 检索状态栏。
 //
-// 引用跳转：按文件名从 fileStore 匹配 FileInfo，兜底 fileIpc.searchByFilename，
-// 打开 FilePreviewDrawer 定位到引用页码。
+// 引用跳转：按文件名从 fileStore 匹配 FileInfo（findFileByName，见 lib/citation），
+// 兜底 fileIpc.searchByFilename，打开 FilePreviewDrawer 定位到引用页码。
+//
+// 渲染性能：本页只订阅低频 state（messages/isStreaming/error 等）；
+// token 级高频 state（currentStream/status/searchInfo 等）由 ChatMessageList
+// 内部 StreamingBubble 与 SearchStatusBar 自行订阅，流式输出不整页重渲。
 
-import { useEffect, useRef, useState } from 'react';
-import { ChatBubble } from '@/components/chat/ChatBubble';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatInput } from '@/components/chat/ChatInput';
+import { ChatMessageList } from '@/components/chat/ChatMessageList';
 import { SearchStatusBar } from '@/components/chat/SearchStatusBar';
-import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
+import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
 import { useToastStore } from '@/components/ui/Toast';
 import { useHotkeys } from '@/hooks/useHotkeys';
+import { findFileByName } from '@/lib/citation';
 import { fileIpc } from '@/lib/ipc';
 import { useChatStore } from '@/stores/chatStore';
 import { useFileStore } from '@/stores/fileStore';
-import { ChatRole, type ChatCitation, type ChatMessage } from '@/types/models';
+import { type ChatCitation } from '@/types/models';
 import type { FileInfo } from '@/types/ipc';
 
 interface PreviewTarget {
@@ -21,69 +26,14 @@ interface PreviewTarget {
   initialPage: number;
 }
 
-/** 按文件名查找 FileInfo：本地列表优先，兜底走 Rust 文件名搜索（多策略匹配）。 */
-async function findFileByName(
-  fileName: string,
-  fallbackFiles: FileInfo[],
-): Promise<{ file: FileInfo; fastPath: boolean } | null> {
-  const nameLower = fileName.toLowerCase();
-  const nameNoExt = nameLower.replace(/\.[^.]+$/, '');
-
-  // 1) 精确匹配（大小写敏感→不敏感）
-  const exactHit = fallbackFiles.find((f) => f.file_name === fileName);
-  if (exactHit) return { file: exactHit, fastPath: true };
-  const ciHit = fallbackFiles.find((f) => f.file_name.toLowerCase() === nameLower);
-  if (ciHit) return { file: ciHit, fastPath: true };
-
-  // 2) 去扩展名匹配（数据库里是 .md/.txt 但 citation 丢了后缀）
-  if (nameNoExt.length > 0) {
-    const noExtHit = fallbackFiles.find((f) => {
-      const base = f.file_name.toLowerCase().replace(/\.[^.]+$/, '');
-      return base === nameNoExt || base === nameLower;
-    });
-    if (noExtHit) return { file: noExtHit, fastPath: true };
-  }
-
-  // 3) 共享前缀/子串包含匹配
-  const looseHit = fallbackFiles.find((f) => {
-    const db = f.file_name.toLowerCase();
-    return db.includes(nameLower) || nameLower.includes(db);
-  });
-  if (looseHit) return { file: looseHit, fastPath: true };
-
-  // 4) 兜底：Rust FTS/文件名 LIKE 模糊搜索（慢速 IPC 路径）。
-  //    加 3s 超时：防止 Tauri invoke 卡死/无响应时永久 pending（用户感知"点了没反应"）。
-  const timeout = new Promise<never>((_, reject) => {
-    const id = setTimeout(() => {
-      clearTimeout(id);
-      reject(new Error('搜索引用文件超时（3s）'));
-    }, 3000);
-  });
-  const result = await Promise.race([fileIpc.searchByFilename(fileName, 5), timeout]);
-  if (result.status === 'ok' && result.data.length > 0) {
-    const file = result.data.find((f) => f.file_name.toLowerCase() === nameLower) ?? result.data[0];
-    return { file, fastPath: false };
-  }
-  return null;
-}
-
 export function ChatPage() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
-  const currentStream = useChatStore((s) => s.currentStream);
-  const status = useChatStore((s) => s.status);
-  const rewrittenQuery = useChatStore((s) => s.rewrittenQuery);
-  const searchInfo = useChatStore((s) => s.searchInfo);
-  const retries = useChatStore((s) => s.retries);
-  const retryReason = useChatStore((s) => s.retryReason);
-  const lowConfidence = useChatStore((s) => s.lowConfidence);
-  const pendingCitations = useChatStore((s) => s.pendingCitations);
   const error = useChatStore((s) => s.error);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const clearHistory = useChatStore((s) => s.clearHistory);
   const clearError = useChatStore((s) => s.clearError);
   const totalFiles = useFileStore((s) => s.total);
-  const files = useFileStore((s) => s.files);
   const filesReady = useFileStore((s) => !s.isScanning);
   const loadAllFiles = useFileStore((s) => s.loadAllFiles);
 
@@ -109,12 +59,12 @@ export function ChatPage() {
 
   // ChatPage 可能是用户进入 App 的第一个路由页（直接导航 / 链接跳 / 刷新），
   // fileStore.files 初始化是 []，本地精确匹配永远失败；在此兜底拉一次全量列表。
-  // 注意：必须用 ref 防重入——若 listAllFiles 返回空列表，isScanning 会从 true→false
-  // 反复变化，effect 依赖 [files.length, filesReady] 每轮都变 → 无限 loadAllFiles 循环
-  // （真实环境表现为 IPC 刷屏 + 页面反复重渲染；测试环境直接把 worker 挂死）。
+  // 列表本身用 getState 读取（不订阅，避免流式外的大数组订阅）。ref 防重入：
+  // 若 listAllFiles 返回空列表，isScanning true→false 反复变化会让 effect 重跑，
+  // 门闩防止无限 loadAllFiles 循环（真实环境表现为 IPC 刷屏 + 页面反复重渲染）。
   const bootstrappedRef = useRef(false);
   useEffect(() => {
-    if (bootstrappedRef.current || !filesReady || files.length > 0) {
+    if (bootstrappedRef.current || !filesReady || useFileStore.getState().files.length > 0) {
       return;
     }
     bootstrappedRef.current = true;
@@ -122,7 +72,7 @@ export function ChatPage() {
       // 拉取失败时解除门闩，允许下次依赖变化时重试；点击引用另有兜底加载路径
       bootstrappedRef.current = false;
     });
-  }, [files.length, filesReady, loadAllFiles]);
+  }, [filesReady, loadAllFiles]);
 
   // T6.10 快捷键：⌘N 新建对话（清空当前会话）
   useHotkeys([{ key: 'n', meta: true, handler: clearHistory }]);
@@ -148,98 +98,98 @@ export function ChatPage() {
     }
   };
 
-  const handleCitationClick = async (citation: ChatCitation) => {
-    // 最外层兜底：任何 throw 都转为 error toast——异步 unhandled rejection 会让用户以为"点了没反应"。
-    try {
-      const toastState = useToastStore.getState();
-      const showToast = toastState.show;
-      const removeToast = toastState.remove;
+  // 引用点击（async 主逻辑）。useCallback 稳定引用是 ChatBubble memo 生效的前提：
+  // 内部只依赖 getState 读取与稳定 action，无每渲染变化的闭包值。
+  const handleCitationClick = useCallback(
+    async (citation: ChatCitation) => {
+      // 最外层兜底：任何 throw 都转为 error toast——异步 unhandled rejection 会让用户以为"点了没反应"。
+      try {
+        const toastState = useToastStore.getState();
+        const showToast = toastState.show;
+        const removeToast = toastState.remove;
 
-      if (!citation || typeof citation.fileName !== 'string' || citation.fileName.length === 0) {
-        showToast({ message: '引用文件名为空，请检查回答内容格式', variant: 'error' });
-        return;
-      }
-
-      // ① 是否需要"等待中"toast：只要要走 IPC 慢路径才显示
-      const needSlowPath = files.length === 0;
-      let loadingToastId: string | null = null;
-      if (needSlowPath) {
-        loadingToastId = showToast({
-          message: `正在定位「${citation.fileName}」…`,
-          variant: 'info',
-          duration: 0,
-        });
-      }
-
-      // ② 如需补全文件列表，主动 await（不再依赖 filesReady 门槛）
-      let localFiles = files;
-      if (localFiles.length === 0) {
-        try {
-          await loadAllFiles();
-        } catch {
-          if (loadingToastId) removeToast(loadingToastId);
-          showToast({ message: '文件列表加载失败，稍后重试', variant: 'error' });
+        if (!citation || typeof citation.fileName !== 'string' || citation.fileName.length === 0) {
+          showToast({ message: '引用文件名为空，请检查回答内容格式', variant: 'error' });
           return;
         }
+
+        // ① 是否需要"等待中"toast：只要要走 IPC 慢路径才显示
+        let localFiles = useFileStore.getState().files;
+        const needSlowPath = localFiles.length === 0;
+        let loadingToastId: string | null = null;
+        if (needSlowPath) {
+          loadingToastId = showToast({
+            message: `正在定位「${citation.fileName}」…`,
+            variant: 'info',
+            duration: 0,
+          });
+        }
+
+        // ② 如需补全文件列表，主动 await（不再依赖 filesReady 门槛）
+        if (localFiles.length === 0) {
+          try {
+            await loadAllFiles();
+          } catch {
+            if (loadingToastId) removeToast(loadingToastId);
+            showToast({ message: '文件列表加载失败，稍后重试', variant: 'error' });
+            return;
+          }
+          if (!isMountedRef.current) {
+            if (loadingToastId) removeToast(loadingToastId);
+            return;
+          }
+          localFiles = useFileStore.getState().files;
+        }
+
+        // ③ findFileByName 返回 {file, fastPath}：fastPath=true=本地前 3 级命中（<1ms）
+        const found = await findFileByName(citation.fileName, localFiles);
         if (!isMountedRef.current) {
           if (loadingToastId) removeToast(loadingToastId);
           return;
         }
-        localFiles = useFileStore.getState().files;
-      }
 
-      // ③ findFileByName 返回 {file, fastPath}：fastPath=true=本地前 3 级命中（<1ms）
-      const found = await findFileByName(citation.fileName, localFiles);
-      if (!isMountedRef.current) {
+        if (!found) {
+          if (loadingToastId) removeToast(loadingToastId);
+          showToast({
+            message: `未找到引用文件「${citation.fileName}」，请先在文件管理中扫描该目录`,
+            variant: 'warn',
+            duration: 4500,
+          });
+          return;
+        }
+
+        // ④ 命中：IPC 慢路径 → 补 loading toast
+        if (!found.fastPath && !loadingToastId) {
+          loadingToastId = showToast({
+            message: `正在加载「${citation.fileName}」预览…`,
+            variant: 'info',
+            duration: 0,
+          });
+        }
+
+        // ⑤ 一步到位：setPreviewKey(k+1)（强制卸旧实例清理 PDF 缓存）
+        //    + setPreviewTarget(file)（React 批处理一次渲染）
+        setPreviewKey((k) => k + 1);
+        setPreviewTarget({ file: found.file, initialPage: citation.page });
         if (loadingToastId) removeToast(loadingToastId);
-        return;
-      }
-
-      if (!found) {
-        if (loadingToastId) removeToast(loadingToastId);
-        showToast({
-          message: `未找到引用文件「${citation.fileName}」，请先在文件管理中扫描该目录`,
-          variant: 'warn',
-          duration: 4500,
-        });
-        return;
-      }
-
-      // ④ 命中：IPC 慢路径 → 补 loading toast
-      if (!found.fastPath && !loadingToastId) {
-        loadingToastId = showToast({
-          message: `正在加载「${citation.fileName}」预览…`,
-          variant: 'info',
-          duration: 0,
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        useToastStore.getState().show({
+          message: `打开预览失败：${message}`,
+          variant: 'error',
+          duration: 5000,
         });
       }
+    },
+    [loadAllFiles],
+  );
 
-      // ⑤ 一步到位：setPreviewKey(k+1)（强制卸旧实例清理 PDF 缓存）
-      //    + setPreviewTarget(file)（React 批处理一次渲染）
-      setPreviewKey((k) => k + 1);
-      setPreviewTarget({ file: found.file, initialPage: citation.page });
-      if (loadingToastId) removeToast(loadingToastId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().show({
-        message: `打开预览失败：${message}`,
-        variant: 'error',
-        duration: 5000,
-      });
-    }
-  };
-
-  const streamingMessage: ChatMessage | null = isStreaming
-    ? {
-        id: 'streaming',
-        role: ChatRole.Assistant,
-        content: currentStream,
-        ...(pendingCitations.length > 0 ? { citations: pendingCitations } : {}),
-        ...(lowConfidence ? { lowConfidence: true } : {}),
-        ...(retries > 0 ? { retries } : {}),
-        createdAt: '',
-      }
-    : null;
+  const onCitationClick = useCallback(
+    (citation: ChatCitation) => {
+      void handleCitationClick(citation);
+    },
+    [handleCitationClick],
+  );
 
   return (
     <div className="page chat-page">
@@ -295,37 +245,13 @@ export function ChatPage() {
               <p>基于已索引文档回答问题，答案会标注可跳转的引用来源；多轮对话自动带入上下文</p>
             </div>
           ) : (
-            <div className="chat-messages">
-              {messages.map((message) => (
-                <ChatBubble
-                  key={message.id}
-                  message={message}
-                  onCitationClick={(c) => void handleCitationClick(c)}
-                />
-              ))}
-              {streamingMessage && (
-                <ChatBubble
-                  key="streaming"
-                  message={streamingMessage}
-                  streaming
-                  onCitationClick={(c) => void handleCitationClick(c)}
-                />
-              )}
-            </div>
+            <ChatMessageList onCitationClick={onCitationClick} />
           )}
 
-          <SearchStatusBar
-            status={status}
-            rewrittenQuery={rewrittenQuery}
-            searchInfo={searchInfo}
-            retries={retries}
-            retryReason={retryReason}
-            lowConfidence={lowConfidence}
-            hasTokens={currentStream.length > 0}
-          />
+          <SearchStatusBar />
         </div>
 
-        <FilePreviewDrawer
+        <LazyFilePreviewDrawer
           key={previewKey}
           file={previewTarget?.file ?? null}
           {...(previewTarget ? { initialPage: previewTarget.initialPage } : {})}

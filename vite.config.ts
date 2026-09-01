@@ -27,6 +27,24 @@ export default defineConfig({
     target: 'es2022',
     minify: 'esbuild',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // 稳定 vendor 拆分（rolldown-vite 仅支持函数形式）：react 系框架代码
+        // 变化少、利于长缓存；react-pdf/pdfjs 刻意不匹配，由 LazyFilePreviewDrawer
+        // 的动态导入边界拆为异步 chunk
+        manualChunks(id: string): string | undefined {
+          if (!id.includes('node_modules')) return undefined;
+          if (
+            /node_modules\/(react|react-dom|react-router|react-router-dom|scheduler|zustand|@tanstack\/react-virtual|use-sync-external-store)\//.test(
+              id,
+            )
+          ) {
+            return 'vendor-react';
+          }
+          return undefined;
+        },
+      },
+    },
   },
   test: {
     globals: true,

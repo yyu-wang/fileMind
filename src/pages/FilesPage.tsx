@@ -3,12 +3,12 @@
 // 结构：main-header(h1 + subtitle + header-actions) → main-content(file-toolbar + file-table)
 // 筛选/排序为页面级 state（不污染 store）；选中与文件数据走 fileStore。
 
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
-import { FilePreviewDrawer } from '@/components/common/FilePreviewDrawer';
+import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { getE2eTestDir } from '@/lib/e2e';
 import {
@@ -73,14 +73,18 @@ export function FilesPage() {
     return Array.from(set).sort();
   }, [files]);
 
+  // 搜索用 deferred 值驱动列表重算：输入框更新（高优先级）不被
+  // 全量 O(N log N) 过滤+排序（低优先级）阻塞，万级文件下逐字输入不再卡顿
+  const deferredQuery = useDeferredValue(searchQuery);
+
   const visibleFiles = useMemo(() => {
     const filtered = filterFiles(files, {
       category: categoryFilter || null,
       status: statusFilter || null,
     });
     // 客户端搜索（对齐交互原型搜索框，数据全量在内存）
-    return sortFiles(filterByName(filtered, searchQuery), sort.key, sort.dir);
-  }, [files, categoryFilter, statusFilter, searchQuery, sort]);
+    return sortFiles(filterByName(filtered, deferredQuery), sort.key, sort.dir);
+  }, [files, categoryFilter, statusFilter, deferredQuery, sort]);
 
   // T9.5 E2E：测试目录存在时跳过原生对话框（原生 open() 无法被 WebDriver 点击）。
   const handleScan = async () => {
@@ -272,7 +276,7 @@ export function FilesPage() {
             />
           </div>
         )}
-        <FilePreviewDrawer
+        <LazyFilePreviewDrawer
           key={previewFile?.id}
           file={previewFile}
           onClose={() => setPreviewFile(null)}

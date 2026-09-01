@@ -3,7 +3,7 @@
 // props 全部受控：数据、选中、排序状态均由父级（FilesPage）持有，
 // 本组件只负责渲染与事件上报，不直接读写 store。
 
-import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { formatDateTime, formatFileSize, getFileTypeMeta } from '@/lib/format';
@@ -149,7 +149,7 @@ export function FileListTable({
                 selected={selectedIdSet.has(file.id)}
                 onToggleSelect={onToggleSelect}
                 onOpenPreview={onOpenPreview}
-                style={{ transform: `translateY(${virtualRow.start}px)` }}
+                top={virtualRow.start}
               />
             );
           })}
@@ -164,10 +164,19 @@ interface FileRowProps {
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onOpenPreview: (file: FileInfo) => void;
-  style: CSSProperties;
+  /** 虚拟行纵向偏移（px）。传数字而非 style 对象，memo 浅比较才有效 */
+  top: number;
 }
 
-function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileRowProps) {
+// memo：FilesPage 任意 state 变化（如搜索每键触发）重渲本表时，
+// props（file 引用 / selected / 稳定回调 / top）不变的行整体跳过
+const FileRow = memo(function FileRow({
+  file,
+  selected,
+  onToggleSelect,
+  onOpenPreview,
+  top,
+}: FileRowProps) {
   const status = deriveFileStatus(file);
   const typeMeta = getFileTypeMeta(file.file_name);
   // 已整理行弱化样式（标记 + 与状态列「已分类」徽标呼应），软排除提示
@@ -177,7 +186,12 @@ function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileR
     : `files-table__row${organizedClass}`;
 
   return (
-    <div className={rowClass} style={style} role="row" onClick={() => onOpenPreview(file)}>
+    <div
+      className={rowClass}
+      style={{ transform: `translateY(${top}px)` }}
+      role="row"
+      onClick={() => onOpenPreview(file)}
+    >
       <div className="files-table__cell files-table__cell--check" role="cell">
         <input
           type="checkbox"
@@ -214,4 +228,4 @@ function FileRow({ file, selected, onToggleSelect, onOpenPreview, style }: FileR
       </div>
     </div>
   );
-}
+});

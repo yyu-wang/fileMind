@@ -56,6 +56,8 @@ interface SettingsState {
   ollamaStatus: OllamaStatus | null;
   /** Ollama 探测中 */
   ollamaProbing: boolean;
+  /** 上次成功探测完成的时间戳（探测 TTL 节流用；瞬态不持久化） */
+  lastOllamaProbeAt: number;
   /** 可选的 LLM 模型列表（来自 Ollama 探测） */
   llmModelOptions: OllamaModelInfo[];
   /** Embedding 模型可用性列表（来自 Ollama 探测） */
@@ -77,10 +79,14 @@ interface SettingsState {
   loadConfig: () => Promise<void>;
   /** FE-M11：initFailed 后重试加载 */
   retryInit: () => Promise<void>;
-  /** 切换推理模式（需用户主动调用，记录审计日志） */
+  /** 切换推理模式（需用户主动操作，记录审计日志） */
   setInferenceMode: (mode: InferenceMode) => Promise<void>;
-  /** 探测本地 Ollama 环境（可用性 + 模型列表，设置页/引导页调用） */
-  probeOllama: () => Promise<void>;
+  /**
+   * 探测本地 Ollama 环境（可用性 + 模型列表，设置页/引导页调用）。
+   * 默认 60s 内复用上次成功结果（真实 HTTP 探测较慢，进页反复探测无意义）；
+   * `force=true` 绕过节流（「重新检测」按钮 / 模型安装完成后）。
+   */
+  probeOllama: (force?: boolean) => Promise<void>;
   /** 切换本地 LLM 模型（乐观更新 + 持久化） */
   setLlmModel: (name: string) => Promise<void>;
   /** 更新配置（部分字段） */
@@ -136,6 +142,9 @@ async function loadConfigInner(set: (partial: Partial<SettingsState>) => void): 
   }
 }
 
+/** Ollama 探测结果复用窗口（ms）：窗口内的进页探测直接复用上次成功结果。 */
+const PROBE_TTL_MS = 60_000;
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
@@ -156,6 +165,7 @@ export const useSettingsStore = create<SettingsState>()(
       error: null,
       ollamaStatus: null,
       ollamaProbing: false,
+      lastOllamaProbeAt: 0,
       llmModelOptions: [],
       embeddingModelOptions: [],
       theme: ThemeMode.System,
@@ -199,7 +209,17 @@ export const useSettingsStore = create<SettingsState>()(
         }
       },
 
-      probeOllama: async () => {
+      probeOllama: async (force = false) => {
+        // TTL 节流：60s 内已成功探测则复用（探测是真实 HTTP 往返，进出设置页
+        // 反复触发会明显拖慢切页）。失败不缓存（lastOllamaProbeAt 不更新），
+        // 下次调用照常重探；force 绕过节流（重新检测按钮 / 安装模型后）。
+        if (
+          !force &&
+          get().ollamaStatus !== null &&
+          Date.now() - get().lastOllamaProbeAt < PROBE_TTL_MS
+        ) {
+          return;
+        }
         set({ ollamaProbing: true, error: null });
         try {
           const result = await fileIpc.ollamaStatus();
@@ -208,6 +228,7 @@ export const useSettingsStore = create<SettingsState>()(
               ollamaStatus: result.data,
               llmModelOptions: result.data.llm_models,
               embeddingModelOptions: result.data.embedding_models,
+              lastOllamaProbeAt: Date.now(),
             });
           } else {
             set({ ollamaStatus: null, error: result.error });
@@ -224,8 +245,7 @@ export const useSettingsStore = create<SettingsState>()(
         try {
           await get().updateConfig({ llm_model: name });
         } catch (e) {
-          // 仅当 store 值仍是本次乐观值时回滚：updateConfig 成功后的 loadConfig
-          // 重拉若再抛错（网络抖动），值其实已持久化，回滚是误伤
+          // 仅当 store 值仍是本次乐观值时回滚：防并发场景下误伤其他更新已落的新值
           if (get().llmModel === name) {
             set({ llmModel: prev, error: e instanceof Error ? e.message : String(e) });
           }
@@ -257,8 +277,23 @@ export const useSettingsStore = create<SettingsState>()(
           set({ error: result.error });
           throw new Error(result.error);
         }
-        // 成功后重新加载完整配置，保证状态一致
-        await get().loadConfig();
+        // 成功：发送的 fullConfig 就是后端 upsert 落库的全字段真值，直接本地合并。
+        // 不再全量 getConfig 重拉——省一次串行 IPC，且 loadConfig 会置
+        // isLoading 让整个 App 闪「正在加载配置」加载态（一次模型下拉选择即触发）。
+        set({
+          dataDirectory: fullConfig.data_directory,
+          inferenceMode: normalizeInferenceMode(fullConfig.inference_mode),
+          embeddingModel: fullConfig.embedding_model,
+          maxFileSizeMb: fullConfig.max_file_size_mb,
+          language: fullConfig.language,
+          onboardingCompleted: fullConfig.onboarding_completed,
+          cloudConsentSigned: fullConfig.cloud_consent_signed,
+          cloudConsentVersion: fullConfig.cloud_consent_version,
+          cloudConsentProvider: fullConfig.cloud_consent_provider,
+          cloudConsentSignedAt: fullConfig.cloud_consent_signed_at,
+          llmModel: fullConfig.llm_model,
+          cloudModel: fullConfig.cloud_model ?? '',
+        });
       },
 
       signCloudConsent: async (provider) => {
@@ -350,7 +385,8 @@ export const useSettingsStore = create<SettingsState>()(
           const result = await fileIpc.installEmbeddingModel(modelName);
           if (result.status === 'ok') {
             if (result.data.success) {
-              await get().probeOllama();
+              // 模型列表已变，强制绕过探测节流
+              await get().probeOllama(true);
             } else {
               set({ installError: result.data.message });
             }

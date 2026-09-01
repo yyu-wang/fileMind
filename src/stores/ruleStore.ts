@@ -12,6 +12,7 @@
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
 import type { Category, Rule } from '../types/ipc';
+import { useClassifyStore } from './classifyStore';
 
 interface RuleState {
   /** 全部规则（含禁用），按优先级降序 */
@@ -69,6 +70,9 @@ export const useRuleStore = create<RuleState>()((set, get) => ({
     if (result.status === 'ok') {
       // 保存后重新拉取，确保 created_at/updated_at 与优先级排序一致
       await useRuleStore.getState().load();
+      // 规则变化会改变后端分类集合：同步失效 classifyStore 的幂等缓存，
+      // 否则分类页手动分类下拉会显示过期分类（双缓存不一致）
+      void useClassifyStore.getState().refreshCategories();
     } else {
       set({ error: result.error });
       throw new Error(result.error);
@@ -80,6 +84,7 @@ export const useRuleStore = create<RuleState>()((set, get) => ({
     const result = await fileIpc.deleteRule(id);
     if (result.status === 'ok') {
       await useRuleStore.getState().load();
+      void useClassifyStore.getState().refreshCategories();
     } else {
       set({ error: result.error });
       throw new Error(result.error);

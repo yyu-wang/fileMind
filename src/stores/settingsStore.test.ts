@@ -65,6 +65,7 @@ function resetSettings(): void {
     error: null,
     ollamaStatus: null,
     ollamaProbing: false,
+    lastOllamaProbeAt: 0,
     llmModelOptions: [],
     embeddingModelOptions: [],
     theme: ThemeMode.System,
@@ -169,12 +170,39 @@ describe('settingsStore', () => {
     expect(useSettingsStore.getState().ollamaProbing).toBe(false);
   });
 
+  it('probeOllama TTL 节流：60s 内已成功探测则复用，不再发 IPC', async () => {
+    (fileIpc.ollamaStatus as Mock).mockResolvedValue({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(1);
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('probeOllama force=true：绕过节流强制重探', async () => {
+    (fileIpc.ollamaStatus as Mock).mockResolvedValue({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    await useSettingsStore.getState().probeOllama(true);
+
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('probeOllama 失败不缓存：下次调用照常重探', async () => {
+    (fileIpc.ollamaStatus as Mock)
+      .mockResolvedValueOnce({ status: 'error', error: 'down' })
+      .mockResolvedValueOnce({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    expect(useSettingsStore.getState().ollamaStatus).toBeNull();
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(2);
+    expect(useSettingsStore.getState().ollamaStatus?.available).toBe(true);
+  });
+
   it('setLlmModel：乐观更新并持久化', async () => {
-    // 持久化成功后 updateConfig 会重载配置；后端已落库新模型名，getConfig 返回更新值
-    (fileIpc.getConfig as Mock).mockResolvedValue({
-      status: 'ok',
-      data: { ...baseConfig, llm_model: 'qwen2.5' },
-    });
     (fileIpc.updateConfig as Mock).mockResolvedValue({
       status: 'ok',
       data: { ...baseConfig, llm_model: 'qwen2.5' },
@@ -188,7 +216,7 @@ describe('settingsStore', () => {
     );
   });
 
-  it('updateConfig 成功：合并当前状态提交并重载配置', async () => {
+  it('updateConfig 成功：合并当前状态提交并本地合并（不再重拉配置）', async () => {
     (fileIpc.getConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
     (fileIpc.updateConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
 
@@ -197,7 +225,11 @@ describe('settingsStore', () => {
     const sent = (fileIpc.updateConfig as Mock).mock.calls[0][0] as AppConfig;
     expect(sent.max_file_size_mb).toBe(200);
     expect(sent.llm_model).toBe('qwen3.8-27b'); // 未传字段由当前状态合并
-    expect(fileIpc.getConfig).toHaveBeenCalled(); // 成功后重载保证一致
+    // 优化契约：成功后用发送值本地合并，不再全量 getConfig 重拉
+    //（省一次串行 IPC，且避免 loadConfig 置 isLoading 闪全屏加载态）
+    expect(fileIpc.getConfig).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().maxFileSizeMb).toBe(200);
+    expect(useSettingsStore.getState().llmModel).toBe('qwen3.8-27b');
   });
 
   it('updateConfig 不得清空已签署的同意书字段（FE-B1 回归）', async () => {

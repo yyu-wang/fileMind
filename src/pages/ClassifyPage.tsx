@@ -16,7 +16,8 @@ import { ClassifyModeDialog } from '@/components/classify/ClassifyModeDialog';
 import { ClassifyPreviewTree } from '@/components/classify/ClassifyPreviewTree';
 import { ClassifyProgressOverlay } from '@/components/classify/ClassifyProgressOverlay';
 import { ClassifyStatsPanel } from '@/components/classify/ClassifyStatsPanel';
-import { FilePreviewDrawer, type FilePreviewTarget } from '@/components/common/FilePreviewDrawer';
+import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
+import type { FilePreviewTarget } from '@/components/common/FilePreviewDrawer';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { isOrganized } from '@/lib/fileTable';
 import { useClassifyHistoryStore } from '@/stores/classifyHistoryStore';
@@ -201,7 +202,7 @@ export function ClassifyPage() {
           {/* 右：统计面板 */}
           <ClassifyStatsPanel preview={preview} />
           {/* 右：文件预览抽屉（点击树中文件名打开；key 保证切换文件时重挂载重置状态） */}
-          <FilePreviewDrawer
+          <LazyFilePreviewDrawer
             key={previewTarget?.path ?? 'none'}
             file={previewTarget}
             onClose={() => setPreviewTarget(null)}

@@ -8,6 +8,7 @@
 // 共享链式撤销；成功项再逐项调 `update_file_category` 打分类标签。
 
 import { create } from 'zustand';
+import { mapWithConcurrency } from '../lib/concurrency';
 import { fileIpc } from '../lib/ipc';
 import type { Category, ClassifyPlanItem, ClassifyPreview, PlanItem } from '../types/ipc';
 import { ClassifyStatus } from '../types/models';
@@ -26,6 +27,8 @@ export type ClassifyExecMode = 'move' | 'copy';
 
 /** 单块执行的文件数上限（分批调用避免单次 IPC 过久）。 */
 const CHUNK_SIZE = 50;
+/** chunk 内打标（updateFileCategory）并发数：SQLite 单写者下单条 UPDATE 安全，5 路已显著快于串行。 */
+const LABEL_CONCURRENCY = 5;
 
 interface ProgressState {
   /** 已完成数 */
@@ -89,6 +92,8 @@ interface ClassifyState {
   generatePreview: (fileIds: string[]) => Promise<void>;
   /** 加载分类列表（幂等，供手动分类下拉使用） */
   loadCategories: () => Promise<void>;
+  /** 强制重拉分类列表（ruleStore 增删分类后调用，使幂等缓存失效） */
+  refreshCategories: () => Promise<void>;
   /** 手动指定待确认文件的分类（T6.12：更新 preview，执行时随主批量移动+打标） */
   assignCategory: (fileId: string, category: Category) => void;
   /** 批量手动指定分类（T6.12 增强：一次 set 更新多个文件，避免逐点过慢） */
@@ -207,6 +212,15 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ categories: result.data });
     } else {
       set({ error: result.error });
+    }
+  },
+
+  refreshCategories: async () => {
+    // 绕过幂等缓存强制重拉。失败保持旧缓存静默返回：调用方（规则页增删分类）
+    // 已有自己的成功/失败提示，此处再 set error 会把规则页操作误报为分类页错误。
+    const result = await fileIpc.listCategories();
+    if (result.status === 'ok') {
+      set({ categories: result.data });
     }
   },
 
@@ -369,8 +383,13 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         set({ error: result.error });
         break;
       }
-      for (const r of result.data.results) {
-        if (r.success) {
+      // chunk 内打标限并发（LABEL_CONCURRENCY）：原逐项串行 await 最多 50 次
+      // 顺序 IPC 往返；结果统计在并发完成后按同序汇总，语义与串行版一致。
+      const outcomes = await mapWithConcurrency(
+        result.data.results,
+        LABEL_CONCURRENCY,
+        async (r) => {
+          if (!r.success) return false;
           const execItem = execItems.find((item) => item.file_id === r.file_id);
           // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
           // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
@@ -379,11 +398,15 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
             // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
             // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
             if (label.status === 'error') {
-              failed += 1;
               set({ error: `文件已移动但分类标签写入失败：${label.error}` });
-              continue;
+              return false;
             }
           }
+          return true;
+        },
+      );
+      for (const ok of outcomes) {
+        if (ok) {
           success += 1;
         } else {
           failed += 1;

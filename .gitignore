@@ -31,6 +31,7 @@ src-tauri/coverage/
 # IDE
 .idea/
 .vscode/
+.zcode/
 *.swp
 *.swo
 *~

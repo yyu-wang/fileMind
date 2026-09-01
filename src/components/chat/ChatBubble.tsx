@@ -6,6 +6,7 @@
 //     <div class="msg-bubble">content + citations</div>
 //   </div>
 
+import { memo } from 'react';
 import { ChatRole, type ChatCitation, type ChatMessage } from '@/types/models';
 import { CitationChip } from './CitationChip';
 
@@ -46,7 +47,12 @@ const AI_ICON = (
   </svg>
 );
 
-export function ChatBubble({ message, streaming = false, onCitationClick }: ChatBubbleProps) {
+// memo：流式输出期间父列表重渲时，历史气泡 props（message/回调）不变即跳过
+export const ChatBubble = memo(function ChatBubble({
+  message,
+  streaming = false,
+  onCitationClick,
+}: ChatBubbleProps) {
   const isUser = message.role === ChatRole.User;
 
   return (
@@ -81,4 +87,4 @@ export function ChatBubble({ message, streaming = false, onCitationClick }: Chat
       </div>
     </div>
   );
-}
+});

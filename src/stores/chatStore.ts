@@ -11,8 +11,9 @@
 // 流式状态（status/currentStream 等）为瞬态不持久化。
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { chatStream, listenChatEvent, type ChatEvent } from '../lib/ipc/chatIpc';
+import { flushThrottledStorage, throttledLocalStorage } from '../lib/throttledStorage';
 import { useSettingsStore } from './settingsStore';
 import { ChatRole, type ChatCitation, type ChatMessage } from '../types/models';
 import type { ChatStreamRequest, ChatTurn } from '../types/ipc';
@@ -391,6 +392,8 @@ export const useChatStore = create<ChatState>()(
           searchInfo: null,
           lowConfidence: false,
         }));
+        // 终态消息立即落盘，不等节流窗口
+        flushThrottledStorage();
       },
 
       clearHistory: () => {
@@ -409,13 +412,18 @@ export const useChatStore = create<ChatState>()(
           searchInfo: null,
           lowConfidence: false,
         });
+        // 清空也立即落盘，避免节流窗口内的旧历史被延迟恢复
+        flushThrottledStorage();
       },
 
       clearError: () => set({ error: null }),
     }),
     {
       name: 'filemind-chat',
-      // 仅持久化 messages（流式状态不持久化）
+      // 仅持久化 messages（流式状态不持久化）；
+      // 写盘经 throttledLocalStorage 节流——流式期间每 token 一次 set，
+      // 直写 localStorage 会放大为 token 级全量 stringify，终态在此处 flush 兜底
+      storage: createJSONStorage(() => throttledLocalStorage),
       partialize: (state) => ({ messages: state.messages }),
     },
   ),
