@@ -9,7 +9,7 @@
 
 import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { MODE_COLORS } from '../../types/models';
+import { MODE_COLORS, resolveDisplayModel } from '../../types/models';
 
 const MODE_BADGE_CLASS: Record<string, string> = {
   Local: 'local',
@@ -19,6 +19,8 @@ const MODE_BADGE_CLASS: Record<string, string> = {
 export function StatusBar() {
   const inferenceMode = useSettingsStore((s) => s.inferenceMode);
   const llmModel = useSettingsStore((s) => s.llmModel);
+  const cloudModel = useSettingsStore((s) => s.cloudModel);
+  const cloudConsentProvider = useSettingsStore((s) => s.cloudConsentProvider);
   const isLoadingSettings = useSettingsStore((s) => s.isLoading);
   const stats = useFileStore((s) => s.stats);
   const selectedIds = useFileStore((s) => s.selectedIds);
@@ -26,6 +28,12 @@ export function StatusBar() {
 
   const modeColor = MODE_COLORS[inferenceMode];
   const badgeClass = MODE_BADGE_CLASS[inferenceMode] ?? 'local';
+  const displayModel = resolveDisplayModel(
+    inferenceMode,
+    llmModel,
+    cloudModel,
+    cloudConsentProvider,
+  );
 
   return (
     <footer className="statusbar" aria-label="状态栏">
@@ -35,7 +43,7 @@ export function StatusBar() {
       </span>
       <span className="status-divider" aria-hidden />
       <span className="status-item" title="当前模型">
-        {llmModel}
+        {displayModel}
       </span>
       <span className="status-divider" aria-hidden />
       <span className="status-item" title="文件数与索引状态">
