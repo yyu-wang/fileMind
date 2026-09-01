@@ -2,7 +2,7 @@
 // 加载态、空态、新建表单、规则选中切换、删除二次确认、错误提示。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Category, Rule } from '@/types/ipc';
 import { RuleType } from '@/types/models';
@@ -150,19 +150,25 @@ describe('RulesPage', () => {
 
   it('deletes rule only after confirm from detail panel', async () => {
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderPage();
     await screen.findByText('PDF 归档');
     // 选中规则 → 详情面板出现删除按钮
     await user.click(screen.getAllByTestId('rule-item')[0]);
     await user.click(screen.getByRole('button', { name: '删除规则' }));
+    // 弹出 ConfirmDialog，未确认前不删除
+    const dialog = screen.getByRole('dialog', { name: '删除规则' });
+    expect(dialog).toBeInTheDocument();
     expect(mocks.deleteRule).not.toHaveBeenCalled();
 
-    confirmSpy.mockReturnValue(true);
+    // 点击对话框内「取消」：对话框关闭，仍不删除
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog', { name: '删除规则' })).not.toBeInTheDocument();
+
+    // 再次点删除并确认：执行删除
     await user.click(screen.getByRole('button', { name: '删除规则' }));
-    expect(confirmSpy).toHaveBeenCalledWith('确定删除规则「PDF 归档」？此操作不可撤销。');
+    const dialog2 = screen.getByRole('dialog', { name: '删除规则' });
+    await user.click(within(dialog2).getByRole('button', { name: '删除' }));
     expect(mocks.deleteRule).toHaveBeenCalledWith('r1');
-    confirmSpy.mockRestore();
   });
 
   it('renders rules-empty state when no rule selected', async () => {

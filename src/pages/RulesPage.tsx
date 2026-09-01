@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react';
 import { EmptyState, LoadingState } from '../components/common/StateViews';
 import { RuleForm } from '../components/rules/RuleForm';
 import { RuleList } from '../components/rules/RuleList';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { useRuleStore } from '../stores/ruleStore';
 import type { Rule } from '../types/ipc';
 
@@ -38,6 +39,8 @@ export function RulesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 新建态：点击"+ 新建规则"时打开空表单，与编辑态互斥
   const [formOpen, setFormOpen] = useState(false);
+  // 待删除规则（ConfirmDialog 二次确认，替代阻塞式 window.confirm）
+  const [pendingDelete, setPendingDelete] = useState<Rule | null>(null);
 
   useEffect(() => {
     void load();
@@ -65,8 +68,6 @@ export function RulesPage() {
   };
 
   const handleDelete = async (rule: Rule) => {
-    const confirmed = window.confirm(`确定删除规则「${rule.name}」？此操作不可撤销。`);
-    if (!confirmed) return;
     try {
       await deleteRule(rule.id);
       setSelectedId(null);
@@ -166,7 +167,7 @@ export function RulesPage() {
                     setSelectedId(null);
                     setFormOpen(false);
                   }}
-                  onDelete={(rule) => void handleDelete(rule)}
+                  onDelete={(rule) => setPendingDelete(rule)}
                 />
               ) : (
                 <div className="rules-empty">
@@ -181,6 +182,21 @@ export function RulesPage() {
           </div>
         )}
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="删除规则"
+          message={`确定删除规则「${pendingDelete.name}」？此操作不可撤销。`}
+          confirmLabel="删除"
+          danger
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => {
+            const target = pendingDelete;
+            setPendingDelete(null);
+            void handleDelete(target);
+          }}
+        />
+      )}
     </div>
   );
 }

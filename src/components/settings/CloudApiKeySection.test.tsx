@@ -90,8 +90,6 @@ describe('CloudApiKeySection', () => {
 
   it('deletes a key and shows 未配置 again', async () => {
     const user = userEvent.setup();
-    // FE-m13：删除前有 window.confirm 二次确认，需 mock 放行
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(fileIpc.getApiKeyStatus).mockResolvedValue({
       status: 'ok',
       data: [CONFIGURED_OPENAI, NO_KEY_DEEPSEEK],
@@ -100,7 +98,11 @@ describe('CloudApiKeySection', () => {
     render(<CloudApiKeySection />);
     await screen.findByText('已保存 ····abcd');
 
+    // 删除按钮先弹 ConfirmDialog，确认后才真正删除
     await user.click(within(openaiRow()).getByRole('button', { name: '删除' }));
+    expect(vi.mocked(fileIpc.deleteApiKey)).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '删除 API Key' });
+    await user.click(within(dialog).getByRole('button', { name: '删除' }));
 
     expect(vi.mocked(fileIpc.deleteApiKey)).toHaveBeenCalledWith('Openai');
     await waitFor(() => expect(screen.getAllByText('未配置')).toHaveLength(2));

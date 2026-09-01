@@ -10,6 +10,7 @@
 // 原型 05_交互原型 §设置页 AI 模型配置：.setting-row + .setting-label + .setting-control。
 
 import { useEffect, useState } from 'react';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { CloudProvider } from '../../types/ipc';
 
@@ -48,6 +49,8 @@ export function CloudApiKeySection() {
   const [drafts, setDrafts] = useState<Record<CloudProvider, string>>(EMPTY_DRAFT);
   const [busyProvider, setBusyProvider] = useState<CloudProvider | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 待删除的 provider（ConfirmDialog 二次确认，替代阻塞式 window.confirm）
+  const [pendingRemove, setPendingRemove] = useState<CloudProvider | null>(null);
   // 初始化从 store 读取：后续由用户编辑，不随 store 外部变更自动覆盖
   const [modelDraft, setModelDraft] = useState(() => cloudModel || 'deepseek-chat');
   const [savingModel, setSavingModel] = useState(false);
@@ -93,11 +96,6 @@ export function CloudApiKeySection() {
   };
 
   const remove = async (provider: CloudProvider) => {
-    // FE-m13：删除 API Key 需二次确认，避免误操作丢失凭据
-    const displayName = PROVIDERS.find((p) => p.value === provider)?.label ?? provider;
-    if (!window.confirm(`确认删除 ${displayName} 的 API Key？删除后需重新输入。`)) {
-      return;
-    }
     setBusyProvider(provider);
     setError(null);
     try {
@@ -209,7 +207,7 @@ export function CloudApiKeySection() {
                   type="button"
                   className="btn btn--ghost btn--sm"
                   disabled={busy}
-                  onClick={() => void remove(value)}
+                  onClick={() => setPendingRemove(value)}
                 >
                   删除
                 </button>
@@ -222,6 +220,24 @@ export function CloudApiKeySection() {
         <p className="settings-section__error" role="alert">
           {error}
         </p>
+      )}
+
+      {pendingRemove !== null && (
+        <ConfirmDialog
+          title="删除 API Key"
+          message={`确认删除 ${
+            PROVIDERS.find((p) => p.value === pendingRemove)?.label ?? pendingRemove
+          } 的 API Key？删除后需重新输入。`}
+          confirmLabel="删除"
+          danger
+          loading={busyProvider === pendingRemove}
+          onCancel={() => setPendingRemove(null)}
+          onConfirm={() => {
+            const provider = pendingRemove;
+            setPendingRemove(null);
+            void remove(provider);
+          }}
+        />
       )}
     </section>
   );
