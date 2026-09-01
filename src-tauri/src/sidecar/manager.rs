@@ -170,6 +170,14 @@ impl SidecarManager {
 
         let mut cmd = std::process::Command::new(&self.binary_path_);
         cmd.env("SIDECAR_PORT", self.port.to_string());
+        // PSK 双通路注入（优先 env，stdin 兜底）：dev 模式 bash wrapper 脚本可能
+        // 在启动过程中意外消费 stdin 首行（shell profile / heredoc 处理等），
+        // 导致 Python 端 readline 读到空串或脏数据，握手签名校验失败返回 401。
+        // 通过 env 通路保证无论 shell 层行为如何，PSK_HEX 都能精确到达 Python
+        // 端 _inject_psk() 的 env 分支（优先级高于 stdin）。
+        // 安全：env PSK 同用户其他进程可读，但 dev 模式仅本机，且与打包态 stdin
+        // 主路径语义独立，不降低生产（PyInstaller 二进制 + stdin only）安全。
+        cmd.env("PSK_HEX", &psk_hex);
         // 数据目录：传递 FILEMIND_DATA_HOME 给 Python Sidecar，保证 SQLite 与 LanceDB 落在同一根
         // 未设置时不传递，Python 端会使用默认的 ~/.filemind
         if let Ok(data_home) = std::env::var("FILEMIND_DATA_HOME") {

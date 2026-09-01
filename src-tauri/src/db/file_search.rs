@@ -347,4 +347,107 @@ mod tests {
         assert_eq!(build_fts_query("文件管理"), "\"文件\"*");
         assert_eq!(build_fts_query("分类整理的流程是什么"), "\"分类\"*");
     }
+
+    /// 构造指向真实临时文件的 `FileRecord`。
+    fn record_for(id: &str, path: &Path, file_name: &str, is_deleted: bool) -> FileRecord {
+        FileRecord {
+            id: id.to_string(),
+            path: path.to_string_lossy().to_string(),
+            file_name: file_name.to_string(),
+            file_size: 100,
+            content_hash: None,
+            category: None,
+            is_deleted,
+            created_at: "2026-01-01".to_string(),
+            updated_at: "2026-01-01".to_string(),
+            mtime: None,
+        }
+    }
+
+    #[test]
+    fn test_populate_fts_content_index_and_skip_branches() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = NamedTempFile::new()?;
+        let db = Database::open(tmp.path())?;
+        let dir = tempfile::tempdir()?;
+
+        // 1) 正常文本文件 → indexed
+        let md_path = dir.path().join("a.md");
+        std::fs::write(&md_path, "FileMind 文件管理 整理分类流程")?;
+        // 2) 非文本扩展名 → skipped
+        let bin_path = dir.path().join("b.exe");
+        std::fs::write(&bin_path, "binary")?;
+        // 3) 路径不存在（is_file=false）→ skipped
+        let ghost_path = dir.path().join("ghost.md");
+        // 4) 空白内容 → skipped
+        let empty_path = dir.path().join("empty.txt");
+        std::fs::write(&empty_path, "   ")?;
+        // 5) 超过 2MB 上限 → skipped
+        let big_path = dir.path().join("big.txt");
+        let big_len = usize::try_from(MAX_FTS_FILE_BYTES + 1)?;
+        std::fs::write(&big_path, vec![b'x'; big_len])?;
+
+        let files = vec![
+            record_for("f100", &md_path, "a.md", false),
+            record_for("f101", &bin_path, "b.exe", false),
+            record_for("f102", &ghost_path, "ghost.md", false),
+            record_for("f103", &empty_path, "empty.txt", false),
+            record_for("f104", &big_path, "big.txt", false),
+        ];
+        FileRepo::insert_batch(db.conn(), &files)?;
+
+        let (indexed, skipped) = FileSearch::populate_fts_content(db.conn(), &files)?;
+        assert_eq!(indexed, 1);
+        assert_eq!(skipped, 4);
+
+        // FTS 全文搜索命中已入库正文（CJK 前 2 字前缀匹配）
+        let results = FileSearch::search(db.conn(), "整理", 10)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file.file_name, "a.md");
+        assert_eq!(results[0].file.id, "f100");
+        Ok(())
+    }
+
+    #[test]
+    fn test_populate_fts_content_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = NamedTempFile::new()?;
+        let db = Database::open(tmp.path())?;
+        let dir = tempfile::tempdir()?;
+
+        let md_path = dir.path().join("a.md");
+        std::fs::write(&md_path, "知识库检索测试")?;
+        let file = record_for("f200", &md_path, "a.md", false);
+        FileRepo::insert_batch(db.conn(), std::slice::from_ref(&file))?;
+
+        // 同一文件重复填充：删旧插新，不产生重复行
+        FileSearch::populate_fts_content(db.conn(), std::slice::from_ref(&file))?;
+        let (indexed_again, _) =
+            FileSearch::populate_fts_content(db.conn(), std::slice::from_ref(&file))?;
+
+        assert_eq!(indexed_again, 1);
+        let results = FileSearch::search(db.conn(), "知识", 10)?;
+        assert_eq!(results.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_excludes_deleted_files() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = NamedTempFile::new()?;
+        let db = Database::open(tmp.path())?;
+        let dir = tempfile::tempdir()?;
+
+        let md_path = dir.path().join("deleted.md");
+        std::fs::write(&md_path, "已删除文件内容")?;
+        let file = record_for("f300", &md_path, "deleted.md", true);
+        FileRepo::insert_batch(db.conn(), std::slice::from_ref(&file))?;
+
+        let (indexed, _) =
+            FileSearch::populate_fts_content(db.conn(), std::slice::from_ref(&file))?;
+        assert_eq!(indexed, 1); // FTS 填充不看软删除标记
+
+        // 全文搜索过滤 is_deleted=1
+        let results = FileSearch::search(db.conn(), "删除", 10)?;
+        assert!(results.is_empty());
+        Ok(())
+    }
 }

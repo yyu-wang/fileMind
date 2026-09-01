@@ -689,7 +689,7 @@ async fn test_restart_failure_counts_into_crash_loop_window() {
 /// 绕过系统代理直连本地 Ollama —— 否则 Clash 等代理会拦截 127.0.0.1 请求返回 502。
 ///
 /// 实现思路：用一个 shell 脚本作为占位 binary，把子进程的 env 写入临时文件，
-/// 然后 `start()` spawn 后读取文件校验是否包含预期的 NO_PROXY 值。
+/// 然后 `start()` spawn 后读取文件校验是否包含预期的 `NO_PROXY` 值。
 #[test]
 fn test_start_injects_no_proxy_env() {
     // 仅 Unix：脚本通过 /bin/sh 执行
