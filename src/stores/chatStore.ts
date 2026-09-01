@@ -15,7 +15,13 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import { chatStream, listenChatEvent, type ChatEvent } from '../lib/ipc/chatIpc';
 import { flushThrottledStorage, throttledLocalStorage } from '../lib/throttledStorage';
 import { useSettingsStore } from './settingsStore';
-import { ChatRole, type ChatCitation, type ChatMessage } from '../types/models';
+import {
+  ChatRole,
+  resolveDisplayModel,
+  stripCitationLiterals,
+  type ChatCitation,
+  type ChatMessage,
+} from '../types/models';
 import type { ChatStreamRequest, ChatTurn } from '../types/ipc';
 
 /** 向量检索候选数。 */
@@ -121,10 +127,13 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
   // FE-m11：版本号从 embeddingModelOptions 查找，fallback 1（与 Rust 当前硬编码一致）
   const version =
     settings.embeddingModelOptions.find((m) => m.name === embeddingModel)?.version ?? 1;
-  const isCloud = settings.inferenceMode === 'Cloud';
-  // 云端模式：若用户配置了 cloudModel，用它作为生成模型；否则回落 llmModel
-  const effectiveLlmModel =
-    isCloud && settings.cloudModel ? settings.cloudModel : settings.llmModel || 'qwen3.8-27b';
+  // 云端模式：若用户配置了 cloudModel，用它作为生成模型；否则按 provider 回落默认
+  const effectiveLlmModel = resolveDisplayModel(
+    settings.inferenceMode,
+    settings.llmModel,
+    settings.cloudModel,
+    settings.cloudConsentProvider,
+  );
   return {
     query,
     history: buildHistory(messages.slice(0, -1), HISTORY_TURNS),
@@ -134,7 +143,7 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
     llm_model: effectiveLlmModel,
     // 云端模型通过 llm_model 传递（Rust chat_stream_inner 会合并 cloud_model → llm_model）
     // 此处直接传 effectiveLlmModel，云端 Provider 按前缀路由
-    cloud_model: isCloud ? settings.cloudModel : '',
+    cloud_model: settings.inferenceMode === 'Cloud' ? settings.cloudModel : '',
     top_k: TOP_K,
     rerank_top_k: RERANK_TOP_K,
     max_retries: MAX_RETRIES,
@@ -374,7 +383,7 @@ export const useChatStore = create<ChatState>()(
         const assistantMessage: ChatMessage = {
           id: genMessageId(),
           role: ChatRole.Assistant,
-          content: currentStream,
+          content: stripCitationLiterals(currentStream),
           ...(pendingCitations.length > 0 ? { citations: pendingCitations } : {}),
           ...(meta.lowConfidence ? { lowConfidence: true } : {}),
           ...(retries > 0 ? { retries } : {}),
