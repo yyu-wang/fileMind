@@ -364,6 +364,16 @@ async def _rag_event_stream(
     if result is not None and not result.is_correct:
         low_confidence = True
 
+    # 去重：LLM 可能在回答里反复标注同一来源（云端模型尤其明显，
+    # 会生成 [1][2][1][2]... 这种），导致前端 citations 标签重复渲染。
+    # 保留首次出现的顺序，过滤不在 valid_ids 里的脏标注。
+    seen: set[int] = set()
+    unique_cited: list[int] = []
+    for cid in cited:
+        if cid in valid_ids and cid not in seen:
+            seen.add(cid)
+            unique_cited.append(cid)
+
     citation_map = {c.citation_id: c for c in chunks}
     citations = [
         {
@@ -372,7 +382,7 @@ async def _rag_event_stream(
             "page": citation_map[citation_id].page,
             "text": citation_map[citation_id].text,
         }
-        for citation_id in cited
+        for citation_id in unique_cited
     ]
     if citations:
         yield ("citation", {"citations": citations})

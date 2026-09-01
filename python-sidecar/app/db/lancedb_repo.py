@@ -394,7 +394,10 @@ class LanceDBManager:
             .limit(top_k)
             .to_list()
         )
-        return [
+        # SC-m25：LanceDB ANN 对距离相同的向量不保证稳定序（底层 HNSW/IVF
+        # 按插入顺序返回等距候选）。显式二次排序 → distance 升序 → chunk_id
+        # 升序，使向量检索输出全确定性，跨查询 / 跨模式结果一致。
+        hits = [
             VectorHit(
                 chunk_id=str(row["chunk_id"]),
                 file_path=str(row["file_path"]),
@@ -404,3 +407,5 @@ class LanceDBManager:
             )
             for row in rows
         ]
+        hits.sort(key=lambda h: (h.distance, h.chunk_id))
+        return hits

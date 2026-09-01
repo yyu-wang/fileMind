@@ -322,16 +322,20 @@ export const useChatStore = create<ChatState>()(
               status: 'streaming',
             });
             break;
-          case 'citation':
-            set({
-              pendingCitations: event.data.citations.map((c) => ({
-                id: c.id,
-                fileName: c.file_name,
-                page: c.page,
-                text: c.text,
-              })),
-            });
+          case 'citation': {
+            // FE-m12：后端已去重，这里再兜底一次（防御 LLM 在 retry 时
+            // 产生重复来源 / 未来其他路径引入重复）。按 (id, fileName, page) 三元组去重。
+            const seen = new Set<string>();
+            const deduped: ChatCitation[] = [];
+            for (const c of event.data.citations) {
+              const key = `${c.id}|${c.file_name}|${c.page}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              deduped.push({ id: c.id, fileName: c.file_name, page: c.page, text: c.text });
+            }
+            set({ pendingCitations: deduped });
             break;
+          }
           case 'done':
             get().finishStream({ lowConfidence: event.data.low_confidence ?? false });
             break;
