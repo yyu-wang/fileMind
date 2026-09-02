@@ -360,7 +360,7 @@ mod tests {
     fn make_test_app_state(db_path: &std::path::Path) -> AppState {
         let db = Database::open(db_path).expect("打开测试 DB 失败");
         AppState {
-            db: Mutex::new(db),
+            db: std::sync::Arc::new(Mutex::new(db)),
             sidecar_manager: Mutex::new(SidecarManager::new(
                 "/dev/null/sidecar-nonexistent".into(),
             )),

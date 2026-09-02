@@ -3,8 +3,9 @@
 // 作为 modal 复用同意书文案与提供商选择；确认回调由父组件调 signCloudConsent。
 // T7.5 滚动到底门控：未滚读完同意书前 checkbox 禁用，勾选后才能确认。
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CLOUD_CONSENT_VERSION } from '../../lib/consent';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { CloudProvider } from '../../types/ipc';
 import { ConsentAgreement } from '../consent/ConsentAgreement';
 
@@ -14,15 +15,29 @@ interface CloudConsentDialogProps {
   onCancel: () => void;
 }
 
-const PROVIDER_OPTIONS: Array<{ value: CloudProvider; label: string }> = [
-  { value: 'Openai', label: 'OpenAI（gpt-4o 等）' },
-  { value: 'Deepseek', label: 'DeepSeek' },
-];
-
 export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDialogProps) {
+  const cloudProviders = useSettingsStore((s) => s.cloudProviders);
+  const loadCloudProviders = useSettingsStore((s) => s.loadCloudProviders);
+  // 默认值使用首个内置提供商（openai / deepseek），确保后端 slug 校验通过
+  const defaultKey = cloudProviders[0]?.provider_key ?? 'openai';
   const [agreed, setAgreed] = useState(false);
   const [bottomReached, setBottomReached] = useState(false);
-  const [provider, setProvider] = useState<CloudProvider>('Openai');
+  const [provider, setProvider] = useState<CloudProvider>(defaultKey as CloudProvider);
+
+  useEffect(() => {
+    if (cloudProviders.length === 0) {
+      void loadCloudProviders();
+    } else {
+      // 第一次进入时 provider 可能还是旧 enum 值（如 'Openai'），
+      // 用 setTimeout 延后一个 tick 对齐到当前合法 key，避免 effect 内直接 setState 触发 lint
+      const validKeys = new Set(cloudProviders.map((p) => p.provider_key));
+      if (!validKeys.has(provider)) {
+        window.setTimeout(() => setProvider(cloudProviders[0].provider_key as CloudProvider), 0);
+      }
+    }
+    // 仅当 provider 不合法时才做对齐，不依赖 provider 本身避免死循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudProviders.length]);
 
   return (
     <div
@@ -43,11 +58,11 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
             value={provider}
             onChange={(e) => setProvider(e.target.value as CloudProvider)}
             className="onboarding__select"
-            disabled={busy}
+            disabled={busy || cloudProviders.length === 0}
           >
-            {PROVIDER_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
+            {cloudProviders.map((opt) => (
+              <option key={opt.provider_key} value={opt.provider_key}>
+                {opt.name}
               </option>
             ))}
           </select>

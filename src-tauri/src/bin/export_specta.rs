@@ -60,6 +60,10 @@ fn main() {
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,
             commands::api_key::delete_api_key,
+            // P-07 自定义云提供商管理（CRUD + base_url 查询）
+            commands::cloud_providers::list_cloud_providers,
+            commands::cloud_providers::upsert_cloud_provider,
+            commands::cloud_providers::delete_cloud_provider,
         ]);
 
     if let Err(e) = builder.export(specta_typescript::Typescript::default(), &output_path) {

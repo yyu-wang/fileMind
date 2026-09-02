@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicU64;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::sidecar::SidecarManager;
 
@@ -60,8 +60,9 @@ impl From<db::models::FileRecord> for FileInfo {
 
 /// 全局应用状态：由 Tauri 管理并注入各命令。
 pub struct AppState {
-    /// 数据库句柄（互斥保护，SQLite 连接单线程访问）。
-    pub db: Mutex<db::Database>,
+    /// 数据库句柄（Arc 包一层 Mutex：让云端代理与 Tauri 命令层共享同一连接池对象，
+    /// 避免各自独立开新 `SQLite` 连接破坏迁移/互斥语义）。
+    pub db: Arc<Mutex<db::Database>>,
     /// Sidecar 进程管理器（互斥保护）：
     /// 由 `main.rs` 启动 + 握手后放入，生命周期内由 `watchdog` 与 `on_exit` 共同访问。
     pub sidecar_manager: Mutex<SidecarManager>,

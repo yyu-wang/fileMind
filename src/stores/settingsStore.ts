@@ -16,6 +16,8 @@ import type {
   ApiKeyStatus,
   AppConfig,
   CloudProvider,
+  CloudProviderRecord,
+  CloudProviderUpsertInput,
   EmbeddingModelAvailability,
   InferenceMode,
   OllamaModelInfo,
@@ -65,7 +67,7 @@ interface SettingsState {
   /** 主题模式（跟随系统 / 亮色 / 暗色） */
   theme: ThemeMode;
   /** 各云服务商 API Key 状态（仅掩码提示，不含完整 Key；不持久化） */
-  apiKeyStatus: Record<CloudProvider, ApiKeyStatus>;
+  apiKeyStatus: Record<string, ApiKeyStatus>;
   /** 云端推理模型名（如 gpt-4o / deepseek-chat；空串表示未指定，走 Provider 默认） */
   cloudModel: string;
   /** 云端推理 Temperature（0-1，0.2 为通用默认） */
@@ -74,6 +76,12 @@ interface SettingsState {
   installingModel: string | null;
   /** 模型安装错误信息（null 表示无错误） */
   installError: string | null;
+  /** P-07：用户自定义云提供商列表（来自 DB cloud_providers 表，设置页表单直接操作） */
+  cloudProviders: CloudProviderRecord[];
+  /** P-07：当前激活的云提供商 slug（app_config.active_cloud_provider），空串=未指定 */
+  activeCloudProvider: string;
+  /** P-07：提供商列表加载中（设置页卡片骨架屏用） */
+  cloudProvidersLoading: boolean;
 
   /** 从 Rust 端加载完整配置（启动时调用） */
   loadConfig: () => Promise<void>;
@@ -109,6 +117,14 @@ interface SettingsState {
   clearError: () => void;
   /** 安装指定 Embedding 模型（从 Ollama 拉取） */
   installModel: (modelName: string) => Promise<void>;
+  /** P-07：从 DB 拉取全部云提供商（覆盖 store） */
+  loadCloudProviders: () => Promise<void>;
+  /** P-07：新建或更新提供商（成功后自动刷新列表 + API Key 状态） */
+  upsertCloudProvider: (input: CloudProviderUpsertInput) => Promise<CloudProviderRecord>;
+  /** P-07：软删除指定 slug 的提供商（成功后自动刷新列表 + 若 slug 为当前激活则清空激活） */
+  deleteCloudProvider: (providerKey: string) => Promise<void>;
+  /** P-07：切换当前激活的云提供商 slug（空串清除；写入 DB 并更新 store） */
+  setActiveCloudProvider: (providerKey: string) => Promise<void>;
 }
 
 /**
@@ -134,6 +150,7 @@ async function loadConfigInner(set: (partial: Partial<SettingsState>) => void): 
       cloudConsentSignedAt: cfg.cloud_consent_signed_at,
       llmModel: cfg.llm_model,
       cloudModel: cfg.cloud_model ?? '',
+      activeCloudProvider: cfg.active_cloud_provider ?? '',
       isLoading: false,
       initFailed: false,
     });
@@ -169,14 +186,14 @@ export const useSettingsStore = create<SettingsState>()(
       llmModelOptions: [],
       embeddingModelOptions: [],
       theme: ThemeMode.System,
-      apiKeyStatus: {
-        Openai: { provider: 'Openai', has_key: false, hint: '' },
-        Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
-      },
+      apiKeyStatus: {},
       cloudModel: '',
       temperature: 0.2,
       installingModel: null,
       installError: null,
+      cloudProviders: [],
+      activeCloudProvider: '',
+      cloudProvidersLoading: false,
 
       loadConfig: async () => {
         set({ isLoading: true, error: null });
@@ -271,6 +288,8 @@ export const useSettingsStore = create<SettingsState>()(
           cloud_consent_provider: partial.cloud_consent_provider ?? current.cloudConsentProvider,
           cloud_consent_signed_at: partial.cloud_consent_signed_at ?? current.cloudConsentSignedAt,
           cloud_model: partial.cloud_model ?? current.cloudModel,
+          active_cloud_provider:
+            (partial.active_cloud_provider ?? current.activeCloudProvider) || null,
         };
         const result = await fileIpc.updateConfig(fullConfig);
         if (result.status !== 'ok') {
@@ -293,6 +312,7 @@ export const useSettingsStore = create<SettingsState>()(
           cloudConsentSignedAt: fullConfig.cloud_consent_signed_at,
           llmModel: fullConfig.llm_model,
           cloudModel: fullConfig.cloud_model ?? '',
+          activeCloudProvider: fullConfig.active_cloud_provider ?? '',
         });
       },
 
@@ -300,12 +320,15 @@ export const useSettingsStore = create<SettingsState>()(
         // 同意书版本与后端 signCloudConsent 的 consent_version 一致（共享常量）
         const result = await fileIpc.signCloudConsent(CLOUD_CONSENT_VERSION, provider);
         if (result.status === 'ok') {
+          // 后端 SIGN_CONSENT_SQL 已同步写 active_cloud_provider = ?2，
+          // 前端这里同步状态确保 UI 立刻显示激活状态
           set({
             cloudConsentSigned: true,
             inferenceMode: 'Cloud',
             cloudConsentVersion: CLOUD_CONSENT_VERSION,
             cloudConsentProvider: provider,
             cloudConsentSignedAt: new Date().toISOString(),
+            activeCloudProvider: provider,
           });
         } else {
           set({ error: result.error });
@@ -317,13 +340,14 @@ export const useSettingsStore = create<SettingsState>()(
         const result = await fileIpc.revokeCloudConsent();
         if (result.status === 'ok') {
           // 撤回后自动切回 Local（04 API §2-3d 联动，Rust 端已完成 DB 切换），
-          // 同意元数据一并清空
+          // 同意元数据与 activeCloudProvider 一并清空
           set({
             cloudConsentSigned: false,
             inferenceMode: 'Local',
             cloudConsentVersion: null,
             cloudConsentProvider: null,
             cloudConsentSignedAt: null,
+            activeCloudProvider: '',
           });
         } else {
           set({ error: result.error });
@@ -334,12 +358,15 @@ export const useSettingsStore = create<SettingsState>()(
       loadApiKeyStatus: async () => {
         const result = await fileIpc.getApiKeyStatus();
         if (result.status === 'ok') {
-          // FE-M12：合并构建而非整体替换——后端只返回部分 provider 时，
-          // 未返回的项保留旧状态并补默认值，避免组件读到 undefined 崩溃
-          const prev = get().apiKeyStatus;
-          const map = {} as Record<CloudProvider, ApiKeyStatus>;
-          for (const provider of Object.keys(prev) as CloudProvider[]) {
-            map[provider] = { provider, has_key: false, hint: '' };
+          // FE-M12：以当前 cloudProviders 的 slug 为基准建默认值，
+          // 合并后端返回的真实 Key 状态；后端未返回=无 Key。
+          const map = {} as Record<string, ApiKeyStatus>;
+          for (const p of get().cloudProviders) {
+            map[p.provider_key] = {
+              provider: p.provider_key,
+              has_key: false,
+              hint: '',
+            };
           }
           for (const status of result.data) map[status.provider] = status;
           set({ apiKeyStatus: map });
@@ -401,6 +428,54 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       clearError: () => set({ error: null }),
+
+      // ---------- P-07：用户自定义云提供商 CRUD + 激活选择 ----------
+
+      loadCloudProviders: async () => {
+        set({ cloudProvidersLoading: true, error: null });
+        try {
+          const result = await fileIpc.listCloudProviders();
+          if (result.status === 'ok') {
+            set({ cloudProviders: result.data });
+            // 提供商列表刷新后，一并刷新 API Key 状态（Key 状态按 slug 对齐）
+            await get().loadApiKeyStatus();
+          } else {
+            set({ error: result.error });
+          }
+        } catch (e) {
+          set({ error: e instanceof Error ? e.message : String(e) });
+        } finally {
+          set({ cloudProvidersLoading: false });
+        }
+      },
+
+      upsertCloudProvider: async (input) => {
+        const result = await fileIpc.upsertCloudProvider(input);
+        if (result.status !== 'ok') {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
+        // 成功后刷新列表和 Key 状态（新 provider 立刻能在 Key 卡片看到）
+        await get().loadCloudProviders();
+        return result.data;
+      },
+
+      deleteCloudProvider: async (providerKey) => {
+        const result = await fileIpc.deleteCloudProvider(providerKey);
+        if (result.status !== 'ok') {
+          set({ error: result.error });
+          throw new Error(result.error);
+        }
+        // 删除 slug 正好是当前激活 → 清空激活（避免 DB 侧留着一个已删 slug 激活）
+        if (get().activeCloudProvider === providerKey) {
+          await get().setActiveCloudProvider('');
+        }
+        await get().loadCloudProviders();
+      },
+
+      setActiveCloudProvider: async (providerKey) => {
+        await get().updateConfig({ active_cloud_provider: providerKey || null });
+      },
     }),
     {
       name: 'filemind-settings',

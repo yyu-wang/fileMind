@@ -116,12 +116,7 @@ mod tests {
     fn switch_back_to_local_persists() {
         set_consent(false);
         let db = open_test_db();
-        ConfigRepo::sign_consent(
-            db.conn(),
-            "v1.0",
-            crate::commands::config::CloudProvider::Openai,
-        )
-        .unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "openai".to_string()).unwrap();
         assert_eq!(ConfigRepo::get(db.conn()).unwrap().inference_mode, "cloud");
 
         let result = set_inference_mode_inner(db.conn(), InferenceMode::Local, "ui");
@@ -157,12 +152,7 @@ mod tests {
         set_consent(false);
         let db = open_test_db();
         // 走 sign_consent 通道把模式切到 cloud（该命令本身会写 inference_mode）
-        ConfigRepo::sign_consent(
-            db.conn(),
-            "v1.0",
-            crate::commands::config::CloudProvider::Openai,
-        )
-        .unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "openai".to_string()).unwrap();
         assert_eq!(
             ConfigRepo::get(db.conn()).unwrap().inference_mode,
             "cloud",

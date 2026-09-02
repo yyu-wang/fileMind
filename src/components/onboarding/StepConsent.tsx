@@ -3,8 +3,9 @@
 // 仅云端模式显示，勾选 + 确认后调用 signCloudConsent。
 // T7.5 滚动到底门控：未滚读完同意书前 checkbox 禁用，勾选后才能确认。
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CLOUD_CONSENT_VERSION } from '../../lib/consent';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { CloudProvider } from '../../types/ipc';
 import { ConsentAgreement } from '../consent/ConsentAgreement';
 
@@ -13,15 +14,25 @@ interface StepConsentProps {
   onBack: () => void;
 }
 
-const PROVIDER_OPTIONS: Array<{ value: CloudProvider; label: string }> = [
-  { value: 'Openai', label: 'OpenAI（gpt-4o 等）' },
-  { value: 'Deepseek', label: 'DeepSeek' },
-];
-
 export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
+  const cloudProviders = useSettingsStore((s) => s.cloudProviders);
+  const loadCloudProviders = useSettingsStore((s) => s.loadCloudProviders);
+  const defaultKey = cloudProviders[0]?.provider_key ?? 'openai';
   const [agreed, setAgreed] = useState(false);
   const [bottomReached, setBottomReached] = useState(false);
-  const [provider, setProvider] = useState<CloudProvider>('Openai');
+  const [provider, setProvider] = useState<CloudProvider>(defaultKey as CloudProvider);
+
+  useEffect(() => {
+    if (cloudProviders.length === 0) {
+      void loadCloudProviders();
+    } else {
+      const validKeys = new Set(cloudProviders.map((p) => p.provider_key));
+      if (!validKeys.has(provider)) {
+        window.setTimeout(() => setProvider(cloudProviders[0].provider_key as CloudProvider), 0);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudProviders.length]);
 
   return (
     <div>
@@ -59,10 +70,11 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
           style={{ maxWidth: 280 }}
           value={provider}
           onChange={(e) => setProvider(e.target.value as CloudProvider)}
+          disabled={cloudProviders.length === 0}
         >
-          {PROVIDER_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
+          {cloudProviders.map((opt) => (
+            <option key={opt.provider_key} value={opt.provider_key}>
+              {opt.name}
             </option>
           ))}
         </select>

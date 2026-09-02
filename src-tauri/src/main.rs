@@ -19,7 +19,7 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use filemind_lib::commands;
@@ -257,15 +257,27 @@ fn main() {
     let db_path = get_db_path();
 
     let database = match Database::open(&db_path) {
-        Ok(db) => db,
+        Ok(db) => Arc::new(Mutex::new(db)),
         Err(e) => {
             log::error!("Failed to initialize database: {e}");
             std::process::exit(1);
         }
     };
 
+    // 工具闭包（局部作用域）：取 DB 守卫，main 启动阶段直接 `lock_db().conn()` 即可。
+    let lock_db = || {
+        database.lock().unwrap_or_else(|_| {
+            log::error!("DB lock poisoned during startup");
+            std::process::exit(1);
+        })
+    };
+
     // T6.5 内置分类种子：保证启发式分类有目标分类可用（幂等，失败不阻断启动）
-    match CategoryRepo::seed_builtin_categories(database.conn()) {
+    let seed_result = {
+        let db_guard = lock_db();
+        CategoryRepo::seed_builtin_categories(db_guard.conn())
+    };
+    match seed_result {
         Ok(0) => log::info!("内置分类已存在，跳过种子"),
         Ok(n) => log::info!("内置分类种子：新增 {n} 个分类"),
         Err(e) => log::warn!("内置分类种子失败（不影响启动）: {e}"),
@@ -276,7 +288,10 @@ fn main() {
     // 隔离），不影响真实用户配置；release 不编译此分支。
     #[cfg(debug_assertions)]
     if std::env::var("FILEMIND_E2E_SKIP_ONBOARDING").is_ok_and(|v| v == "1") {
-        let mut config = ConfigRepo::get(database.conn()).unwrap_or_default();
+        let mut config = {
+            let db_guard = lock_db();
+            ConfigRepo::get(db_guard.conn()).unwrap_or_default()
+        };
         config.onboarding_completed = true;
         config.inference_mode = "local".to_string();
         if let Some(dir) = std::env::var("FILEMIND_E2E_DATA_DIR")
@@ -285,7 +300,11 @@ fn main() {
         {
             config.data_directory = dir;
         }
-        match ConfigRepo::upsert(database.conn(), &config) {
+        let upsert_result = {
+            let db_guard = lock_db();
+            ConfigRepo::upsert(db_guard.conn(), &config)
+        };
+        match upsert_result {
             Ok(()) => log::info!(
                 "T9.5 E2E：FILEMIND_E2E_SKIP_ONBOARDING=1 已预置 onboarding_completed=true"
             ),
@@ -294,7 +313,11 @@ fn main() {
     }
 
     // T3.5：启动时校验操作日志链式哈希完整性，检测到篡改仅告警、不阻断启动
-    match OperationRepo::verify_chain(database.conn()) {
+    let verify_result = {
+        let db_guard = lock_db();
+        OperationRepo::verify_chain(db_guard.conn())
+    };
+    match verify_result {
         Ok(None) => log::info!("操作日志链式哈希校验通过"),
         Ok(Some(break_id)) => {
             log::error!("操作日志链式哈希校验失败，检测到篡改，断裂于记录 {break_id}");
@@ -331,20 +354,35 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) =
-        cloud_proxy::spawn_proxy_server(cloud_proxy::CloudProxyState::new(proxy_token.clone()))
-    {
+    let proxy_state =
+        cloud_proxy::CloudProxyState::new(proxy_token.clone()).with_db(Arc::clone(&database));
+    if let Err(e) = cloud_proxy::spawn_proxy_server(proxy_state) {
         log::error!("云端代理启动失败: {e}");
         std::process::exit(1);
     }
     // 脱敏仅云端需要（本地 Ollama 需要原始内容做 RAG）；读失败按本地处理，不阻断启动
-    let masking_on =
-        ConfigRepo::get(database.conn()).is_ok_and(|config| config.inference_mode == "cloud");
-    log::info!("云端代理就绪: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}, masking={masking_on}");
+    // P-07：同时读出 active_cloud_provider（默认空串），用于 Sidecar env 注入
+    let (masking_on, active_cloud_provider) = {
+        let get_result = {
+            let db_guard = lock_db();
+            ConfigRepo::get(db_guard.conn())
+        };
+        match get_result {
+            Ok(config) => (
+                config.inference_mode == "cloud",
+                config.active_cloud_provider.unwrap_or_default(),
+            ),
+            Err(_) => (false, String::new()),
+        }
+    };
+    log::info!(
+        "云端代理就绪: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}, masking={masking_on}, active_provider={active_cloud_provider}"
+    );
     sidecar_manager.set_cloud_env(CloudSidecarEnv {
         proxy_url: format!("http://{CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}"),
         proxy_token,
         masking_on,
+        active_cloud_provider,
     });
 
     // BE-M3：启动前清理上次异常退出残留的孤儿 Sidecar（ppid==1 且名字匹配），
@@ -394,7 +432,7 @@ fn main() {
 
     let builder = builder
         .manage(AppState {
-            db: Mutex::new(database),
+            db: Arc::clone(&database),
             sidecar_manager: Mutex::new(sidecar_manager),
             sidecar_psk: Mutex::new(sidecar_psk),
             sidecar_binary: Mutex::new(sidecar_binary),
@@ -439,6 +477,10 @@ fn main() {
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,
             commands::api_key::delete_api_key,
+            // P-07 自定义云提供商管理（对应 cloud_providers 表 CRUD）
+            commands::cloud_providers::list_cloud_providers,
+            commands::cloud_providers::upsert_cloud_provider,
+            commands::cloud_providers::delete_cloud_provider,
             // T9.5 E2E 测试专用命令（仅 debug 注册；release 不携带自动化入口）
             #[cfg(debug_assertions)]
             commands::e2e::e2e_get_test_dir,

@@ -21,6 +21,7 @@
 import { useEffect } from 'react';
 import { AboutSection } from '../components/settings/AboutSection';
 import { CloudApiKeySection } from '../components/settings/CloudApiKeySection';
+import { CloudProviderManager } from '../components/settings/CloudProviderManager';
 import { EmbeddingModelSection } from '../components/settings/EmbeddingModelSection';
 import { FileSafetySection } from '../components/settings/FileSafetySection';
 import { InferenceModeSection } from '../components/settings/InferenceModeSection';
@@ -44,6 +45,7 @@ export function SettingsPage() {
       <div className="main-content">
         <div className="settings-layout">
           <InferenceModeSection />
+          <CloudProviderManager />
           <CloudApiKeySection />
           <OllamaStatusCard />
           <EmbeddingModelSection />

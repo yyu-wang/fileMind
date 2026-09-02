@@ -66,6 +66,11 @@ pub struct CloudSidecarEnv {
     pub proxy_token: String,
     /// 是否启用云端数据脱敏（T7.2，`inference_mode=cloud` 时为真）。
     pub masking_on: bool,
+    /// P-07：当前激活的云提供商 slug（`app_config.active_cloud_provider`），
+    /// Sidecar 通过 env `FILEMIND_ACTIVE_CLOUD_PROVIDER` 读取后，
+    /// `GenericCloudProvider` 用它拼 Rust 云端代理路由尾段。空串表示未指定
+    /// （`ProviderFactory` 回落内置前缀匹配 + 本地 `Ollama`）。
+    pub active_cloud_provider: String,
 }
 
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
@@ -191,6 +196,14 @@ impl SidecarManager {
                 "FILEMIND_CLOUD_MASKING",
                 if cloud.masking_on { "1" } else { "0" },
             );
+            // P-07：注入激活提供商 slug（Sidecar ProviderFactory 据此选
+            // GenericCloudProvider，空串不注入，Python 端 env 读不到即回落内置规则）
+            if !cloud.active_cloud_provider.is_empty() {
+                cmd.env(
+                    "FILEMIND_ACTIVE_CLOUD_PROVIDER",
+                    &cloud.active_cloud_provider,
+                );
+            }
         }
         // 本地服务（Ollama / Sidecar 自身）必须绕过系统代理（Clash 等），
         // 否则 httpx 读 http_proxy 走代理 → 本地 127.0.0.1 被代理拦截返回 502。
@@ -896,3 +909,5 @@ pub fn cleanup_orphan_sidecar(port: u16) {
 #[allow(clippy::expect_used)]
 #[path = "manager_tests.rs"]
 mod tests;
+
+// lint fix notes: doc_markdown (GenericCloudProvider / ProviderFactory / Ollama 反引号)

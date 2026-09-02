@@ -6,6 +6,8 @@ pub mod api_key;
 pub mod chat;
 /// 智能分类预览命令（规则引擎 + 启发式）。
 pub mod classify;
+/// 用户自定义云提供商管理（CRUD + base_url 查询，对应 cloud_providers 表）。
+pub mod cloud_providers;
 /// 应用配置读写命令。
 pub mod config;
 /// (T9.5) E2E 测试专用命令（函数常编译；注册在 main.rs 仅 debug，release 不可调用）。
