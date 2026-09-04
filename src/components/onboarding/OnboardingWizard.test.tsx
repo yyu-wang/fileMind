@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { FileInfo } from '@/types/ipc';
+import type { CloudProviderRecord, FileInfo } from '@/types/ipc';
 
 import { useFileStore } from '@/stores/fileStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -61,6 +61,33 @@ const OK_OLLAMA = {
   },
 };
 
+// P-07：consent 步骤默认选中 provider = cloudProviders[0]，seed 使默认键为 'Openai'
+//（signCloudConsent 断言沿用既有大小写约定）
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
+
 function scannedFile(): FileInfo {
   return {
     id: 'f1',
@@ -92,6 +119,8 @@ beforeEach(() => {
     error: null,
     onboardingCompleted: false,
     dataDirectory: '',
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
   });
   useFileStore.setState({
     files: [],

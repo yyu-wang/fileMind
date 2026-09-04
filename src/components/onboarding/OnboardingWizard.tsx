@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useFileStore } from '../../stores/fileStore';
-import type { CloudProvider, InferenceMode } from '../../types/ipc';
+import type { InferenceMode } from '../../types/ipc';
 import { StepModeSelect } from './StepModeSelect';
 import { StepConsent } from './StepConsent';
 import { StepDirectory } from './StepDirectory';
@@ -70,7 +70,7 @@ export function OnboardingWizard() {
   };
 
   /** 步骤二同意书确认 */
-  const handleConsentConfirm = async (provider: CloudProvider) => {
+  const handleConsentConfirm = async (provider: string) => {
     try {
       await signCloudConsent(provider);
       setStep('directory');

@@ -4,7 +4,7 @@
 // - InferenceMode / OperationType 等 enum 直接从 ipc.ts re-export，避免重复维护
 // - 此文件只放前端 UI 专用的枚举（ClassifyStatus、ChatRole）与 UI 常量（色彩映射）
 
-import type { CloudProvider, InferenceMode } from './ipc';
+import type { InferenceMode } from './ipc';
 
 // Re-export Rust 生成的枚举，供 store / 组件直接 import 自 models 统一入口
 export type { InferenceMode } from './ipc';
@@ -24,13 +24,14 @@ export const MODE_COLORS: Record<
 };
 
 /**
- * 云端提供商默认推理模型。
+ * 云端提供商默认推理模型（按 provider_key 取值）。
  *
- * 当 `cloudModel` 为空串时回落到此表；值与 Rust config.rs 的默认值保持一致。
+ * 当 `cloudModel` 为空串时回落到此表；键为 P-07 提供商 slug。
+ * 内置两条（openai / deepseek）历史默认保留；用户自定义提供商为空走回落逻辑。
  */
-export const CLOUD_PROVIDER_DEFAULT_MODEL: Record<CloudProvider, string> = {
-  Openai: 'gpt-4o-mini',
-  Deepseek: 'deepseek-chat',
+export const CLOUD_PROVIDER_DEFAULT_MODEL: Record<string, string> = {
+  openai: 'gpt-4o-mini',
+  deepseek: 'deepseek-chat',
 };
 
 /**
@@ -49,7 +50,7 @@ export function resolveDisplayModel(
   mode: InferenceMode,
   llmModel: string | undefined | null,
   cloudModel: string | undefined | null,
-  cloudProvider: CloudProvider | null,
+  cloudProvider: string | null,
 ): string {
   const isCloud = mode === 'Cloud';
   if (isCloud) {

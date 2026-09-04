@@ -19,8 +19,34 @@ vi.mock('../lib/ipc', () => ({
 import { CLOUD_CONSENT_VERSION } from '../lib/consent';
 import { fileIpc } from '../lib/ipc';
 import { ThemeMode } from '../types/models';
-import type { AppConfig, OllamaStatus } from '../types/ipc';
+import type { AppConfig, CloudProviderRecord, OllamaStatus } from '../types/ipc';
 import { useSettingsStore } from './settingsStore';
+
+// P-07：loadApiKeyStatus 以 store.cloudProviders 为默认项基准，seed 两条内置记录
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: 'https://api.openai.com/v1',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: 'https://api.deepseek.com/v1',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
 
 const baseConfig: AppConfig = {
   data_directory: '/data',
@@ -73,6 +99,8 @@ function resetSettings(): void {
       Openai: { provider: 'Openai', has_key: false, hint: '' },
       Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
     },
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
   });
 }
 

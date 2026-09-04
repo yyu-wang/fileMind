@@ -2,7 +2,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import type { ApiKeyStatus, AppConfig, FileStats, OllamaStatus } from '@/types/ipc';
+import type {
+  ApiKeyStatus,
+  AppConfig,
+  CloudProviderRecord,
+  FileStats,
+  OllamaStatus,
+} from '@/types/ipc';
 import { ThemeMode } from '@/types/models';
 
 import { useFileStore } from '@/stores/fileStore';
@@ -61,6 +67,34 @@ const ollamaOk: OllamaStatus = {
 const noKey: ApiKeyStatus = { provider: 'Openai', has_key: false, hint: '' };
 const noDeep: ApiKeyStatus = { provider: 'Deepseek', has_key: false, hint: '' };
 
+// P-07：CloudApiKeySection 的 Key 行来自 store.cloudProviders，seed 两条内置记录
+//（name 需命中 `OpenAI API Key 输入框` 等 DOM 查询；不 mock listCloudProviders，
+//  否则 CloudProviderManager 会连带再触发一次 loadApiKeyStatus，破坏调用次数断言）
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
+
 const emptyStats: FileStats = {
   total_files: 0,
   categorized_files: 0,
@@ -92,6 +126,8 @@ beforeEach(() => {
     embeddingModelOptions: [],
     theme: ThemeMode.System,
     apiKeyStatus: { Openai: noKey, Deepseek: noDeep },
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
   });
   // 重置 fileStore，避免 EmbeddingModelSection useEffect 触发真实 loadStats
   useFileStore.setState({ stats: emptyStats, total: 0, files: [], selectedIds: [] });

@@ -6,12 +6,11 @@
 import { useEffect, useState } from 'react';
 import { CLOUD_CONSENT_VERSION } from '../../lib/consent';
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { CloudProvider } from '../../types/ipc';
 import { ConsentAgreement } from '../consent/ConsentAgreement';
 
 interface CloudConsentDialogProps {
   busy: boolean;
-  onConfirm: (provider: CloudProvider) => void;
+  onConfirm: (provider: string) => void;
   onCancel: () => void;
 }
 
@@ -22,17 +21,17 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
   const defaultKey = cloudProviders[0]?.provider_key ?? 'openai';
   const [agreed, setAgreed] = useState(false);
   const [bottomReached, setBottomReached] = useState(false);
-  const [provider, setProvider] = useState<CloudProvider>(defaultKey as CloudProvider);
+  const [provider, setProvider] = useState<string>(defaultKey);
 
   useEffect(() => {
     if (cloudProviders.length === 0) {
       void loadCloudProviders();
     } else {
-      // 第一次进入时 provider 可能还是旧 enum 值（如 'Openai'），
+      // 第一次进入时 provider 可能还是旧值（如 'Openai'），
       // 用 setTimeout 延后一个 tick 对齐到当前合法 key，避免 effect 内直接 setState 触发 lint
       const validKeys = new Set(cloudProviders.map((p) => p.provider_key));
       if (!validKeys.has(provider)) {
-        window.setTimeout(() => setProvider(cloudProviders[0].provider_key as CloudProvider), 0);
+        window.setTimeout(() => setProvider(cloudProviders[0].provider_key), 0);
       }
     }
     // 仅当 provider 不合法时才做对齐，不依赖 provider 本身避免死循环
@@ -56,7 +55,7 @@ export function CloudConsentDialog({ busy, onConfirm, onCancel }: CloudConsentDi
           <label className="onboarding__field-label">选择云端提供商：</label>
           <select
             value={provider}
-            onChange={(e) => setProvider(e.target.value as CloudProvider)}
+            onChange={(e) => setProvider(e.target.value)}
             className="onboarding__select"
             disabled={busy || cloudProviders.length === 0}
           >

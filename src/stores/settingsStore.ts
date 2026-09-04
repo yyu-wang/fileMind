@@ -15,7 +15,6 @@ import { applyTheme } from '../lib/theme';
 import type {
   ApiKeyStatus,
   AppConfig,
-  CloudProvider,
   CloudProviderRecord,
   CloudProviderUpsertInput,
   EmbeddingModelAvailability,
@@ -44,8 +43,8 @@ interface SettingsState {
   cloudConsentSigned: boolean;
   /** 已签署的同意书版本号（未签为 null） */
   cloudConsentVersion: string | null;
-  /** 已签署时选择的云端提供商（未签为 null） */
-  cloudConsentProvider: CloudProvider | null;
+  /** 已签署时选择的云端提供商 slug（未签为 null） */
+  cloudConsentProvider: string | null;
   /** 签署时间（ISO 8601，未签为 null） */
   cloudConsentSignedAt: string | null;
   /** 配置加载中 */
@@ -100,15 +99,15 @@ interface SettingsState {
   /** 更新配置（部分字段） */
   updateConfig: (partial: Partial<AppConfig>) => Promise<void>;
   /** 签署云端同意书 */
-  signCloudConsent: (provider: CloudProvider) => Promise<void>;
+  signCloudConsent: (provider: string) => Promise<void>;
   /** 撤销云端同意书（自动切回 Local 模式） */
   revokeCloudConsent: () => Promise<void>;
   /** 加载各云服务商 API Key 状态（仅掩码提示，不含完整 Key） */
   loadApiKeyStatus: () => Promise<void>;
   /** 保存指定云服务商 API Key（存系统 Keychain；成功返回新状态） */
-  setApiKey: (provider: CloudProvider, key: string) => Promise<void>;
+  setApiKey: (provider: string, key: string) => Promise<void>;
   /** 删除指定云服务商 API Key（Keychain） */
-  deleteApiKey: (provider: CloudProvider) => Promise<void>;
+  deleteApiKey: (provider: string) => Promise<void>;
   /** 标记引导完成（写入 DB） */
   completeOnboarding: (dataDirectory: string) => Promise<void>;
   /** 切换主题模式（持久化 + 应用到 html data-theme） */

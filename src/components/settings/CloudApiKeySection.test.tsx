@@ -17,8 +17,35 @@ vi.mock('../../lib/ipc', () => ({
 
 import { fileIpc } from '../../lib/ipc';
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { ApiKeyStatus } from '../../types/ipc';
+import type { ApiKeyStatus, CloudProviderRecord } from '../../types/ipc';
 import { CloudApiKeySection } from './CloudApiKeySection';
+
+// P-07：Provider 行来自 store.cloudProviders，seed 两条内置记录（name 需命中
+// `OpenAI API Key 输入框` 等既有 DOM 查询，provider_key 沿用测试既有大小写约定）
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
 
 const NO_KEY_OPENAI: ApiKeyStatus = { provider: 'Openai', has_key: false, hint: '' };
 const NO_KEY_DEEPSEEK: ApiKeyStatus = { provider: 'Deepseek', has_key: false, hint: '' };
@@ -37,6 +64,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   useSettingsStore.setState({
     apiKeyStatus: { Openai: NO_KEY_OPENAI, Deepseek: NO_KEY_DEEPSEEK },
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
     error: null,
   });
 });

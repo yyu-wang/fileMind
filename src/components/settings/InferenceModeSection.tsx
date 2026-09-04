@@ -24,7 +24,6 @@
 
 import { useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { CloudProvider } from '../../types/ipc';
 import { CloudConsentDialog } from './CloudConsentDialog';
 import { ConsentViewDialog } from './ConsentViewDialog';
 
@@ -117,7 +116,7 @@ export function InferenceModeSection() {
     }
   };
 
-  const confirmCloud = async (provider: CloudProvider) => {
+  const confirmCloud = async (provider: string) => {
     setBusy(true);
     setError(null);
     try {

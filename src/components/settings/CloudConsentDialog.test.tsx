@@ -7,6 +7,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useSettingsStore } from '../../stores/settingsStore';
+import type { CloudProviderRecord } from '../../types/ipc';
 import { CloudConsentDialog } from './CloudConsentDialog';
 
 vi.mock('../consent/ConsentAgreement', () => ({
@@ -19,9 +21,39 @@ vi.mock('../consent/ConsentAgreement', () => ({
   ),
 }));
 
+// P-07：默认选中 provider = cloudProviders[0]，seed 使默认键为 'Openai'（既有断言大小写）
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
+
 describe('CloudConsentDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useSettingsStore.setState({
+      cloudProviders: builtinCloudProviders,
+      cloudProvidersLoading: false,
+    });
   });
 
   it('keeps checkbox and confirm disabled until scrolled to bottom', () => {

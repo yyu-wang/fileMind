@@ -6,11 +6,10 @@
 import { useEffect, useState } from 'react';
 import { CLOUD_CONSENT_VERSION } from '../../lib/consent';
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { CloudProvider } from '../../types/ipc';
 import { ConsentAgreement } from '../consent/ConsentAgreement';
 
 interface StepConsentProps {
-  onConfirm: (provider: CloudProvider) => void;
+  onConfirm: (provider: string) => void;
   onBack: () => void;
 }
 
@@ -20,7 +19,7 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
   const defaultKey = cloudProviders[0]?.provider_key ?? 'openai';
   const [agreed, setAgreed] = useState(false);
   const [bottomReached, setBottomReached] = useState(false);
-  const [provider, setProvider] = useState<CloudProvider>(defaultKey as CloudProvider);
+  const [provider, setProvider] = useState<string>(defaultKey);
 
   useEffect(() => {
     if (cloudProviders.length === 0) {
@@ -28,7 +27,7 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
     } else {
       const validKeys = new Set(cloudProviders.map((p) => p.provider_key));
       if (!validKeys.has(provider)) {
-        window.setTimeout(() => setProvider(cloudProviders[0].provider_key as CloudProvider), 0);
+        window.setTimeout(() => setProvider(cloudProviders[0].provider_key), 0);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -69,7 +68,7 @@ export function StepConsent({ onConfirm, onBack }: StepConsentProps) {
           className="input"
           style={{ maxWidth: 280 }}
           value={provider}
-          onChange={(e) => setProvider(e.target.value as CloudProvider)}
+          onChange={(e) => setProvider(e.target.value)}
           disabled={cloudProviders.length === 0}
         >
           {cloudProviders.map((opt) => (
