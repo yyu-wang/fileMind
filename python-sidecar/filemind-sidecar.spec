@@ -1,16 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""T1.2 PyInstaller spec — FileMind Sidecar ``--onefile`` 可执行（体积硬目标 <80MB）。
+"""T1.2 PyInstaller spec — FileMind Sidecar ``--onefile`` 可执行。
 
-体积优化策略（优先级从高到低）：
-1. **``exclude`` 大模块**：lancedb（128.9MB）、pyarrow、lance、ollama、jieba、
-   ``numpy`` 子包。E1 阶段 Sidecar 仅承担 HMAC / 握手 / IPC / 健康检查 / 分类规则
-   路由（不含真实分类引擎调用），不需要这些重依赖；T4/T5 阶段才懒加载导入。
-2. **``optimize=2``**：``.pyo`` 级别（删除 docstring + assert）。
-3. **``strip=True``**：从 ELF/Mach-O 剥离 debug 符号（省 ~15MB stdlib+pydantic_core 符号）。
-4. **``upx=False``**：UPX 与 ``_lancedb.abi3.so``、``_pydantic_core.cpython-*.so`` 等
-   native 扩展常见冲突；先不用，若超标再按模块启用。
+体积门控（2026-09-04 修订）：≤400MB。历史：早期 E1 PoC 不含向量/重排依赖，
+onefile 仅约 24MB、门控 80MB；引入 lancedb（+pyarrow/lance）、numpy、jieba、
+ollama/openai、sentence-transformers（离线 embedding/rerank，拖入 torch）等
+**运行时硬依赖**后，真实 onefile 体积约 315MB（本机 aarch64 实测 2026-08-24），
+无法靠 excludes 压回 80MB。决策记录：docs/packaging-implementation-plan.md §1 D1。
 
-跨平台：target_arch 由 ``scripts/build-sidecar.sh`` 用 ``--target-arch arm64/x86_64`` 传参，
+体积优化策略（当前有效）：
+1. **``optimize=2``**：``.pyo`` 级别（删除 docstring + assert）。
+2. **``strip=True``**：剥离 native 扩展 / stdlib 符号。
+3. **``excludes`` 仅剔除确认用不到的冗余**：tkinter/venv/lib2to3 等 stdlib 与
+   pytest/ruff/mypy 等 dev 依赖（运行依赖一律不排除）。
+4. **``upx=False``**：UPX 与 ``_lancedb.abi3.so``、``_pydantic_core`` 等 native
+   扩展常见冲突，不启用。
+5. 后续优化候选（本轮不做）：改 ``--onedir`` 缩短冷启动（当前 onefile 冷启动约
+   39s），需同步调整 Tauri externalBin 集成方式。
+
+跨平台：target_arch 由 ``scripts/build-sidecar.sh`` 用 ``PYINSTALLER_TARGET_ARCH`` 传参，
 此处不硬编码；``name="filemind-sidecar"`` 统一（Windows 会自动加 .exe 后缀）。
 """
 
@@ -98,7 +105,8 @@ _datas: list[tuple[str, str]] = [
 ]
 
 # --- excludes ---------------------------------------------------------------
-# 删除这些模块，是 <80MB 的关键。说明见文件头。
+# 仅剔除确认用不到的冗余（stdlib 开发组件 + dev 依赖）。运行依赖（lancedb/numpy/
+# jieba/sentence-transformers 等）是 Sidecar 功能硬需求，一律保留。说明见文件头。
 _excludes: list[str] = [
     # Tkinter / IDLE / ensurepip / venv / lib2to3 — stdlib 冗余（打包 never 用）
     "tkinter",

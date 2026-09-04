@@ -13,6 +13,7 @@
     "build": "tsc --noEmit && vite build",
     "build:tauri": "tauri build",
     "build:tauri:dev": "tauri build --debug",
+    "build:sidecar": "bash scripts/build-sidecar.sh",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",

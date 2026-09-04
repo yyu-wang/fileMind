@@ -59,6 +59,7 @@ const GRACEFUL_TOTAL_TIMEOUT_SECS: u64 = 5;
 /// 由 Rust 在启动 Sidecar 前设置；Sidecar 侧 E8 Provider 据此调用
 /// `FILEMIND_CLOUD_PROXY_URL` 代理并携带 `FILEMIND_CLOUD_PROXY_TOKEN` 鉴权头，
 /// `FILEMIND_CLOUD_MASKING` 触发 T7.2 云端脱敏。
+#[derive(Clone)]
 pub struct CloudSidecarEnv {
     /// Rust 云端代理地址（`http://127.0.0.1:{CLOUD_PROXY_PORT}`）。
     pub proxy_url: String,
@@ -156,6 +157,15 @@ impl SidecarManager {
     /// 设置云端模式 env 注入（须在 `start` 之前调用；重启自动沿用）。
     pub fn set_cloud_env(&mut self, cloud_env: CloudSidecarEnv) {
         self.cloud_env = Some(cloud_env);
+    }
+
+    /// 当前云端模式 env 配置（未设置时为 `None`）。
+    ///
+    /// 供 setup 在「用 bundle 路径重建 SidecarManager」时把 main 阶段解析好的
+    /// 云端 env 克隆到新管理器，避免打包态云端模式丢配置（T7.4）。
+    #[must_use]
+    pub const fn cloud_env(&self) -> Option<&CloudSidecarEnv> {
+        self.cloud_env.as_ref()
     }
 
     /// 启动 Sidecar 子进程，通过 stdin 注入 PSK，返回 PSK 给调用方。
@@ -717,80 +727,119 @@ fn is_existing_file(p: &std::path::Path) -> bool {
     std::fs::metadata(p).ok().is_some_and(|m| m.is_file())
 }
 
-// ---------- 二进制路径解析（bundle 模式 / Tauri resources 回退） ----------
+// ---------- 二进制路径解析（bundle 模式 / Tauri externalBin 落地探测） ----------
 
-/// bundle 模式下，基于给定的「resources 根目录」解析 Sidecar 可执行文件的绝对路径。
+/// bundle 模式下 Sidecar 可执行文件的候选文件名列表（不含目录）。
 ///
-/// 纯函数：`resolve_bundle_binary_path`（Tauri 封装版）对 `AppHandle` 的 `PathResolver`
-/// 结果再调用本函数；单测可绕过 Tauri 直接传 `tempdir` 验证拼接和错误文案。
-///
-/// 候选查找顺序：
-/// 1. `${resources_root}/filemind-sidecar-{triple}`（架构专属，优先生效）
-/// 2. `${resources_root}/filemind-sidecar`（Windows 上额外兼容 `.exe` 后缀兜底）
-///
-/// # Errors
-///
-/// 全部候选不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，附候选路径列表
-/// 与 `resources_root`，便于现场排障（如打包脚本漏拷了二进制）。
-pub fn resolve_bundle_from_resources(
-    resources_root: &std::path::Path,
-) -> AppResult<std::path::PathBuf> {
+/// Tauri v2 `externalBin` 产物命名约定：构建侧先找 `filemind-sidecar-{triple}`，
+/// 拷贝进 bundle 后通常保留 **基础名**（如 `Contents/MacOS/filemind-sidecar`）；
+/// 本函数同时枚举「triple 专属名」与「基础名」，Windows 额外带 `.exe` 后缀，
+/// 覆盖 Tauri 各平台实际落地命名。
+#[must_use]
+fn resolve_bundle_candidate_names() -> Vec<String> {
     let triple = current_target_triple();
-    let mut tried: Vec<String> = Vec::new();
-
-    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
+    if cfg!(windows) {
         vec![
-            resources_root.join(format!("filemind-sidecar-{triple}.exe")),
-            resources_root.join("filemind-sidecar.exe"),
-            resources_root.join(format!("filemind-sidecar-{triple}")),
-            resources_root.join("filemind-sidecar"),
+            format!("filemind-sidecar-{triple}.exe"),
+            format!("filemind-sidecar-{triple}"),
+            "filemind-sidecar.exe".to_string(),
+            "filemind-sidecar".to_string(),
         ]
     } else {
         vec![
-            resources_root.join(format!("filemind-sidecar-{triple}")),
-            resources_root.join("filemind-sidecar"),
+            format!("filemind-sidecar-{triple}"),
+            "filemind-sidecar".to_string(),
         ]
-    };
+    }
+}
 
-    for c in candidates {
-        tried.push(format!("{}", c.display()));
-        if is_existing_file(&c) {
-            return c.canonicalize().map_err(|e| {
-                AppError::SidecarUnavailable(format!(
-                    "Sidecar 命中 bundle 候选 {} 但 canonicalize 失败: {e}",
-                    c.display()
-                ))
-            });
+/// bundle 模式下，在多个「根目录」中依次探测 Sidecar 可执行文件。
+///
+/// 纯函数：按给定根目录顺序、每个根目录内按 [`resolve_bundle_candidate_names`]
+/// 顺序探测，首个命中的真实文件即返回（已 canonicalize）。
+///
+/// Tauri v2 实际落地位置（2026-09-04 实测 macOS）：
+/// `externalBin` 产物被拷到 **主可执行文件同目录**（`FileMind.app/Contents/MacOS/`），
+/// 文件名保留基础名（`filemind-sidecar`），并非 resources 目录、也无 triple 后缀。
+/// 因此调用方应优先传「当前可执行文件目录」，再传 `resource_dir` 兜底。
+///
+/// # Errors
+///
+/// 全部根目录 × 全部候选均不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，
+/// 附完整探测列表，便于现场排障（如打包脚本漏拷二进制）。
+pub fn resolve_bundle_from_roots(roots: &[std::path::PathBuf]) -> AppResult<std::path::PathBuf> {
+    let names = resolve_bundle_candidate_names();
+    let mut tried: Vec<String> = Vec::new();
+    for root in roots {
+        for name in &names {
+            let c = root.join(name);
+            tried.push(format!("{}", c.display()));
+            if is_existing_file(&c) {
+                return c.canonicalize().map_err(|e| {
+                    AppError::SidecarUnavailable(format!(
+                        "Sidecar 命中 bundle 候选 {} 但 canonicalize 失败: {e}",
+                        c.display()
+                    ))
+                });
+            }
         }
     }
 
     Err(AppError::SidecarUnavailable(format!(
-        "Sidecar 二进制在 Tauri resources 目录下未找到: resources_root={}; 候选列表:\n  {}\n请确认打包脚本 build-sidecar.sh 已把产物拷入 resources/",
-        resources_root.display(),
+        "Sidecar 二进制在 bundle 根目录下未找到（探测目录 {} 个，候选 {} 个，共 {} 条路径）:\n  {}\n请确认 tauri.conf.json externalBin 已配置且 build-sidecar.sh 产物在构建前生成",
+        roots.len(),
+        names.len(),
+        tried.len(),
         tried.join("\n  ")
     )))
 }
 
-/// bundle 模式下，通过 Tauri [`tauri::Manager::path`] 解析 Sidecar 可执行文件绝对路径。
+/// bundle 模式下，基于给定的单一「resources 根目录」解析 Sidecar 可执行文件。
 ///
-/// 解析到的路径即传给 [`SidecarManager::new`] 启动；本函数仅做路径定位，不含进程启动。
-///
-/// 实现层：先取 `app.path().resource_dir()` → 命中再调纯函数
-/// [`resolve_bundle_from_resources`]。这样单测可以不用 Mock Tauri Runtime。
+/// 纯函数：兼容旧单测契约（直接传 `tempdir` 验证拼接与错误文案），内部委托
+/// [`resolve_bundle_from_roots`]。生产路径走 [`resolve_bundle_binary_path`]
+/// （多根目录探测，含主可执行文件目录）。
 ///
 /// # Errors
 ///
-/// - `app.path().resource_dir()` 返回 `None`（极少：非 bundle 环境或平台不支持）
-/// - resources 下所有候选均不命中（详情见 [`resolve_bundle_from_resources`]）
+/// 全部候选不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，附候选列表。
+pub fn resolve_bundle_from_resources(
+    resources_root: &std::path::Path,
+) -> AppResult<std::path::PathBuf> {
+    resolve_bundle_from_roots(&[resources_root.to_path_buf()])
+}
+
+/// bundle 模式下，解析打包态 Sidecar 可执行文件的绝对路径。
+///
+/// 解析到的路径即传给 [`SidecarManager::new`] 启动；本函数仅做路径定位，不含进程启动。
+///
+/// 探测顺序（2026-09-04 按 Tauri v2 实测行为）：
+/// 1. **主可执行文件所在目录**（macOS `Contents/MacOS/`，Windows 安装根目录）——
+///    `externalBin` 产物实际落地位置，优先命中；
+/// 2. `resource_dir()`（macOS `Contents/Resources/`，Linux `/usr/lib/...`）——兼容
+///    早期「拷进 resources」布局的兜底。
+///
+/// 纯逻辑在 [`resolve_bundle_from_roots`]，此处仅负责收集根目录，单测无需 Mock Tauri。
+///
+/// # Errors
+///
+/// - 主可执行文件目录无法解析（非 bundle 环境？）与 `resource_dir()` 查询失败时记 warn，
+///   不阻断（仍有另一根目录可探）
+/// - 全部根目录候选均不命中（详情见 [`resolve_bundle_from_roots`]）
 pub fn resolve_bundle_binary_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<std::path::PathBuf> {
-    let root = app.path().resource_dir().map_err(|e| {
-        AppError::SidecarUnavailable(format!(
-            "Tauri resource_dir 查询失败（非 bundle 环境？）: {e}"
-        ))
-    })?;
-    resolve_bundle_from_resources(&root)
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    match app.path().resource_dir() {
+        Ok(dir) => roots.push(dir),
+        Err(e) => log::warn!("Tauri resource_dir 查询失败（作为兜底根目录跳过）: {e}"),
+    }
+    resolve_bundle_from_roots(&roots)
 }
 
 impl Drop for SidecarManager {
@@ -857,14 +906,20 @@ pub fn cleanup_orphan_sidecar(port: u16) {
             let bundle_matches = comm_str
                 .as_deref()
                 .is_some_and(|s| s.contains("filemind-sidecar"));
-            // dev 模式：进程名是 python，且完整命令行带 `-m app` 入口
+            // dev 模式：进程名是 python，且完整命令行带 Sidecar 启动入口
+            // （`-m app` 传统入口，或 `sidecar_entry.py`——2026-09-04 实测确有
+            // 通过该脚本残留的孤儿，见 cleanup 注释场景）
             let dev_matches = if comm_str.as_deref().is_some_and(|s| s.contains("python")) {
                 let args_output = std::process::Command::new("ps")
                     .args(["-o", "args=", "-p", &pid.to_string()])
                     .output();
-                args_output.is_ok_and(|a| {
-                    a.status.success() && String::from_utf8_lossy(&a.stdout).contains("-m app")
-                })
+                args_output
+                    .ok()
+                    .filter(|a| a.status.success())
+                    .is_some_and(|a| {
+                        let cmd = String::from_utf8_lossy(&a.stdout);
+                        cmd.contains("-m app") || cmd.contains("sidecar_entry.py")
+                    })
             } else {
                 false
             };

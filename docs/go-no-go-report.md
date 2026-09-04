@@ -1,5 +1,10 @@
 # T1.6 Go/No-Go 决策报告（阶段 2 · 打包二进制模式，binary=/Users/wangyu/Desktop/个人/project/filemind/filemind/binaries/filemind-sidecar-aarch64-apple-darwin）
 
+> **门控修订记录（2026-09-04）**：本报告 T6 的 `<80MB` 体积门控已上调为 `≤400MB`。
+> 原因：阶段 2 引入 lancedb/numpy/jieba/sentence-transformers(torch) 等运行时硬依赖后，
+> onefile 真实体积约 315MB（2026-08-24 本机实测），无法靠 excludes 压回 80MB。
+> 决策与后续任务见 `docs/packaging-implementation-plan.md`（D1）。
+
 - 生成时间：2026-08-18 03:16:17
 - 统计：**7 PASS · 0 FAIL · 0 SKIP** （共 7 项）
 

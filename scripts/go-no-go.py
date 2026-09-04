@@ -53,7 +53,7 @@ TEST_ITEMS: list[tuple[int, str, str]] = [
     (3, "IPC", "POST /shutdown 带签名 → 200 shutting_down，进程在 3s 内自退并释放端口"),
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
     (5, "崩溃重启", "SIGKILL 模拟崩溃 → 3s 内重启 → new_pid≠old_pid → 重新 HMAC 握手通过（打包态=Phase2，dev=SKIP）"),
-    (6, "三平台", "PyInstaller --onefile 体积<80MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
+    (6, "三平台", "PyInstaller --onefile 体积≤400MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
     (7, "内存<500MB", "冷启动 GET /metrics → rss_mb < 500 且 within_limit=True"),
 ]
 
@@ -669,9 +669,9 @@ def run_t6_three_platforms() -> TestResult:
         return TestResult(6, "三平台", "FAIL",
                           f"打包产物无可执行权限: {binary}", time.time() - t0,
                           {"host_triple": host_triple})
-    # 2) 体积断言 <80MB（T1.2 DoD 硬约束）
+    # 2) 体积断言 ≤400MB（T1.2 DoD 硬约束，2026-09-04 由 80MB 上调，见 docs/packaging-implementation-plan.md D1）
     size_mb = binary.stat().st_size / (1024 * 1024)
-    max_size_mb = 80.0
+    max_size_mb = 400.0
     size_ok = size_mb < max_size_mb
     # 3) 格式判断
     with binary.open("rb") as fh:
@@ -688,7 +688,7 @@ def run_t6_three_platforms() -> TestResult:
 
     detail_parts = [
         f"当前平台={platform.system()}({platform.machine()}) host_triple={host_triple}",
-        f"产物 {binary.name}：体积 {size_mb:.1f}MB (<{max_size_mb}MB)，格式={fmt}",
+        f"产物 {binary.name}：体积 {size_mb:.1f}MB (≤{max_size_mb}MB)，格式={fmt}",
     ]
     if binary_triple_hint:
         detail_parts.append(f"产物 triple 标识={binary_triple_hint}")

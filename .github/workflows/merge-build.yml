@@ -16,31 +16,30 @@ jobs:
       fail-fast: false      # 单平台失败不取消其余平台，便于并排查错
       matrix:
         include:
-          - os: macos-latest
+          # Windows x64：原生 runner 先 PyInstaller 产 sidecar（.exe），再 tauri build 出 msi + nsis
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64
+            bundles: msi nsis
+            artifacts: |
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          # macOS Apple Silicon（arm64 runner 原生构建）
+          - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: dmg
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-latest
+          # macOS Intel：x64 runner 原生构建（PyInstaller 无法跨 mac 架构，必须 x64 机器）
+          - os: macos-13
             target: x86_64-apple-darwin
             label: macos-x64
             bundles: dmg
             artifacts: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            label: windows-x64
-            bundles: msi
-            artifacts: |
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
-            bundles: deb,appimage
-            artifacts: |
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          # 说明：Linux(deb/AppImage) job 暂移除——打包态 Sidecar 解析当前仅支持
+          # macOS/Windows（main.rs defer_to_bundle 仅这两平台），Linux 分发改后续版本。
     steps:
       - uses: actions/checkout@v7
 
@@ -49,19 +48,24 @@ jobs:
           node-version: 24
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}   # 装对应 target，交叉编译才可用
+      - uses: dtolnay/rust-toolchain@stable   # 原生 runner，目标 triple 即 host，无需额外 targets
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Install Linux deps
-        if: runner.os == 'Linux'
+      # Sidecar 需要 Python 3.12 环境：建 venv 并装运行/打包依赖（PyInstaller 在 requirements-dev）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Python venv + deps
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
+          python -m venv .venv
+          if [[ "$RUNNER_OS" == "Windows" ]]; then PY=".venv/Scripts/python.exe"; else PY=".venv/bin/python"; fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
 
       - run: npm ci
 
@@ -70,10 +74,27 @@ jobs:
       - name: Generate IPC types
         run: npm run gen:ipc
 
-      # 真实交叉编译：--target 决定产物 triple，--bundles 限定安装包格式
-      # （Linux 排除 rpm 防缺 rpmbuild 红；macOS x64 由 arm64 runner 交叉产出）
+      # Sidecar onefile（<400MB 门控见 scripts/build-sidecar.sh）。文件名
+      # filemind-sidecar-{triple}[.exe] 与 tauri.conf externalBin 期望一致。
+      - name: Build Sidecar (${{ matrix.label }})
+        shell: bash
+        run: bash scripts/build-sidecar.sh --target ${{ matrix.target }}
+
+      # 原生构建 + externalBin 自动打进安装包（主可执行同目录）
       - name: Build Tauri (${{ matrix.label }})
         run: npm run build:tauri -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      # 打包态冒烟：安装包内必须真实包含 Sidecar 可执行文件（缺它 = 装完即崩），显式失败
+      - name: Smoke check Sidecar bundled
+        shell: bash
+        run: |
+          set -e
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            test -n "$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -path '*/Contents/MacOS/filemind-sidecar')"
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            test -n "$(find src-tauri/target/${{ matrix.target }}/release -name 'filemind-sidecar*.exe' | head -1)"
+          fi
+          echo "Sidecar bundled OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

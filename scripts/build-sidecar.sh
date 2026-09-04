@@ -7,9 +7,12 @@
 #   bash scripts/build-sidecar.sh --target x86_64-apple-darwin --no-clean
 #   bash scripts/build-sidecar.sh --list-targets      # 打印支持 triple
 #
-# DoD（T1.2 验收）:
+# DoD（T1.2 验收 + 2026-09-04 门控修订）:
 #   1. 三平台各自产生 <filemind>/binaries/filemind-sidecar-{triple}[.exe]
-#   2. 每个文件体积 <80MB（脚本 assert，超标 exit 1，建议再加 --exclude）
+#   2. 每个文件体积 ≤400MB（脚本 assert，超标 exit 5）。门控由 80MB 上调：
+#      Sidecar 引入 lancedb/numpy/jieba/sentence-transformers(torch) 等运行时硬依赖后，
+#      真实 onefile 体积约 315MB（本机 aarch64 实测），无法靠 excludes 压回 80MB。
+#      决策记录：docs/packaging-implementation-plan.md §1 D1（--onedir 留作后续优化）。
 #   3. macOS 本机额外软链接 filemind/binaries/filemind-sidecar → 当前架构产物，
 #      供 src-tauri manager.rs 默认路径直接使用
 set -euo pipefail
@@ -17,7 +20,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYSIDE_DIR="$ROOT_DIR/python-sidecar"
 BINARIES_DIR="$ROOT_DIR/filemind/binaries"
-MAX_SIZE_MB=80
+# 体积门控（MB）：2026-09-04 从 80 上调至 400，理由见文件头 DoD 注释。
+MAX_SIZE_MB=400
 TARGET=""
 NO_CLEAN=0
 NO_COPY=0
@@ -93,9 +97,15 @@ esac
 # ---------- 环境：venv + pyinstaller ----------
 PYEXE="${ROOT_DIR}/.venv/bin/python"
 if [[ ! -x "${PYEXE}" ]]; then
-  PYEXE="$(command -v python3 || true)"
+  # Windows venv 布局（Scripts/python.exe）；CI windows runner 用
+  if [[ -x "${ROOT_DIR}/.venv/Scripts/python.exe" ]]; then
+    PYEXE="${ROOT_DIR}/.venv/Scripts/python.exe"
+  fi
+fi
+if [[ ! -x "${PYEXE}" ]]; then
+  PYEXE="$(command -v python3 || command -v python || true)"
   if [[ -z "${PYEXE}" ]]; then
-    echo "[FATAL] 找不到 python: 既无 <repo>/.venv/bin/python 也无 PATH python3" >&2
+    echo "[FATAL] 找不到 python: 既无 <repo>/.venv 也无 PATH python/python3" >&2
     exit 3
   fi
 fi
@@ -142,15 +152,14 @@ echo "[build] 产物: ${SRC}"
 echo "           size: ${SIZE_MB}MB"
 echo "           sha256: ${SHA}"
 
-# 体积断言：T1.2 DoD 硬约束
+# 体积断言：T1.2 DoD 硬约束（门控 2026-09-04 修订为 400MB，见文件头注释）
 if (( SIZE_MB >= MAX_SIZE_MB )); then
   cat <<EOF
-[FAIL] 体积 ${SIZE_MB}MB ≥ 目标 ${MAX_SIZE_MB}MB（T1.2 DoD 未通过）。
+[FAIL] 体积 ${SIZE_MB}MB ≥ 门控 ${MAX_SIZE_MB}MB（T1.2 DoD 未通过）。
 
 建议：
-  1) 在 filemind-sidecar.spec excludes 列表加更多不常用 stdlib / numpy 子包
-  2) 尝试 upx=True（注意 native .so 兼容性）
-  3) 评估拆分成 sidecar_heavy.py 懒加载模块，进一步 exclude
+  1) 检查是否误收非必要数据（--excludes / collect_data_files 过滤）
+  2) 若仍超标，重新评估门控或考虑 --onedir（需同步调整 Tauri externalBin 集成方式）
 EOF
   exit 5
 fi

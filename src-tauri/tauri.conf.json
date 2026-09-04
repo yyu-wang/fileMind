@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "FileMind",
   "version": "0.1.0",
-  "identifier": "com.filemind.app",
+  "identifier": "com.filemind.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -42,6 +42,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Utility",
+    "shortDescription": "智能文件整理分类 + RAG 问答助手",
+    "longDescription": "FileMind 是一款桌面文件整理分类器 + RAG 问答系统：基于规则/启发式/AI 三层分类引擎自动整理文件，并对本地文档建立索引后用自然语言问答（本地 Ollama 或云端模型）。所有 AI 处理均在知情同意下进行，数据目录与密钥本地安全保管。",
+    "publisher": "FileMind",
+    "copyright": "Copyright © 2026 FileMind. MIT License.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -49,7 +54,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [],
+    "externalBin": ["../filemind/binaries/filemind-sidecar"],
     "resources": []
   }
 }

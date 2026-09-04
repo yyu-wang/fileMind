@@ -469,9 +469,10 @@ fn test_resolve_bundle_missing_reports_candidates() {
                 "错误信息应列出 generic 候选，实际: {msg}"
             );
             assert!(
-                msg.contains("resources_root="),
-                "错误信息应包含 resources_root 提示，实际: {msg}"
+                msg.contains("externalBin"),
+                "错误信息应提示 externalBin 配置，实际: {msg}"
             );
+            assert!(msg.contains("候选"), "错误信息应包含候选提示，实际: {msg}");
         }
         other => panic!("候选均不存在时应返回 SidecarUnavailable，实际: {other:?}"),
     }

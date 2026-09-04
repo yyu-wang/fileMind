@@ -325,23 +325,36 @@ fn main() {
         Err(e) => log::error!("操作日志链式哈希校验出错: {e}"),
     }
 
-    // 启动 Sidecar 并完成 HMAC 握手：失败直接退出，避免在未验证身份时进入主循环
+    // ---- Sidecar 二进制解析与启动策略 ----
     //
-    // 解析 Sidecar 二进制路径（P1 阶段：只做 dev 路径解析；P2 阶段增加 AppHandle
-    // bundle 路径覆盖 + AppState.sidecar_binary 字段暴露）。
-    // FILEMIND_SIDECAR_BINARY env 存在则优先生效，便于 CI / 调试覆盖。
-    let sidecar_binary =
-        match resolve_dev_binary_path(std::env::var("FILEMIND_SIDECAR_BINARY").ok().as_deref()) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Sidecar 二进制解析失败: {e}");
-                std::process::exit(1);
-            }
-        };
-    log::info!(
-        "Sidecar binary path: {}",
-        log_redact::sanitize_path(&sidecar_binary.display().to_string())
-    );
+    // 解析优先级：
+    //   1) FILEMIND_SIDECAR_BINARY env 强制指定（CI / 调试覆盖）
+    //   2) dev 布局解析（CARGO_MANIFEST_DIR / cwd 下的 repo `filemind/binaries/`）
+    //   3) macOS/Windows 打包态：dev 找不到 → **不退出**，推迟到 setup 用 Tauri
+    //      `externalBin` 落地路径（主可执行文件同目录）启动，保证安装包在任意
+    //      cwd（用户双击 / Spotlight 启动）下都能跑。
+    let env_override = std::env::var("FILEMIND_SIDECAR_BINARY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let defer_to_bundle =
+        cfg!(any(target_os = "macos", target_os = "windows")) && env_override.is_none();
+    let (sidecar_binary, dev_started) = match resolve_dev_binary_path(env_override.as_deref()) {
+        Ok(p) => {
+            log::info!(
+                "Sidecar binary path: {}",
+                log_redact::sanitize_path(&p.display().to_string())
+            );
+            (p, true)
+        }
+        Err(e) if defer_to_bundle => {
+            log::warn!("dev 模式未找到 Sidecar 二进制，推迟到 setup 按 bundle 路径启动: {e}");
+            (PathBuf::new(), false)
+        }
+        Err(e) => {
+            log::error!("Sidecar 二进制解析失败: {e}");
+            std::process::exit(1);
+        }
+    };
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
 
     // T7.4 云端代理（07-§4）：生成调用方共享 token → 启动本机代理（127.0.0.1:8766）→
@@ -391,24 +404,34 @@ fn main() {
     // 兜住该竞态：活实例的 Sidecar ppid 非孤，不会被误杀。
     cleanup_orphan_sidecar(SIDECAR_PORT);
 
-    let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
-        Ok(psk) => Some(psk),
-        Err(e) => {
-            log::error!("Sidecar handshake failed: {e}");
-            // BE-M3：std::process::exit 跳过 Drop，必须显式杀掉子进程再退出，
-            // 否则留下孤儿进程占住端口（start_with_handshake 内部已清理一次，
-            // 这里对「错误发生在 start 之前」等残余路径再兜底）。
-            if let Err(kill_err) = sidecar_manager.stop_hard() {
-                log::error!("退出前清理 Sidecar 子进程失败: {kill_err}");
+    // dev 模式：本阶段直接启动 + 握手（失败退出，避免未验证身份进入主循环）。
+    // 打包态 defer：本阶段不起进程，由 setup 用 bundle 路径完成启动与握手。
+    let sidecar_psk: Option<Vec<u8>> = if dev_started {
+        match start_sidecar_with_handshake(&mut sidecar_manager) {
+            Ok(psk) => {
+                // 主流程 manager 当前已持有 PSK（start_with_handshake 内部已存进
+                // self.psk），若与 AppState 写入的 psk 不一致以 AppState 为准，
+                // 这里同步拷贝一次保持一致。
+                debug_assert!(sidecar_manager
+                    .psk()
+                    .is_none_or(|inner| Some(inner) == Some(psk.as_slice())));
+                Some(psk)
             }
-            std::process::exit(1);
+            Err(e) => {
+                log::error!("Sidecar handshake failed: {e}");
+                // BE-M3：std::process::exit 跳过 Drop，必须显式杀掉子进程再退出，
+                // 否则留下孤儿进程占住端口（start_with_handshake 内部已清理一次，
+                // 这里对「错误发生在 start 之前」等残余路径再兜底）。
+                if let Err(kill_err) = sidecar_manager.stop_hard() {
+                    log::error!("退出前清理 Sidecar 子进程失败: {kill_err}");
+                }
+                std::process::exit(1);
+            }
         }
+    } else {
+        log::info!("Sidecar 已延迟到 setup 启动（bundle 路径）");
+        None
     };
-    // 主流程 manager 当前已持有 PSK（start_with_handshake 内部已存进 self.psk），
-    // 若与 AppState 写入的 psk 不一致以 AppState 为准，这里同步拷贝一次保持一致。
-    debug_assert!(sidecar_manager
-        .psk()
-        .is_none_or(|inner| Some(inner) == sidecar_psk.as_deref()));
 
     // Tauri AppState 生命周期贯穿整个 Tauri 运行期，
     // 同时 main 栈变量也持有 AppState 引用直到 run() 返回；
@@ -508,6 +531,20 @@ fn main() {
                             bundle_path.display()
                         );
                         let mut new_mgr = SidecarManager::new(bundle_path.clone());
+                        // T7.4：bundle manager 必须继承 main 阶段解析好的云端 env
+                        // （代理地址/token/脱敏开关/激活提供商），否则打包态云端模式
+                        // 启动后 Sidecar 拿不到代理配置 → 云端请求直连外网（违规）。
+                        {
+                            let state = app.state::<AppState>();
+                            let cloud = state
+                                .sidecar_manager
+                                .lock()
+                                .ok()
+                                .and_then(|m| m.cloud_env().cloned());
+                            if let Some(cloud) = cloud {
+                                new_mgr.set_cloud_env(cloud);
+                            }
+                        }
                         match start_sidecar_with_handshake(&mut new_mgr) {
                             Ok(new_psk) => {
                                 let state = app.state::<AppState>();
@@ -544,11 +581,37 @@ fn main() {
                                 log::info!("Sidecar 已切换为 bundle 路径并重新握手成功");
                             }
                             Err(e) => {
+                                // 打包态（无 dev 进程）bundle 启动失败 = 核心引擎不可用，
+                                // 直接中止启动，避免半可用应用；dev 场景回退沿用 dev 路径。
+                                let had_dev = app
+                                    .state::<AppState>()
+                                    .sidecar_manager
+                                    .lock()
+                                    .is_ok_and(|m| m.psk().is_some());
+                                if !had_dev {
+                                    log::error!(
+                                        "bundle Sidecar 启动+握手失败且无 dev 回退，应用中止: {e}"
+                                    );
+                                    return Err(e.into());
+                                }
                                 log::warn!("bundle manager 启动+握手失败，回退沿用 dev 路径（已可用）: {e}");
                             }
                         }
                     }
                     Err(e) => {
+                        // 打包态（无 dev 进程）且 bundle 未命中 = 安装包缺 Sidecar，
+                        // 中止启动；dev 场景未命中属正常，保持 dev 路径。
+                        let had_dev = app
+                            .state::<AppState>()
+                            .sidecar_manager
+                            .lock()
+                            .is_ok_and(|m| m.psk().is_some());
+                        if !had_dev {
+                            log::error!(
+                                "未命中 bundle Sidecar 路径且无 dev 回退，应用中止: {e}"
+                            );
+                            return Err(e.into());
+                        }
                         log::warn!("未命中 bundle Sidecar 路径（可能是 dev 环境），保持 dev 路径: {e}");
                     }
                 }
