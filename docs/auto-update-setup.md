@@ -9,18 +9,27 @@
 - 更新清单与安装包托管在 GitHub Releases：
   `https://github.com/yyu-wang/fileMind/releases/latest/download/latest.json`
   （`latest.json` 作为 release 资产与安装包一起上传，"latest/download" 始终指最新版）
+
 - **代码签名（必做，尤其 macOS）**：
+
   - macOS：Gatekeeper 要求 Developer ID 签名 + 公证，未签名安装包会被拦，更新必然失败
+
   - Windows：建议 OV 签名（SmartScreen），NSIS 更新同样建议签名
+
   - 证书不在手时，仅可内测（手动允许不明开发者），正式发布前补齐
 
 ## 2. 签名密钥（已生成，勿入库）
 
 - 私钥：`~/.tauri/filemind/filemind-updater.key`（无密码，本机生成）
+
 - 公钥：已写入 `src-tauri/tauri.conf.json → plugins.updater.pubkey`
+
 - 后续发布/CI 需要的环境变量（tauri CLI 自动读取）：
+
   - `TAURI_SIGNING_PRIVATE_KEY_PATH=~/.tauri/filemind/filemind-updater.key`
+
   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（若换用带密码的密钥）
+
 - ⚠️ 私钥丢失/泄露 = 无法再签更新或他人可伪造；正式发布建议换新密钥并将私钥+密码放入
   GitHub Actions Secrets（`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）
 
@@ -64,7 +73,9 @@ npm run build:tauri -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 要点：
 
 - `signature` 必须与对应安装包一一对应（.sig 文件内容是纯文本，可直接复制）
+
 - URL 使用具体 `vX.Y.Z` tag（不要用 `latest/download` 指安装包自身，避免循环）
+
 - `pub_date` 用 UTC RFC3339
 
 ## 5. 发布步骤
