@@ -38,6 +38,8 @@ interface FileState {
   loadAllFiles: () => Promise<void>;
   /** 加载文件库统计 */
   loadStats: () => Promise<void>;
+  /** 删除文件：把选中的文件移入系统回收站（成功项从列表移除，失败项保留并置 error） */
+  deleteFiles: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
   /** 切换单个文件的选中态 */
   toggleSelect: (id: string) => void;
   /** 批量设置选中（全选/清空用） */
@@ -107,6 +109,32 @@ export const useFileStore = create<FileState>()((set) => ({
     } else {
       set({ error: result.error });
     }
+  },
+
+  deleteFiles: async (ids) => {
+    if (ids.length === 0) return { deleted: 0, failed: 0 };
+    const result = await fileIpc.deleteFiles(ids);
+    if (result.status !== 'ok') {
+      set({ error: result.error });
+      throw new Error(result.error);
+    }
+    const removedIds = new Set<string>();
+    let failed = 0;
+    for (const item of result.data) {
+      if (item.success) {
+        removedIds.add(item.file_id);
+      } else {
+        failed += 1;
+      }
+    }
+    set((state) => ({
+      files: state.files.filter((f) => !removedIds.has(f.id)),
+      selectedIds: state.selectedIds.filter((id) => !removedIds.has(id)),
+      error:
+        failed > 0 ? `${failed} 个文件未能移入系统回收站（可能已被外部移动），其余已移入` : null,
+    }));
+    await useFileStore.getState().loadStats();
+    return { deleted: removedIds.size, failed };
   },
 
   toggleSelect: (id) =>

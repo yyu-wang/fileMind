@@ -618,6 +618,153 @@ fn execute_operations_inner(
     })
 }
 
+/// 单个文件删除结果（移入系统回收站）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct DeleteFilesResult {
+    /// 文件 id。
+    pub file_id: String,
+    /// 是否成功移入系统回收站。
+    pub success: bool,
+    /// 失败原因（成功时为 `None`）。
+    pub error: Option<String>,
+}
+
+/// 删除失败结果的简构（避免重复三元组）。
+fn delete_files_failure(file_id: String, reason: &str) -> DeleteFilesResult {
+    DeleteFilesResult {
+        file_id,
+        success: false,
+        error: Some(reason.to_string()),
+    }
+}
+
+/// 删除文件：把选中的文件移入系统回收站（安全网，非物理删除）。
+///
+/// 逐个执行（单个失败不阻断其余文件）：
+///   1. 路径安全校验 + 磁盘文件存在性检查
+///   2. 移入系统回收站（`operation_executor` 的 `Delete` 语义）
+///   3. 成功后 `files` 软删除（`is_deleted=1`）并写入 `operations_log` 审计行
+///
+/// 与分类预览的 `Delete` 计划共用同一执行器，保证删除语义唯一。删除批次
+/// 不参与应用内撤销（文件可从系统回收站手动恢复）。
+///
+/// # Errors
+///
+/// 入参全为不可删除（空/全部不存在）时返回成功空列表；单文件失败以
+/// `DeleteFilesResult.success=false` 返回，不中断整批。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn delete_files(
+    file_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<DeleteFilesResult>, String> {
+    delete_files_inner(&file_ids, &state).map_err(|e| e.to_string())
+}
+
+/// 删除纯逻辑入口（便于单元测试，不依赖 `tauri::State`）。
+fn delete_files_inner(file_ids: &[String], state: &AppState) -> AppResult<Vec<DeleteFilesResult>> {
+    // 去重（保序）：同一文件重复提交只删一次
+    let mut seen = HashSet::with_capacity(file_ids.len());
+    let mut ids: Vec<String> = Vec::with_capacity(file_ids.len());
+    for file_id in file_ids {
+        if seen.insert(file_id) {
+            ids.push(file_id.clone());
+        }
+    }
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let records = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::get_by_ids(guard.conn(), &ids)?
+    };
+    let record_map: HashMap<String, FileRecord> =
+        records.into_iter().map(|r| (r.id.clone(), r)).collect();
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    let mut results = Vec::with_capacity(ids.len());
+    let mut logs_to_insert: Vec<OperationLog> = Vec::new();
+
+    for file_id in ids {
+        let Some(record) = record_map.get(&file_id) else {
+            results.push(delete_files_failure(file_id, "文件不存在或已删除"));
+            continue;
+        };
+        if record.is_deleted {
+            results.push(delete_files_failure(file_id, "文件已删除"));
+            continue;
+        }
+        let source = match security::validate(&record.path) {
+            Ok(path) => path,
+            Err(e) => {
+                results.push(delete_files_failure(file_id, &e.to_string()));
+                continue;
+            }
+        };
+        if !source.is_file() {
+            results.push(delete_files_failure(
+                file_id,
+                "文件不存在（可能已被外部移除）",
+            ));
+            continue;
+        }
+
+        let item = PlanItem {
+            file_id: file_id.clone(),
+            file_name: record.file_name.clone(),
+            original_path: record.path.clone(),
+            new_path: None,
+            operation: OperationType::Delete,
+            status: PlanStatus::Ok,
+            conflict_type: None,
+        };
+        let (success, error, current_hash) =
+            operation_executor::execute_plan_item(&item, record.content_hash.clone());
+
+        if success {
+            // 软删除：磁盘已进回收站，DB 标记 is_deleted=1（失败仅告警）
+            if let Ok(guard) = state.db.lock() {
+                if let Err(e) = FileRepo::soft_delete(guard.conn(), &file_id) {
+                    log::warn!("delete_files soft_delete 失败（不影响删除结果）: {e}");
+                }
+            }
+        }
+
+        logs_to_insert.push(OperationLog {
+            id: uuid::Uuid::new_v4().to_string(),
+            batch_id: batch_id.clone(),
+            operation_type: "delete".to_string(),
+            source_path: record.path.clone(),
+            target_path: String::new(),
+            status: if success { "done" } else { "failed" }.into(),
+            prev_hash: record.content_hash.clone().unwrap_or_default(),
+            current_hash: current_hash.unwrap_or_default(),
+            chain_hash: String::new(),
+            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        });
+        results.push(DeleteFilesResult {
+            file_id,
+            success,
+            error,
+        });
+    }
+
+    // 批量写审计日志（链式哈希由 OperationRepo::insert_batch 计算）
+    if !logs_to_insert.is_empty() {
+        if let Ok(guard) = state.db.lock() {
+            if let Err(e) = OperationRepo::insert_batch(guard.conn(), &logs_to_insert) {
+                log::warn!("delete_files 写 operations_log 失败（不影响删除结果）: {e}");
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// 按批次 ID 撤销已执行的批量操作（API §s2-2c）。
 ///
 /// 流程（反向操作链）：
@@ -663,7 +810,8 @@ fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse>
         )));
     }
 
-    // Delete 为永久删除（T3.3），物理文件无法恢复，暂不支持撤销
+    // 删除已移入系统回收站：应用内无回收站还原路径，整批拒绝撤销
+    // （用户可在系统回收站手动恢复）
     if logs.iter().any(|l| l.operation_type == "delete") {
         return Err(AppError::Forbidden("删除批次暂不支持撤销".into()));
     }
@@ -1338,6 +1486,11 @@ mod tests {
         let scan_root = tempfile::tempdir()?;
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
 
         let (_, exec) = preview_then_execute(
             &state,
@@ -1352,6 +1505,77 @@ mod tests {
         let result = undo_batch_inner(&exec.batch_id, &state);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), AppError::Forbidden(_)));
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // delete_files（移入系统回收站）测试
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_delete_files_moves_all_to_trash() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["a.txt", "b.txt"])?;
+
+        let results = delete_files_inner(&ids, &state)?;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success && r.error.is_none()));
+
+        // 磁盘原文件已消失（移入系统回收站）
+        assert!(!scan_root.path().join("a.txt").exists());
+        assert!(!scan_root.path().join("b.txt").exists());
+        // 文件确实移入了回收站目录（而非物理删除）
+        assert!(trash_dir.path().join("a.txt").exists());
+        assert!(trash_dir.path().join("b.txt").exists());
+
+        // DB 软删除：get_by_id 不返回软删除行 → 每条应查无记录
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        for id in &ids {
+            let file = FileRepo::get_by_id(guard.conn(), id).map_err(|e| e.to_string())?;
+            assert!(file.is_none(), "删除后记录应被软删除（id={id}）");
+        }
+        let count: i64 = guard
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM operations_log WHERE operation_type = 'delete'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        assert_eq!(count, 2, "应写入 2 条 delete 审计日志");
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_files_partial_unknown_id_fails_others_succeed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
+        let mut ids = seed_files_for_preview(&state, scan_root.path(), &["keep.txt"])?;
+        ids.push("missing-id".into());
+
+        let results = delete_files_inner(&ids, &state)?;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].success, "存在的文件应删除成功");
+        assert!(results[0].error.is_none());
+        assert!(!results[1].success, "未知 id 应返回失败");
+        assert!(results[1].error.is_some());
+
+        // 存在的文件已移走；未知 id 不产生副作用
+        assert!(!scan_root.path().join("keep.txt").exists());
         Ok(())
     }
 
@@ -1972,6 +2196,11 @@ mod tests {
         let scan_root = tempfile::tempdir()?;
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
 
         let (_, exec) = preview_then_execute(
             &state,

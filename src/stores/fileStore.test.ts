@@ -7,11 +7,12 @@ vi.mock('../lib/ipc', () => ({
     scanDirectory: vi.fn(),
     listAllFiles: vi.fn(),
     getFileStats: vi.fn(),
+    deleteFiles: vi.fn(),
   },
 }));
 
 import { fileIpc } from '../lib/ipc';
-import type { FileInfo, FileStats } from '../types/ipc';
+import type { DeleteFilesResult, FileInfo, FileStats } from '../types/ipc';
 import { useFileStore } from './fileStore';
 
 function fileInfo(id: string, name: string): FileInfo {
@@ -212,5 +213,54 @@ describe('fileStore', () => {
     useFileStore.getState().clearError();
 
     expect(useFileStore.getState().error).toBeNull();
+  });
+
+  it('deleteFiles 成功：列表移除 + 选中清空 + 统计刷新', async () => {
+    useFileStore.setState({
+      files: [fileInfo('1', 'a.txt'), fileInfo('2', 'b.txt')],
+      selectedIds: ['1', '2'],
+    });
+    const data: DeleteFilesResult[] = [
+      { file_id: '1', success: true, error: null },
+      { file_id: '2', success: true, error: null },
+    ];
+    (fileIpc.deleteFiles as Mock).mockResolvedValue({ status: 'ok', data });
+
+    const result = await useFileStore.getState().deleteFiles(['1', '2']);
+
+    expect(result).toEqual({ deleted: 2, failed: 0 });
+    const s = useFileStore.getState();
+    expect(s.files).toEqual([]);
+    expect(s.selectedIds).toEqual([]);
+    expect(s.error).toBeNull();
+    expect(fileIpc.getFileStats).toHaveBeenCalled(); // 删除后刷新统计
+  });
+
+  it('deleteFiles 部分失败：仅移除成功项、保留失败项并置错', async () => {
+    useFileStore.setState({
+      files: [fileInfo('1', 'a.txt'), fileInfo('2', 'b.txt')],
+      selectedIds: ['1', '2'],
+    });
+    const data: DeleteFilesResult[] = [
+      { file_id: '1', success: true, error: null },
+      { file_id: '2', success: false, error: '文件不存在（可能已被外部移除）' },
+    ];
+    (fileIpc.deleteFiles as Mock).mockResolvedValue({ status: 'ok', data });
+
+    const result = await useFileStore.getState().deleteFiles(['1', '2']);
+
+    expect(result).toEqual({ deleted: 1, failed: 1 });
+    const s = useFileStore.getState();
+    expect(s.files.map((f) => f.id)).toEqual(['2']);
+    expect(s.selectedIds).toEqual(['2']);
+    expect(s.error).toContain('1 个文件未能移入系统回收站');
+  });
+
+  it('deleteFiles 全量失败：抛错并置 error', async () => {
+    (fileIpc.deleteFiles as Mock).mockResolvedValue({ status: 'error', error: 'TR-001' });
+
+    await expect(useFileStore.getState().deleteFiles(['1'])).rejects.toThrow('TR-001');
+
+    expect(useFileStore.getState().error).toBe('TR-001');
   });
 });

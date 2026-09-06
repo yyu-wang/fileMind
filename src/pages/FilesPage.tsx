@@ -9,6 +9,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
 import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { getE2eTestDir } from '@/lib/e2e';
 import {
@@ -41,6 +42,7 @@ export function FilesPage() {
   const setSelection = useFileStore((s) => s.setSelection);
   const clearSelection = useFileStore((s) => s.clearSelection);
   const clearError = useFileStore((s) => s.clearError);
+  const deleteFiles = useFileStore((s) => s.deleteFiles);
   const dataDirectory = useSettingsStore((s) => s.dataDirectory);
   const navigate = useNavigate();
 
@@ -49,6 +51,8 @@ export function FilesPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // T6.10 快捷键：Space 预览选中的第一个文件（无修饰键，输入框内自动跳过）
   useHotkeys([
@@ -134,6 +138,20 @@ export function FilesPage() {
     navigate('/classify');
   };
 
+  /** 确认删除：调用 store 移入系统回收站，结束后清空整批选中（错误经 store.error 提示）。 */
+  const handleConfirmDelete = async () => {
+    setDeleting(true);
+    try {
+      await deleteFiles(selectedIds);
+    } catch {
+      // 全量失败：错误已写入 store.error（顶部横幅展示）
+    } finally {
+      clearSelection();
+      setDeleting(false);
+      setPendingDelete(false);
+    }
+  };
+
   return (
     <div className="page files-page">
       <header className="main-header">
@@ -199,6 +217,17 @@ export function FilesPage() {
               data-testid="files-clear-selection"
             >
               清除选中
+            </button>
+          )}
+          {selectedIds.length > 0 && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              style={{ color: 'var(--warn)' }}
+              onClick={() => setPendingDelete(true)}
+              data-testid="files-delete-selected"
+            >
+              删除选中 ({selectedIds.length})
             </button>
           )}
           <div className="search-box">
@@ -282,6 +311,18 @@ export function FilesPage() {
           onClose={() => setPreviewFile(null)}
         />
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="删除选中文件"
+          message={`将把选中的 ${selectedIds.length} 个文件移入系统回收站（可在系统回收站恢复）；应用内不提供撤销。`}
+          confirmLabel="移入回收站"
+          danger
+          loading={deleting}
+          onConfirm={() => void handleConfirmDelete()}
+          onCancel={() => setPendingDelete(false)}
+        />
+      )}
     </div>
   );
 }

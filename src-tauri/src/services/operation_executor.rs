@@ -78,7 +78,8 @@ fn run_operation(item: &PlanItem, prev_hash: Option<String>) -> AppResult<Option
             Ok(prev_hash)
         }
         OperationType::Delete => {
-            std::fs::remove_file(&source)?;
+            // 安全网：删除改为移入系统回收站（可恢复），替代物理 remove_file
+            crate::services::trash::move_to_trash(&source)?;
             Ok(None)
         }
     }

@@ -33,6 +33,7 @@ fn main() {
             commands::file_ops::scan_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
+            commands::file_ops::delete_files,
             commands::file_ops::undo_batch,
             // T6.4 文件预览（文本 / 图片 / PDF）
             commands::file_preview::read_file_preview,

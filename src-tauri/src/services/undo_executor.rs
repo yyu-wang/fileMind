@@ -18,7 +18,8 @@ use crate::security;
 /// # Errors
 ///
 /// 路径校验失败、目标被占用或 IO 失败时返回错误（调用方按项计入 `failed`）。
-/// `delete` 因 T3.3 为永久删除（物理文件无法恢复）返回 `Forbidden`。
+/// `delete` 因文件已移入系统回收站（应用内无回收站还原路径）返回 `Forbidden`；
+/// 用户可在系统回收站手动恢复。
 pub fn execute_undo_item(
     operation_type: &str,
     source_path: &str,
