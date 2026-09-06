@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from docx import Document
 
 from app.services import ingest_service
 
@@ -133,3 +134,61 @@ async def test_build_index_empty_result_no_write(tmp_path: Path) -> None:
     assert result.indexed == 0
     assert result.skipped == 1
     assert mgr.added == []
+
+
+@pytest.mark.asyncio
+async def test_build_index_extracts_binary_docx(tmp_path: Path) -> None:
+    """docx 二进制文档 → 抽取 → 分块 → 写入向量索引。"""
+    doc_path = tmp_path / "report.docx"
+    doc = Document()
+    doc.add_paragraph("二进制文档正文甲")
+    doc.add_paragraph("正文乙段落")
+    doc.save(str(doc_path))
+
+    mgr = _FakeManager()
+
+    async def fake_embed(texts: list[str], model: str) -> list[list[float]]:
+        assert model == "bge-large-zh-v1.5"
+        return [[1.0, 2.0] for _ in texts]
+
+    with patch.object(ingest_service, "embed_texts", side_effect=fake_embed):
+        result = await ingest_service.build_index(
+            [("f1", str(doc_path))],
+            "documents_bge-large-zh-v1.5_v1",
+            mgr,
+        )
+
+    assert result.indexed == 1
+    assert result.skipped == 0
+    joined = " ".join(c.chunk_text for c in mgr.added)
+    assert "二进制文档正文甲" in joined
+    assert "正文乙段落" in joined
+    assert {d.chunk_id for d in mgr.added} == {"f1-0"}
+
+
+@pytest.mark.asyncio
+async def test_build_index_skips_corrupt_binary_but_indexes_others(
+    tmp_path: Path,
+) -> None:
+    """损坏的二进制文档计入 skipped，不中断同批正常文件。"""
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"not a real pdf")
+    md = tmp_path / "ok.md"
+    md.write_text("正常正文", encoding="utf-8")
+
+    mgr = _FakeManager()
+
+    async def fake_embed(texts: list[str], model: str) -> list[list[float]]:
+        return [[1.0, 2.0] for _ in texts]
+
+    with patch.object(ingest_service, "embed_texts", side_effect=fake_embed):
+        result = await ingest_service.build_index(
+            [("f1", str(broken)), ("f2", str(md))],
+            "documents_bge-large-zh-v1.5_v1",
+            mgr,
+        )
+
+    assert result.indexed == 1
+    assert result.skipped == 1
+    joined = " ".join(c.chunk_text for c in mgr.added)
+    assert "正常正文" in joined

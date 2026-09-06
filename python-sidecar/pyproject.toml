@@ -64,6 +64,11 @@ module = "sentence_transformers"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# openpyxl 未内置 py.typed；仅在 doc_extract 惰性导入，动态模块（同 jieba 处理）
+module = "openpyxl"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # logging.py 用 Protocol 兼容 structlog / 标准 logging 两种实现，
 # structlog 缺 stubs 导致 Any 返回 + unused-ignore 噪声；非 T2.4 引入
 module = "app.core.logging"

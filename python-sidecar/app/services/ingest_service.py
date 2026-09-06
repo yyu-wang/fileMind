@@ -17,6 +17,11 @@ from pathlib import Path
 
 from app.core.logging import getLogger, sanitize_path
 from app.db.lancedb_repo import DocumentChunk, LanceDBManager
+from app.services.doc_extract import (
+    DocumentExtractError,
+    extract_document_text,
+    is_binary_document,
+)
 from app.services.embedding_service import EMBEDDING_MODEL, embed_texts
 
 logger = getLogger("filemind.ingest")
@@ -78,6 +83,30 @@ def _extension(path: Path) -> str:
 def is_supported_text(path: Path) -> bool:
     """文件扩展名是否属于可索引文本类。"""
     return _extension(path) in TEXT_EXTENSIONS
+
+
+def read_indexable_text(path: Path) -> str | None:
+    """按扩展名读取可索引正文：纯文本直读或二进制文档抽取。
+
+    - 文本类（TEXT_EXTENSIONS）：直接 UTF-8 读取（见 :func:`read_text`）；
+    - 二进制文档（pdf/docx/xlsx/pptx）：经 :func:`extract_document_text` 抽取；
+    - 其余类型返回 ``None``（调用方跳过）。
+
+    Args:
+        path: 文件绝对路径。
+
+    Returns:
+        可索引正文；非索引类型返回 ``None``。
+
+    Raises:
+        OSError: 文本文件不可读（非 UTF-8 字节按替换符降级）。
+        DocumentExtractError: 二进制文档解析失败。
+    """
+    if _extension(path) in TEXT_EXTENSIONS:
+        return read_text(path)
+    if is_binary_document(path):
+        return extract_document_text(path)
+    return None
 
 
 def read_text(path: Path) -> str:
@@ -144,17 +173,19 @@ def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
     docs: list[DocumentChunk] = []
     for file_id, raw_path in files:
         path = Path(raw_path)
-        if not path.is_file() or not is_supported_text(path):
+        if not path.is_file():
             continue
         try:
-            text = read_text(path)
-        except OSError as exc:
+            text = read_indexable_text(path)
+        except (OSError, DocumentExtractError) as exc:
             logger.warning(
                 "ingest.read_failed",
                 file_id=file_id,
                 path=sanitize_path(raw_path),
                 error=str(exc),
             )
+            continue
+        if text is None or not text.strip():
             continue
         chunks = chunk_text(text)
         if not chunks:

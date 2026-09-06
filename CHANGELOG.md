@@ -9,6 +9,7 @@
 
 ### Added
 
+- **RAG** 二进制文档抽取：PDF/DOCX/XLSX/PPTX 内容可进向量索引问答（`doc_extract` 服务 + 200k 字符上限；损坏/加密文件按单文件跳过不中断整批）。
 - **T0.8** 测试数据生成脚本：`scripts/gen_testdata.py`（可扩展 `--count`/`--depth`，供基准与 E2E 用）。
 - **T1.4** Sidecar HMAC 握手协议与请求验签（防端口冒充）。
 - **T1.5** Sidecar 生命周期管理：启动握手、健康看门狗、指数退避重启、CrashLoop 暂停告警。
