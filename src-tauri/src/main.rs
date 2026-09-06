@@ -484,6 +484,7 @@ fn main() {
             commands::file_ops::delete_files,
             commands::file_ops::undo_batch,
             commands::file_preview::read_file_preview,
+            commands::file_preview::read_document_preview,
             commands::file_query::list_files,
             commands::file_query::list_all_files,
             commands::file_query::search_files,

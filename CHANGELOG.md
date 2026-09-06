@@ -9,6 +9,7 @@
 
 ### Added
 
+- **Office 文档预览** docx/xlsx/pptx 经 Sidecar `doc_extract` 抽取为纯文本展示（与 RAG 索引同款抽取器；表格/分页排版会失真，属预期降级）。
 - **自动更新** 接入 `tauri-plugin-updater`：设置页「检查更新」手动检查（发现新版二次确认 → 下载安装 → 重启）；`createUpdaterArtifacts` + GitHub Releases 静态清单方案，发布运行手册见 `docs/auto-update-setup.md`。
 - **文件安全网** 删除移入系统回收站（`trash` crate，非物理删除）+ 文件管理页「删除选中」入口（二次确认；应用内不提供撤销，可从系统回收站手动恢复）。
 

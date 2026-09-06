@@ -79,7 +79,13 @@ export function FilePreviewDrawer({ file, onClose, initialPage }: FilePreviewDra
     // （用户看到"弹窗闪没/页面白屏"）。故用 try + Promise.resolve() 双保险。
     const fetchPreview = async () => {
       try {
-        const result = await fileIpc.readFilePreview(file.path);
+        // Office 文档（docx/xlsx/pptx）经 Sidecar 抽取为纯文本预览；
+        // 其余类型（文本/图片/PDF/不支持）仍走原生读文件命令
+        const ext = fileExt(file.path);
+        const result =
+          ext === 'docx' || ext === 'xlsx' || ext === 'pptx'
+            ? await fileIpc.readDocumentPreview(file.path)
+            : await fileIpc.readFilePreview(file.path);
         if (cancelled) {
           return;
         }

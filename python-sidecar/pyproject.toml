@@ -26,6 +26,11 @@ module = "app.models"
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
+# 同 app.models：pydantic.mypy 对 BaseModel 字段的 Field(...) 生成显式 Any __init__ 语义
+module = "app.models.doc_preview"
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
 module = "app.db.lancedb_repo"
 disallow_any_explicit = false
 

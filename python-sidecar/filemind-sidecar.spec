@@ -63,6 +63,7 @@ _hidden: list[str] = [
     "app.api.routes_metrics",
     "app.api.routes_classify",   # 只挂路由，不调用实现
     "app.api.routes_index",
+    "app.api.routes_preview",
     "app.api.routes_chat",
     "app.api.routes_embedding",
     "app.middleware",

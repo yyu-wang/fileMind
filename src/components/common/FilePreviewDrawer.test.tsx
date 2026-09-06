@@ -10,12 +10,16 @@ import { FilePreviewDrawer, type FilePreviewTarget } from './FilePreviewDrawer';
 
 const mocks = vi.hoisted(() => ({
   readFilePreview: vi.fn(),
+  readDocumentPreview: vi.fn(),
   Document: vi.fn((props: { children?: unknown }) => props.children),
   Page: vi.fn(() => null),
 }));
 
 vi.mock('@/lib/ipc', () => ({
-  fileIpc: { readFilePreview: mocks.readFilePreview },
+  fileIpc: {
+    readFilePreview: mocks.readFilePreview,
+    readDocumentPreview: mocks.readDocumentPreview,
+  },
 }));
 
 vi.mock('react-pdf', () => ({
@@ -52,6 +56,7 @@ function makePreview(overrides: Partial<FilePreview>): FilePreview {
 
 beforeEach(() => {
   mocks.readFilePreview.mockReset();
+  mocks.readDocumentPreview.mockReset();
 });
 
 describe('FilePreviewDrawer', () => {
@@ -86,6 +91,22 @@ describe('FilePreviewDrawer', () => {
     });
     render(<FilePreviewDrawer file={makeFile()} onClose={vi.fn()} />);
     expect(await screen.findByText(/FILE-E-002/)).toBeInTheDocument();
+  });
+
+  it('renders Office document via readDocumentPreview', async () => {
+    mocks.readDocumentPreview.mockResolvedValue({
+      status: 'ok',
+      data: makePreview({ file_name: 'r.docx', text: '季度报告文本预览' }),
+    });
+    render(
+      <FilePreviewDrawer
+        file={makeFile({ path: '/tmp/r.docx', file_name: 'r.docx' })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('季度报告文本预览')).toBeInTheDocument();
+    expect(mocks.readDocumentPreview).toHaveBeenCalledWith('/tmp/r.docx');
+    expect(mocks.readFilePreview).not.toHaveBeenCalled();
   });
 
   it('renders image preview with data url', async () => {
