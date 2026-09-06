@@ -9,7 +9,9 @@
 
 ### Added
 
+- **自动更新** 接入 `tauri-plugin-updater`：设置页「检查更新」手动检查（发现新版二次确认 → 下载安装 → 重启）；`createUpdaterArtifacts` + GitHub Releases 静态清单方案，发布运行手册见 `docs/auto-update-setup.md`。
 - **文件安全网** 删除移入系统回收站（`trash` crate，非物理删除）+ 文件管理页「删除选中」入口（二次确认；应用内不提供撤销，可从系统回收站手动恢复）。
+
 - **RAG** 二进制文档抽取：PDF/DOCX/XLSX/PPTX 内容可进向量索引问答（`doc_extract` 服务 + 200k 字符上限；损坏/加密文件按单文件跳过不中断整批）。
 
 - **T0.8** 测试数据生成脚本：`scripts/gen_testdata.py`（可扩展 `--count`/`--depth`，供基准与 E2E 用）。
@@ -83,3 +85,5 @@
 - Rust 集成测试：`tests/tray.rs`（托盘菜单纯决策 + quit→IS\_QUITTING）、`tests/scan_perf.rs`（`--ignored` 基准门控）。
 
 - 前端 E2E：`e2e/specs/004-rules.e2e.ts`、`005-settings.e2e.ts`（003 保持 `RUN_E2E=1 + --rag` 门控）。
+
+<br />

@@ -447,7 +447,10 @@ fn main() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // 自动更新：手动检查（设置页触发）；更新安装后经 process 插件重启
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     // T9.5 E2E：嵌入式 WebDriver server 仅 debug 构建注册（release 不携带自动化入口）。
     // 由 @wdio/tauri-service 以 driverProvider:'embedded' 连接 127.0.0.1:4445。
     #[cfg(debug_assertions)]

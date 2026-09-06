@@ -55,6 +55,15 @@
       "icons/icon.ico"
     ],
     "externalBin": ["../filemind/binaries/filemind-sidecar"],
-    "resources": []
+    "resources": [],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMUE3MjBGNjI0MkY4ODQKUldTRStFSmlEM0lhTW1XTlExeWVlQmc5QUFKV1FFZm14cUQ5bUg3bUVjNjZRK2VtQnpvNlJ4VHMK",
+      "endpoints": [
+        "https://github.com/yyu-wang/fileMind/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
