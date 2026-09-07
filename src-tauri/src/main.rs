@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use filemind_lib::commands;
-use filemind_lib::db::{CategoryRepo, ConfigRepo, Database, OperationRepo};
+use filemind_lib::db::{CategoryRepo, ConfigRepo, Database, OperationRepo, RuleRepo};
 use filemind_lib::error::AppError;
 use filemind_lib::security::cloud_proxy::{self, CLOUD_PROXY_HOST, CLOUD_PROXY_PORT};
 use filemind_lib::security::{generate_token, log_redact};
@@ -281,6 +281,18 @@ fn main() {
         Ok(0) => log::info!("内置分类已存在，跳过种子"),
         Ok(n) => log::info!("内置分类种子：新增 {n} 个分类"),
         Err(e) => log::warn!("内置分类种子失败（不影响启动）: {e}"),
+    }
+
+    // 内置默认规则种子：分类种子之后执行（默认规则外键指向 builtin-document）。
+    // 仅在 rules 表为空时补齐两条默认禁用规则（PDF/文本归档），失败不阻断启动。
+    let seed_rule_result = {
+        let db_guard = lock_db();
+        RuleRepo::seed_default_rules(db_guard.conn())
+    };
+    match seed_rule_result {
+        Ok(0) => log::info!("默认规则已存在或已有自定义规则，跳过种子"),
+        Ok(n) => log::info!("默认规则种子：新增 {n} 条规则"),
+        Err(e) => log::warn!("默认规则种子失败（不影响启动）: {e}"),
     }
 
     // T9.5 E2E：`FILEMIND_E2E_SKIP_ONBOARDING=1` 时预置配置，让应用直达文件页。

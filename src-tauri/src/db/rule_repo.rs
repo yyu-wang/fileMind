@@ -31,6 +31,28 @@ const SELECT_ALL_SQL: &str = "
     ORDER BY priority DESC, name ASC
 ";
 
+/// 内置默认规则种子：开箱即用的规则模板，默认禁用（`is_enabled=0`），用户一键启用。
+///
+/// `id` 用稳定 slug 保证幂等；`pattern` 与分类器 `extension` 语义一致（逗号分隔扩展名）。
+struct DefaultRuleSeed {
+    id: &'static str,
+    name: &'static str,
+    pattern: &'static str,
+}
+
+const DEFAULT_RULES: &[DefaultRuleSeed] = &[
+    DefaultRuleSeed {
+        id: "default_rule_pdf",
+        name: "PDF 文件归档",
+        pattern: "pdf",
+    },
+    DefaultRuleSeed {
+        id: "default_rule_text",
+        name: "文本文件归档",
+        pattern: "txt,md",
+    },
+];
+
 /// `rules` 表仓库。
 pub struct RuleRepo;
 
@@ -139,6 +161,33 @@ impl RuleRepo {
         tx.commit()?;
         Ok(())
     }
+
+    /// 幂等写入内置默认规则（默认禁用，供用户直接勾选启用）。
+    ///
+    /// 仅当 `rules` 表为空时执行（首次启动或用户删光全部规则后的回退态），避免把
+    /// 用户已删除的默认规则反复加回、干扰已有自定义规则。目标分类固定指向内置分类
+    /// `builtin-document`，调用方需先执行 `CategoryRepo::seed_builtin_categories`
+    /// 保证外键引用有效。返回实际新增条数。
+    ///
+    /// # Errors
+    ///
+    /// 数量查询或写入失败时返回数据库错误。
+    pub fn seed_default_rules(conn: &Connection) -> AppResult<usize> {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |row| row.get(0))?;
+        if count > 0 {
+            return Ok(0);
+        }
+        let mut inserted = 0usize;
+        for seed in DEFAULT_RULES {
+            let affected = conn.execute(
+                "INSERT INTO rules (id, name, rule_type, pattern, target_category, priority, is_enabled)
+                 VALUES (?1, ?2, 'extension', ?3, 'builtin-document', 40, 0)",
+                params![seed.id, seed.name, seed.pattern],
+            )?;
+            inserted += affected;
+        }
+        Ok(inserted)
+    }
 }
 
 /// 将查询行映射为 [`Rule`]。
@@ -159,12 +208,19 @@ fn map_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<Rule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::category_repo::CategoryRepo;
     use crate::db::database::Database;
     use tempfile::NamedTempFile;
 
     fn setup_db() -> Result<Database, Box<dyn std::error::Error>> {
         let tmp = NamedTempFile::new()?;
         Ok(Database::open(tmp.path())?)
+    }
+
+    /// 补齐内置分类种子（默认规则外键指向 builtin-document）。
+    fn seed_categories(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+        CategoryRepo::seed_builtin_categories(conn)?;
+        Ok(())
     }
 
     fn mk_rule(id: &str, name: &str, priority: i64, enabled: bool) -> Rule {
@@ -320,6 +376,70 @@ mod tests {
         let empty: Vec<String> = Vec::new();
         RuleRepo::reorder(db.conn(), &empty)?;
         assert!(RuleRepo::list_all(db.conn())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_seed_default_rules_inserts_disabled_defaults() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let db = setup_db()?;
+        seed_categories(db.conn())?;
+
+        let inserted = RuleRepo::seed_default_rules(db.conn())?;
+        assert_eq!(inserted, DEFAULT_RULES.len());
+
+        let all = RuleRepo::list_all(db.conn())?;
+        assert_eq!(all.len(), DEFAULT_RULES.len());
+        for rule in &all {
+            // 默认不勾选：全部禁用
+            assert!(!rule.is_enabled);
+            assert_eq!(rule.rule_type, "extension");
+            assert_eq!(rule.priority, 40);
+            // 目标分类指向内置「文档」，保证外键与展示一致
+            assert_eq!(rule.target_category.as_deref(), Some("builtin-document"));
+        }
+        let pdf = all
+            .iter()
+            .find(|r| r.id == "default_rule_pdf")
+            .ok_or("缺少 PDF 默认规则")?;
+        assert_eq!(pdf.name, "PDF 文件归档");
+        assert_eq!(pdf.pattern, "pdf");
+        let text = all
+            .iter()
+            .find(|r| r.id == "default_rule_text")
+            .ok_or("缺少文本默认规则")?;
+        assert_eq!(text.name, "文本文件归档");
+        assert_eq!(text.pattern, "txt,md");
+        Ok(())
+    }
+
+    #[test]
+    fn test_seed_default_rules_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        seed_categories(db.conn())?;
+
+        let first = RuleRepo::seed_default_rules(db.conn())?;
+        let second = RuleRepo::seed_default_rules(db.conn())?;
+        assert_eq!(first, DEFAULT_RULES.len());
+        assert_eq!(second, 0);
+        assert_eq!(RuleRepo::list_all(db.conn())?.len(), DEFAULT_RULES.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_seed_default_rules_skips_when_user_rules_exist(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        seed_categories(db.conn())?;
+        // 已有用户自定义规则 → 不再注入默认规则
+        RuleRepo::upsert(db.conn(), &mk_rule("r1", "我的规则", 100, true))?;
+
+        let inserted = RuleRepo::seed_default_rules(db.conn())?;
+        assert_eq!(inserted, 0);
+
+        let all = RuleRepo::list_all(db.conn())?;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "r1");
         Ok(())
     }
 }
