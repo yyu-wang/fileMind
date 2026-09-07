@@ -2168,6 +2168,7 @@ select.input:disabled {
   /* 对齐 .main-content 的左右内边距（var(--sp-6)=24px），
      主 header 用负 margin 抵消保持 border-bottom 延伸到窗口边缘 */
   padding: 0 var(--sp-6);
+  /* 页面本身不滚动：header/footer 固定，仅左侧分类树独立滚动 */
   overflow: hidden;
 }
 
@@ -2259,8 +2260,6 @@ select.input:disabled {
 
 /* 预览树 */
 .classify-preview {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -2445,6 +2444,7 @@ select.input:disabled {
   min-height: 0;
   display: flex;
   gap: var(--sp-4);
+  /* 裁剪溢出：左右两列各自独立滚动，不把滚动泄漏到外层 */
   overflow: hidden;
   /* 外层 .classify-page 已统一提供左右 padding: var(--sp-6)，
      此处不得再设置水平 padding，否则套娃缩进会导致
@@ -2454,10 +2454,15 @@ select.input:disabled {
 
 .classify-main__tree,
 .classify-tree {
-  flex: 1;
   min-width: 0;
+}
+
+/* classify-layout 内的外层 .classify-tree 容器：占满剩余宽度（横向 flex），
+   纵向独立滚动（右侧统计面板固定不动） */
+.classify-layout > .classify-tree {
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 /* 树形分类预览（对齐原型 tree-panel / tree-node） */
@@ -2545,8 +2550,6 @@ select.input:disabled {
 }
 
 .tree-children {
-  max-height: 220px;
-  overflow: auto;
   border-top: 1px solid var(--rule);
 }
 
@@ -2603,10 +2606,12 @@ select.input:disabled {
 .stats-panel {
   width: 260px;
   flex-shrink: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  overflow: auto;
+  /* 右侧固定不随左侧滚动；内容超出时仅自身独立滚动 */
+  overflow-y: auto;
 }
 
 .stats-card {
