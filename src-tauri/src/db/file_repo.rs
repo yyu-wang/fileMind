@@ -347,7 +347,8 @@ impl FileRepo {
     /// 文件不存在时返回 `QueryReturnedNoRows`；更新失败返回数据库错误。
     pub fn soft_delete(conn: &Connection, id: &str) -> AppResult<()> {
         let affected = conn.execute(
-            "UPDATE files SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE files SET is_deleted = 1, category = NULL, updated_at = datetime('now')
+             WHERE id = ?1",
             params![id],
         )?;
 
@@ -362,12 +363,17 @@ impl FileRepo {
     /// 匹配规则 `path LIKE prefix || '/%'`，避免 `/a/b` 误匹配 `/a/bc`。
     /// 返回受影响的行数；无匹配时返回 0（不报错，幂等）。
     ///
+    /// 语义：目录级移除 = 放弃 `FileMind` 对该目录的全部派生状态。因此连同
+    /// `category` 分类标签一起清空——否则重新扫描该目录时 `ON CONFLICT(path)`
+    /// 复活记录会保留旧标签，文件明明还在原地却显示「已分类」，永远不再被
+    /// 「未整理」类整理入口处理。`content_hash` 保留（增量扫描可复用，无副作用）。
+    ///
     /// # Errors
     ///
     /// 更新失败时返回数据库错误。
     pub fn soft_delete_by_path_prefix(conn: &Connection, path_prefix: &str) -> AppResult<i64> {
         let affected = conn.execute(
-            "UPDATE files SET is_deleted = 1, updated_at = datetime('now')
+            "UPDATE files SET is_deleted = 1, category = NULL, updated_at = datetime('now')
              WHERE is_deleted = 0 AND path LIKE ?1 || '/%'",
             params![path_prefix],
         )?;
@@ -679,6 +685,36 @@ mod tests {
         rec.file_size = 20;
         let result = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec], &snapshots)?;
         assert_eq!(result.skipped, 1);
+        Ok(())
+    }
+
+    /// 目录级移除必须连同分类标签一起清空：否则重扫时 `ON CONFLICT(path)`
+    /// 复活记录会保留旧 `category`，文件原地未动却仍显示「已分类」。
+    #[test]
+    fn test_soft_delete_by_path_prefix_clears_category() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let rec = mk_record("/tmp/dir/a.txt", 10, Some("h"), None);
+        FileRepo::upsert_batch(db.conn(), std::slice::from_ref(&rec))?;
+        FileRepo::update_category(db.conn(), &rec.id, "代码")?;
+
+        let removed = FileRepo::soft_delete_by_path_prefix(db.conn(), "/tmp/dir")?;
+        assert_eq!(removed, 1);
+
+        let (deleted, category) = db.conn().query_row(
+            "SELECT is_deleted, category FROM files WHERE path = '/tmp/dir/a.txt'",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
+        )?;
+        assert_eq!(deleted, 1, "软删标记应生效");
+        assert_eq!(category, None, "目录移除应清空分类标签");
+
+        // 重扫同目录：复活后不得带回旧标签
+        let second = FileRepo::upsert_batch(db.conn(), &[rec])?;
+        assert_eq!(second.updated, 1);
+        let revived =
+            FileRepo::get_by_path(db.conn(), "/tmp/dir/a.txt")?.ok_or("复活后应可查询")?;
+        assert!(!revived.is_deleted);
+        assert_eq!(revived.category, None, "重扫复活不应携带旧分类标签");
         Ok(())
     }
 }
