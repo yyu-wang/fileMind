@@ -49,6 +49,10 @@ class ClassifyRequest(BaseModel):
 class IndexBuildResponse(BaseModel):
     indexed_count: int
     skipped_count: int
+    indexed_file_ids: list[str] = Field(
+        default_factory=list,
+        description="实际写入向量的 file_id（供 Rust 回写索引状态标记）",
+    )
 
 
 class IndexBuildFile(BaseModel):

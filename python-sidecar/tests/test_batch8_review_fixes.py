@@ -66,6 +66,9 @@ async def test_build_twice_no_duplicate_rows(ldb: LanceDBManager, tmp_path: Path
         r2 = await ingest_service.build_index(files, TABLE, ldb)
 
     assert r1.indexed == 1 and r2.indexed == 1
+    # 建成文件清单回传（供 Rust 回写索引状态标记）
+    assert r1.indexed_file_ids == ("f1",)
+    assert r2.indexed_file_ids == ("f1",)
     # 两次 build 后行数仍等于单次分块数（无追加翻倍）
     assert _count_rows(ldb, TABLE) == 2
     # 检索无重复 chunk_id

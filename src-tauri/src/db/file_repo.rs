@@ -499,6 +499,106 @@ impl FileRepo {
         }
         Ok(files)
     }
+
+    /// 列出待向量化文件（增量索引的候选集）。
+    ///
+    /// 未删除且满足任一条件即入选：
+    ///   - `embedding_model IS NULL`（从未建过索引）
+    ///   - `embedding_model != 当前模型`（Embedding 模型已切换）
+    ///   - `embedding_hash IS NULL`（建索引时未记录内容哈希）
+    ///   - `embedding_hash != content_hash`（内容在索引后发生过变更）
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回数据库错误。
+    pub fn list_pending_embedding(
+        conn: &Connection,
+        embedding_model: &str,
+        limit: i64,
+    ) -> AppResult<Vec<FileRecord>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, path, file_name, file_size, content_hash, category, is_deleted, created_at, updated_at, mtime
+             FROM files
+             WHERE is_deleted = 0
+               AND (embedding_model IS NULL
+                    OR embedding_model <> ?1
+                    OR embedding_hash IS NULL
+                    OR embedding_hash <> content_hash)
+             ORDER BY updated_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![embedding_model, limit], map_file_record)?;
+        let mut files = Vec::new();
+        for row in rows {
+            files.push(row?);
+        }
+        Ok(files)
+    }
+
+    /// 向量化成功后回写状态标记（`embedding_model` + `embedding_hash`）。
+    ///
+    /// `entries` 为 `(file_id, 建索引时刻的 content_hash)` 列表；全部 UPDATE 包在
+    /// 单事务中执行。调用方只应传入「实际写入向量的文件」，读取失败 / 非文本
+    /// 文件保持未标记，下次索引自动重试。
+    ///
+    /// # Errors
+    ///
+    /// 事务开启或任一更新失败时返回数据库错误。
+    pub fn mark_embedded(
+        conn: &Connection,
+        embedding_model: &str,
+        entries: &[(String, String)],
+    ) -> AppResult<usize> {
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let tx = conn.unchecked_transaction()?;
+        let mut count = 0;
+        for (file_id, content_hash) in entries {
+            let affected = tx.execute(
+                "UPDATE files
+                 SET embedding_model = ?1,
+                     embedding_hash = ?2,
+                     updated_at = datetime('now')
+                 WHERE id = ?3 AND is_deleted = 0",
+                params![embedding_model, content_hash, file_id],
+            )?;
+            count += affected;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
+    /// 清除指定文件的索引状态标记（向量已从 `LanceDB` 删除时调用）。
+    ///
+    /// 把 `embedding_model` / `embedding_hash` 置回 NULL，避免「向量已删但标记仍在」
+    /// 导致增量索引把该文件误判为已建而跳过。ID 列表按 [`CHUNK_IN_PATHS`] 分块，
+    /// 用单条 `UPDATE ... IN (...)` 批量执行。
+    ///
+    /// # Errors
+    ///
+    /// 任一 UPDATE 失败时返回数据库错误。
+    pub fn clear_embedding_marker(conn: &Connection, ids: &[String]) -> AppResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut cleared = 0;
+        for chunk in ids.chunks(CHUNK_IN_PATHS) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "UPDATE files
+                 SET embedding_model = NULL,
+                     embedding_hash = NULL,
+                     updated_at = datetime('now')
+                 WHERE id IN ({placeholders})"
+            );
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            cleared += conn.execute(&sql, params.as_slice())?;
+        }
+        Ok(cleared)
+    }
 }
 
 /// 批量增量写入统计。
@@ -638,6 +738,88 @@ mod tests {
         let second = FileRepo::upsert_batch_with_snapshots(db.conn(), &[rec], &snapshots)?;
         assert_eq!(second.skipped, 1);
         assert_eq!(second.updated, 0);
+        Ok(())
+    }
+
+    /// 增量索引候选集：已建且模型/内容均未变 → 排除；未建 / 换模型 / 内容变更 → 入选。
+    #[test]
+    fn test_list_pending_embedding_filters_marked() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+
+        let rec_a = mk_record("/tmp/p/a.txt", 1, Some("aa"), Some("2026-01-01 00:00:00"));
+        let rec_b = mk_record("/tmp/p/b.txt", 1, Some("bb"), Some("2026-01-01 00:00:00"));
+        let rec_c = mk_record("/tmp/p/c.txt", 1, Some("cc"), Some("2026-01-01 00:00:00"));
+        let res = FileRepo::upsert_batch(db.conn(), &[rec_a, rec_b, rec_c])?;
+        assert_eq!(res.added, 3);
+        // 直接按 path 回查入库 id（新插入时与传入 uuid 一致）
+        let id_of = |path: &str| -> Result<String, Box<dyn std::error::Error>> {
+            Ok(db
+                .conn()
+                .query_row("SELECT id FROM files WHERE path = ?1", [path], |r| r.get(0))?)
+        };
+        let id_a = id_of("/tmp/p/a.txt")?;
+        let id_b = id_of("/tmp/p/b.txt")?;
+        let id_c = id_of("/tmp/p/c.txt")?;
+
+        // 全部未标记 → 3 个都是候选
+        let all = FileRepo::list_pending_embedding(db.conn(), "m1", 100)?;
+        assert_eq!(all.len(), 3);
+
+        // 全部标记为 m1（hash 与 content_hash 一致）→ 无候选；换模型 m2 → 全量候选
+        let entries: Vec<(String, String)> = vec![
+            (id_a.clone(), "aa".to_string()),
+            (id_b.clone(), "bb".to_string()),
+            (id_c.clone(), "cc".to_string()),
+        ];
+        assert_eq!(FileRepo::mark_embedded(db.conn(), "m1", &entries)?, 3);
+        assert!(FileRepo::list_pending_embedding(db.conn(), "m1", 100)?.is_empty());
+        assert_eq!(
+            FileRepo::list_pending_embedding(db.conn(), "m2", 100)?.len(),
+            3
+        );
+
+        // c 内容变更（content_hash 更新为 cc2）→ 仅 c 重新入选
+        db.conn().execute(
+            "UPDATE files SET content_hash = 'cc2' WHERE id = ?1",
+            rusqlite::params![id_c],
+        )?;
+        let pending = FileRepo::list_pending_embedding(db.conn(), "m1", 100)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, id_c);
+
+        // 清除标记 → b、c 重新进入候选集；a（仍标记且内容未变）保持排除
+        assert_eq!(
+            FileRepo::clear_embedding_marker(db.conn(), &[id_b.clone(), id_c.clone()])?,
+            2
+        );
+        let pending = FileRepo::list_pending_embedding(db.conn(), "m1", 100)?;
+        let pending_ids: Vec<&str> = pending.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(pending_ids.len(), 2);
+        assert!(pending_ids.contains(&id_b.as_str()));
+        assert!(pending_ids.contains(&id_c.as_str()));
+        assert!(!pending_ids.contains(&id_a.as_str()));
+        Ok(())
+    }
+
+    /// 软删除文件不进入待建候选集。
+    #[test]
+    fn test_list_pending_embedding_excludes_deleted() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db()?;
+        let rec = mk_record("/tmp/p/del.txt", 1, Some("dd"), Some("2026-01-01 00:00:00"));
+        let res = FileRepo::upsert_batch(db.conn(), std::slice::from_ref(&rec))?;
+        assert_eq!(res.added, 1);
+        let id: String = db.conn().query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            ["/tmp/p/del.txt"],
+            |r| r.get(0),
+        )?;
+
+        // 软删除后即便从未标记，也不该出现在候选里
+        db.conn().execute(
+            "UPDATE files SET is_deleted = 1 WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        assert!(FileRepo::list_pending_embedding(db.conn(), "m1", 100)?.is_empty());
         Ok(())
     }
 

@@ -1250,7 +1250,7 @@ pub fn list_scanned_directories(
 ///   1. 路径安全校验
 ///   2. 获取该目录下所有未软删除文件的 ID
 ///   3. best-effort 调 sidecar 清理对应向量（失败仅告警）
-///   4. 软删该目录下所有文件
+///   4. 软删该目录下所有文件，并同步清空其索引状态标记（防重扫后误跳过）
 ///   5. 删除目录记录
 ///
 /// # Errors
@@ -1281,16 +1281,23 @@ fn remove_directory_inner(path: &str, state: &AppState) -> AppResult<RemoveDirec
 
     // 3. best-effort 清理向量索引（sidecar 未就绪或失败仅告警）
     if !file_ids.is_empty() {
-        spawn_index_delete_by_file_ids(state, file_ids);
+        spawn_index_delete_by_file_ids(state, file_ids.clone());
     }
 
-    // 4. 软删该目录下所有文件
+    // 4. 软删该目录下所有文件 + 同步清空索引状态标记。
+    //    marker 必须清空：否则向量已删但标记仍在，之后重新扫描同一目录时，
+    //    增量索引会把复活文件误判为「已建」而跳过（见 FileRepo::clear_embedding_marker）。
     let removed_files = {
         let guard = state
             .db
             .lock()
             .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        FileRepo::soft_delete_by_path_prefix(guard.conn(), path)?
+        let removed = FileRepo::soft_delete_by_path_prefix(guard.conn(), path)?;
+        if let Err(e) = FileRepo::clear_embedding_marker(guard.conn(), &file_ids) {
+            log::warn!("移除目录：清空索引状态标记失败（不影响移除结果）: {e}");
+        }
+        drop(guard);
+        removed
     };
 
     // 5. 删除目录记录

@@ -190,5 +190,7 @@ async def test_build_index_skips_corrupt_binary_but_indexes_others(
 
     assert result.indexed == 1
     assert result.skipped == 1
+    # 坏文件不进建成清单，正常文件才回传
+    assert result.indexed_file_ids == ("f2",)
     joined = " ".join(c.chunk_text for c in mgr.added)
     assert "正常正文" in joined

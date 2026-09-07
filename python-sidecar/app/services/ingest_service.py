@@ -74,6 +74,9 @@ class BuildIndexResult:
     skipped: int
     """跳过的文件数（非文本 / 读取失败 / 空内容）。"""
 
+    indexed_file_ids: tuple[str, ...] = ()
+    """实际写入向量的 file_id（供 Rust 回写索引状态标记）。"""
+
 
 def _extension(path: Path) -> str:
     """返回小写扩展名（无扩展名返回空串）。"""
@@ -240,7 +243,6 @@ async def build_index(
 
     if not docs:
         return BuildIndexResult(indexed=0, skipped=skipped)
-
     # 阶段 2：分批 Embedding（网络 IO，事件循环友好）
     for start in range(0, len(docs), EMBED_BATCH_SIZE):
         batch = docs[start : start + EMBED_BATCH_SIZE]
@@ -267,7 +269,11 @@ async def build_index(
         chunks=len(docs),
         table=table_name,
     )
-    return BuildIndexResult(indexed=indexed, skipped=skipped)
+    return BuildIndexResult(
+        indexed=indexed,
+        skipped=skipped,
+        indexed_file_ids=tuple(sorted(indexed_file_ids)),
+    )
 
 
 def _is_safe_file_id(value: str) -> bool:

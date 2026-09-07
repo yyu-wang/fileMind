@@ -82,6 +82,7 @@ async def build_index(req: IndexBuildRequest) -> IndexBuildResponse:
     return IndexBuildResponse(
         indexed_count=result.indexed,
         skipped_count=result.skipped,
+        indexed_file_ids=list(result.indexed_file_ids),
     )
 
 

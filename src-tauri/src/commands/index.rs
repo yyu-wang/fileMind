@@ -1,7 +1,13 @@
 //! 索引命令：建立文件索引（Rust 读 SQLite → sidecar /index/build 向量化 → LanceDB）。
 //!
 //! 问答链路的数据源：文件扫描只进 SQLite，问答检索需要向量索引（LanceDB）。
-//! 本命令把全部未删除文件交给 sidecar 批量向量化写入，建立后可进行 RAG 问答。
+//! 本命令把**待向量化**的未删除文件交给 sidecar 批量向量化写入，建立后可进行 RAG 问答。
+//!
+//! 增量语义：只处理「从未建过 / Embedding 模型切换 / 内容发生变更」的文件，
+//! 建成后把 `embedding_model` + `embedding_hash` 回写到 `files` 表（见
+//! `FileRepo::mark_embedded`），下次点「建立索引」自动跳过已建且未变的文件。
+
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -12,7 +18,7 @@ use crate::error::{AppError, AppResult};
 use crate::sidecar::proxy;
 use crate::AppState;
 
-/// 全量索引的文件上限（支撑十万级库；真实场景远小于此）。
+/// 单次索引的文件上限（支撑十万级库；真实场景远小于此）。
 const INDEX_FILE_LIMIT: i64 = 1_000_000;
 
 /// `/index/build` 请求体（对齐 sidecar `IndexBuildRequest`）。
@@ -30,6 +36,18 @@ struct SidecarIndexBuildRequest {
     table_name: String,
 }
 
+/// `/index/build` 响应体（含建成文件清单；对齐 sidecar `IndexBuildResponse`）。
+#[derive(Debug, Deserialize)]
+struct SidecarIndexBuildResponse {
+    /// 成功索引的文件数。
+    indexed_count: i64,
+    /// 跳过的文件数（非文本 / 读取失败 / 空内容）。
+    skipped_count: i64,
+    /// 实际写入向量的 `file_id`（供回写 `SQLite` 索引状态标记；旧版 sidecar 无此字段时默认为空）。
+    #[serde(default)]
+    indexed_file_ids: Vec<String>,
+}
+
 /// `/index/build` 响应体（对齐 sidecar `IndexBuildResponse`）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct IndexBuildResponse {
@@ -41,13 +59,17 @@ pub struct IndexBuildResponse {
     pub skipped_count: i64,
 }
 
-/// 建立文件索引：SQLite 全量未删除文件 → sidecar `/index/build` 向量化写入 `LanceDB`。
+/// 建立文件索引：SQLite 待向量化文件 → sidecar `/index/build` 向量化写入 `LanceDB`。
+///
+/// 增量判定（[`FileRepo::list_pending_embedding`]）：只取「从未建过索引 /
+/// Embedding 模型切换 / 内容变更（`embedding_hash != content_hash`）」的文件，
+/// 已建且未变的直接跳过，不再全量重算。向量化成功后回写索引状态标记。
 ///
 /// `embedding_model` 与目标表名来自 `app_config`（对齐问答请求 `documents_{model}_v1`）。
 ///
 /// # Errors
 ///
-/// Sidecar 未就绪、配置读取失败或 sidecar 返回错误时返回错误。
+/// Sidecar 未就绪、配置读取失败、标记回写失败或 sidecar 返回错误时返回错误。
 #[tauri::command]
 #[specta::specta]
 pub async fn build_index(state: State<'_, AppState>) -> Result<IndexBuildResponse, String> {
@@ -69,13 +91,14 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
         (model, table)
     };
 
-    // 2. 全量读取未删除文件
+    // 2. 只取「待向量化」文件：未建过 / 换模型 / 内容变更才入选（增量核心）。
+    //    库中文件已全部建成且未变更 → 直接返回 0/0，不碰 FTS 与 sidecar。
     let files = {
         let guard = state
             .db
             .lock()
             .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        FileRepo::list(guard.conn(), None, 0, INDEX_FILE_LIMIT)?
+        FileRepo::list_pending_embedding(guard.conn(), &embedding_model, INDEX_FILE_LIMIT)?
     };
     if files.is_empty() {
         return Ok(IndexBuildResponse {
@@ -84,7 +107,7 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
         });
     }
 
-    // 3. 填充 FTS5 content 列（文件正文入索引，支撑关键词检索）
+    // 3. 填充 FTS5 content 列（仅候选文件；已建文件的 FTS 正文保留不动）
     let (fts_indexed, fts_skipped) = {
         let guard = state
             .db
@@ -112,12 +135,38 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
                 path: f.path.clone(),
             })
             .collect(),
-        embedding_model,
+        embedding_model: embedding_model.clone(),
         table_name,
     };
     let body = serde_json::to_string(&request)?;
     let resp = proxy::forward_post("/index/build", &body, &psk, seq).await?;
-    let parsed: IndexBuildResponse = serde_json::from_str(&resp)?;
+    let parsed: SidecarIndexBuildResponse = serde_json::from_str(&resp)?;
+
+    // 5. 向量化成功后回写索引状态标记。只标记「实际写入向量」的文件
+    //    （sidecar 返回的 indexed_file_ids）；读取失败 / 非文本文件保持未标记，
+    //    下次点击自动重试。content_hash 为 None 的文件无哈希可比，同样跳过标记。
+    let mark_entries: Vec<(String, String)> = {
+        let hash_by_id: HashMap<&str, &str> = files
+            .iter()
+            .filter_map(|f| f.content_hash.as_deref().map(|h| (f.id.as_str(), h)))
+            .collect();
+        parsed
+            .indexed_file_ids
+            .iter()
+            .filter_map(|id| {
+                hash_by_id
+                    .get(id.as_str())
+                    .map(|h| (id.clone(), (*h).to_string()))
+            })
+            .collect()
+    };
+    if !mark_entries.is_empty() {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::mark_embedded(guard.conn(), &embedding_model, &mark_entries)?;
+    }
 
     // 合并 FTS5 + LanceDB 结果：取较大值（两部分成功即可）
     let indexed_count = parsed.indexed_count.max(fts_indexed);
