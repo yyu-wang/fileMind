@@ -19,8 +19,8 @@ export const PENDING_NAME = '待确认';
 
 /**
  * 分类执行方式：
- *   `move` 移动原文件到分类子文件夹（现有行为）；
- *   `copy` 保留原文件，复制副本到分类子文件夹（不影响原文件）。
+ *   `move` 移动原文件到同级收纳目录 `<扫描目录名>_已分类` 的分类子文件夹；
+ *   `copy` 保留原文件，复制副本到同级收纳目录的分类子文件夹（不影响原文件）。
  * 后端 `execute_operations` 原生支持 Copy，纯前端传 operation 即可。
  */
 export type ClassifyExecMode = 'move' | 'copy';
@@ -239,14 +239,16 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
       return;
     }
-    const scanPath = useFileStore.getState().scanPath;
-    if (!scanPath) {
+    // 分类目标统一落在收纳根（preview.output_root，扫描根同级的 `<扫描根名>_已分类`），
+    // 与 Rust `classify_preview` 的目标拼接同源；无预览时兜底扫描根（不应发生）。
+    const outputRoot = preview.output_root || useFileStore.getState().scanPath;
+    if (!outputRoot) {
       set({ error: '请先在文件页选择要整理的目录' });
       return;
     }
 
     // 计算目标路径（与 Rust build_target_path 拼接语义一致），更新 preview 项
-    const targetPath = joinPath(scanPath, targetDir, item.file_name);
+    const targetPath = joinPath(outputRoot, targetDir, item.file_name);
     const updatedItems = preview.items.map((i) =>
       i.file_id === fileId
         ? // FE-M2：手动指定 = 用户显式授权执行——重算 status 置 Ok。
@@ -286,8 +288,10 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
       return;
     }
-    const scanPath = useFileStore.getState().scanPath;
-    if (!scanPath) {
+    // 分类目标统一落在收纳根（preview.output_root，扫描根同级的 `<扫描根名>_已分类`），
+    // 与 Rust `classify_preview` 的目标拼接同源；无预览时兜底扫描根（不应发生）。
+    const outputRoot = preview.output_root || useFileStore.getState().scanPath;
+    if (!outputRoot) {
       set({ error: '请先在文件页选择要整理的目录' });
       return;
     }
@@ -299,7 +303,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       // 只处理未分类项；已分类的跳过（避免重复计数/覆盖）
       if (i.category_name != null) return i;
       assigned += 1;
-      const targetPath = joinPath(scanPath, targetDir, i.file_name);
+      const targetPath = joinPath(outputRoot, targetDir, i.file_name);
       return {
         ...i,
         category_name: category.name,

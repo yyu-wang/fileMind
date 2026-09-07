@@ -95,8 +95,13 @@ export function ClassifyStatsPanel({ preview }: ClassifyStatsPanelProps) {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
   }, [preview.items]);
 
-  // FE-m3：兼容 Windows 反斜杠路径分隔符
-  const rootName = scanPath ? scanPath.split(/[\\/]/).filter(Boolean).pop() : '文件库';
+  // FE-m3：兼容 Windows 反斜杠路径分隔符；输出根取收纳目录名（`<扫描根名>_已分类`），
+  // 后端 `preview.output_root` 保证与目标拼接同源，避免本地再算造成不一致。
+  const rootName = preview.output_root
+    ? preview.output_root.split(/[\\/]/).filter(Boolean).pop()
+    : scanPath
+      ? scanPath.split(/[\\/]/).filter(Boolean).pop()
+      : '文件库';
 
   return (
     <div className="stats-panel">
