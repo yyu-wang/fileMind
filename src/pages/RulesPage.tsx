@@ -160,6 +160,8 @@ export function RulesPage() {
             <div className="rules-detail">
               {showForm ? (
                 <RuleForm
+                  // key=选中规则 id：切换左侧规则时强制重挂载，避免表单沿用上一条规则的旧状态
+                  key={selectedRule?.id ?? 'new-rule'}
                   initial={selectedRule}
                   categories={categories}
                   onSave={(rule) => void handleSave(rule)}

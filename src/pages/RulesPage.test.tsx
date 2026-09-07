@@ -135,6 +135,26 @@ describe('RulesPage', () => {
     expect(form).toHaveTextContent('PDF 归档');
   });
 
+  it('refreshes form values when switching to another rule', async () => {
+    const user = userEvent.setup();
+    // 两条规则：PDF(pattern=pdf) + 文本(pattern=txt,md)
+    const textRule = { ...rule, id: 'r2', name: '文本文件归档', pattern: 'txt,md' };
+    mocks.listRules.mockResolvedValue({ status: 'ok', data: [rule, textRule] });
+    renderPage();
+    await screen.findByText('PDF 归档');
+    await screen.findByText('文本文件归档');
+
+    // 先打开 PDF 规则：匹配模式为 pdf
+    await user.click(screen.getAllByTestId('rule-item')[0]);
+    expect(screen.getByLabelText('匹配模式')).toHaveValue('pdf');
+
+    // 切换到文本规则：表单应重挂载并显示 txt,md（回归：曾沿用上一条规则的 pdf）
+    await user.click(screen.getAllByTestId('rule-item')[1]);
+    const form = await screen.findByTestId('rule-form');
+    expect(form.querySelector('h3')).toHaveTextContent('文本文件归档');
+    expect(screen.getByLabelText('匹配模式')).toHaveValue('txt,md');
+  });
+
   it('saves a new rule and switches form to edit mode with saved rule', async () => {
     const user = userEvent.setup();
     renderPage();
