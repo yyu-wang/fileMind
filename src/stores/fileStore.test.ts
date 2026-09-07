@@ -6,6 +6,8 @@ vi.mock('../lib/ipc', () => ({
   fileIpc: {
     scanDirectory: vi.fn(),
     listAllFiles: vi.fn(),
+    listScannedDirectories: vi.fn(),
+    removeDirectory: vi.fn(),
     getFileStats: vi.fn(),
     deleteFiles: vi.fn(),
   },
@@ -44,6 +46,7 @@ function freshState(): void {
     isScanning: false,
     stats: null,
     selectedIds: [],
+    scannedDirectories: [],
     error: null,
   });
 }
@@ -54,6 +57,8 @@ describe('fileStore', () => {
     vi.clearAllMocks();
     // 默认让统计接口可用：多数用例依赖扫描/拉取成功后自动刷新统计
     (fileIpc.getFileStats as Mock).mockResolvedValue({ status: 'ok', data: stats });
+    // 默认目录列表为空
+    (fileIpc.listScannedDirectories as Mock).mockResolvedValue({ status: 'ok', data: [] });
   });
 
   it('FE-C4: 慢扫描 A + 快扫描 B 并发，A 晚回被丢弃（scanPath 与 files 一致）', async () => {

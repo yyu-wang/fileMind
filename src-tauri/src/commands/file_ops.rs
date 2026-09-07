@@ -4,7 +4,7 @@
 //! 声明为线程池执行，避免阻塞主线程。
 
 use crate::db::models::{FileRecord, OperationLog};
-use crate::db::{ConfigRepo, FileRepo, OperationRepo};
+use crate::db::{ConfigRepo, FileRepo, OperationRepo, ScannedDirectoryRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
@@ -47,6 +47,16 @@ pub fn scan_directory(
     match persist_scan_files(&state.db, &mut files) {
         Ok(()) => {}
         Err(e) => log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}"),
+    }
+
+    // —— 记录已扫描目录（非关键路径，失败只记 warn）—— //
+    // 目录级移除功能依赖该表；同一路径重复扫描只更新 updated_at
+    if let Ok(guard) = state.db.lock() {
+        if let Err(e) = ScannedDirectoryRepo::insert_or_update(guard.conn(), &path) {
+            log::warn!("scan_directory 记录扫描目录失败（不影响扫描结果返回）: {e}");
+        }
+    } else {
+        log::warn!("scan_directory 获取 DB 锁失败（跳过目录记录）");
     }
 
     Ok(files)
@@ -1201,6 +1211,154 @@ pub struct ExecuteResponse {
     pub results: Vec<ExecuteResult>,
     /// 汇总统计。
     pub summary: ExecuteSummary,
+}
+
+/// `/index/delete_by_file_ids` 请求体（对齐 sidecar）。
+#[derive(Debug, Serialize)]
+struct SidecarDeleteByFileIdsRequest {
+    table_name: String,
+    file_ids: Vec<String>,
+}
+
+/// 移除目录响应体。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RemoveDirectoryResponse {
+    /// 从索引中移除的文件数。
+    #[specta(type = specta_typescript::Number)]
+    pub removed_files: i64,
+}
+
+/// 列出所有已扫描目录（含每个目录的文件数）。
+///
+/// # Errors
+///
+/// DB 锁中毒或查询失败时返回错误。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_scanned_directories(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::db::ScannedDirectory>, String> {
+    let guard = state.db.lock().map_err(|e| format!("DB 锁中毒: {e}"))?;
+    ScannedDirectoryRepo::list_with_file_count(guard.conn()).map_err(|e| e.to_string())
+}
+
+/// 移除目录：软删该目录下所有文件 + 清理向量索引 + 删除目录记录。
+///
+/// 不删除磁盘文件，仅从 `FileMind` 索引中移除。重新扫描该目录即可恢复。
+///
+/// 流程：
+///   1. 路径安全校验
+///   2. 获取该目录下所有未软删除文件的 ID
+///   3. best-effort 调 sidecar 清理对应向量（失败仅告警）
+///   4. 软删该目录下所有文件
+///   5. 删除目录记录
+///
+/// # Errors
+///
+/// 路径未通过安全校验或 DB 操作失败时返回错误。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn remove_directory(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<RemoveDirectoryResponse, String> {
+    remove_directory_inner(&path, &state).map_err(|e| e.to_string())
+}
+
+/// `remove_directory` 纯逻辑入口（便于测试）。
+fn remove_directory_inner(path: &str, state: &AppState) -> AppResult<RemoveDirectoryResponse> {
+    // 1. 路径安全校验
+    let _safe_path = security::validate(path)?;
+
+    // 2. 获取该目录下所有未软删除文件的 ID（用于清理向量）
+    let file_ids = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::get_ids_by_path_prefix(guard.conn(), path)?
+    };
+
+    // 3. best-effort 清理向量索引（sidecar 未就绪或失败仅告警）
+    if !file_ids.is_empty() {
+        spawn_index_delete_by_file_ids(state, file_ids);
+    }
+
+    // 4. 软删该目录下所有文件
+    let removed_files = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::soft_delete_by_path_prefix(guard.conn(), path)?
+    };
+
+    // 5. 删除目录记录
+    {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        ScannedDirectoryRepo::delete(guard.conn(), path)?;
+    }
+
+    Ok(RemoveDirectoryResponse { removed_files })
+}
+
+/// 尽力而为：从向量索引中删除指定文件的全部向量行。
+///
+/// 与 `spawn_index_path_sync` 同模式：异步 spawn，失败仅告警，不影响主流程。
+fn spawn_index_delete_by_file_ids(state: &AppState, file_ids: Vec<String>) {
+    if file_ids.is_empty() {
+        return;
+    }
+
+    let table_name = match state.db.lock() {
+        Ok(guard) => match ConfigRepo::get(guard.conn()) {
+            Ok(config) => format!("documents_{}_v1", config.embedding_model),
+            Err(e) => {
+                log::warn!("索引向量清理：读取 embedding 模型失败（跳过）: {e}");
+                return;
+            }
+        },
+        Err(poisoned) => {
+            log::warn!("索引向量清理：获取 DB 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+
+    let psk = match state.sidecar_psk.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => {
+            log::warn!("索引向量清理：获取 PSK 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+    let Some(psk) = psk else {
+        return;
+    };
+    let seq = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    let count = file_ids.len();
+    tauri::async_runtime::spawn(async move {
+        let request = SidecarDeleteByFileIdsRequest {
+            table_name,
+            file_ids,
+        };
+        let body = match serde_json::to_string(&request) {
+            Ok(body) => body,
+            Err(e) => {
+                log::warn!("索引向量清理：序列化请求失败（跳过）: {e}");
+                return;
+            }
+        };
+        match proxy::forward_post("/index/delete_by_file_ids", &body, &psk, seq).await {
+            Ok(_) => log::info!("索引向量已清理 {count} 个文件"),
+            Err(e) => log::warn!("索引向量清理失败（不影响移除结果）: {e}"),
+        }
+    });
 }
 
 #[cfg(test)]

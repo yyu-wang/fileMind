@@ -122,6 +122,22 @@ pub struct CategoryNode {
     pub children: Vec<CategoryNode>,
 }
 
+/// `scanned_directories` 表记录：已扫描的根目录（支撑目录级移除）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ScannedDirectory {
+    /// 主键（UUID）。
+    pub id: String,
+    /// 目录绝对路径（UNIQUE）。
+    pub path: String,
+    /// 该目录下未软删除的文件数（实时统计，不存表）。
+    #[specta(type = specta_typescript::Number)]
+    pub file_count: i64,
+    /// 入库时间。
+    pub created_at: String,
+    /// 最后更新时间。
+    pub updated_at: String,
+}
+
 /// `rules` 表记录：分类规则。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct Rule {

@@ -321,3 +321,37 @@ def update_paths(
         updated += 1
     # SC-m16：updated 计数是有效映射数（LanceDB update 不返回影响行数）
     return updated
+
+
+def delete_by_file_ids(
+    table_name: str,
+    file_ids: list[str],
+    mgr: LanceDBManager,
+) -> int:
+    """从向量索引中删除指定文件的全部向量行（目录级移除用）。
+
+    逐个调用 :meth:`LanceDBManager.delete_chunks_by_file_id`，表不存在或
+    ``file_ids`` 为空时返回 0（静默跳过）。非法 file_id 跳过并告警，
+    不中断整体。
+
+    Args:
+        table_name: 目标向量表名（``documents_{model}_v{version}``）。
+        file_ids: 待删除向量的文件 ID 列表。
+        mgr: LanceDB 管理器。
+
+    Returns:
+        成功删除向量的文件数（一个文件对应多个分块行，计数按文件计）。
+    """
+    if not file_ids:
+        return 0
+    if not mgr.is_table_exists(table_name):
+        return 0
+
+    deleted = 0
+    for file_id in file_ids:
+        if not _is_safe_file_id(file_id):
+            logger.warning("ingest.delete_by_file_ids_skipped", file_id=file_id)
+            continue
+        mgr.delete_chunks_by_file_id(table_name, file_id)
+        deleted += 1
+    return deleted

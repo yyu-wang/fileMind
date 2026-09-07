@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
+import { ScannedDirectoriesPanel } from '@/components/file/ScannedDirectoriesPanel';
 import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { useHotkeys } from '@/hooks/useHotkeys';
@@ -199,6 +200,7 @@ export function FilesPage() {
 
       {/* 文件页主体：虚拟滚动自带滚动容器，不用 main-content 的 overflow */}
       <div className="files-page__body">
+        <ScannedDirectoriesPanel onRemoved={() => void loadAllFiles()} />
         <div className="file-toolbar">
           {/* 工具栏顺序对齐文档：整理选中 → 搜索框 → 筛选 */}
           <button

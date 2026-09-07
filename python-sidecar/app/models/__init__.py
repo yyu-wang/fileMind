@@ -104,6 +104,19 @@ class IndexPathUpdateResponse(BaseModel):
     updated: int
 
 
+class IndexDeleteByFileIdsRequest(BaseModel):
+    """POST /index/delete_by_file_ids 请求体：从向量索引删除指定文件的全部向量行。"""
+
+    table_name: str
+    file_ids: list[str]
+
+
+class IndexDeleteByFileIdsResponse(BaseModel):
+    """POST /index/delete_by_file_ids 响应体。"""
+
+    deleted_files: int
+
+
 class EmbeddingModelsResponse(BaseModel):
     models: list[str]
 

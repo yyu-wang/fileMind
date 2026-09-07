@@ -18,12 +18,17 @@ from app.models import (
     IncrementalIndexResponse,
     IndexBuildRequest,
     IndexBuildResponse,
+    IndexDeleteByFileIdsRequest,
+    IndexDeleteByFileIdsResponse,
     IndexPathUpdateRequest,
     IndexPathUpdateResponse,
 )
 from app.services.index_service import evaluate_incremental
 from app.services.ingest_service import (
     build_index as build_index_service,
+)
+from app.services.ingest_service import (
+    delete_by_file_ids as delete_by_file_ids_service,
 )
 from app.services.ingest_service import (
     update_paths as update_paths_service,
@@ -126,3 +131,29 @@ async def update_index_paths(req: IndexPathUpdateRequest) -> IndexPathUpdateResp
     # SC-M5：路径变更影响检索结果的 file_path 回填，同样清查询缓存
     await get_query_cache().clear()
     return IndexPathUpdateResponse(updated=updated)
+
+
+@router.post("/delete_by_file_ids", response_model=IndexDeleteByFileIdsResponse)
+async def delete_index_by_file_ids(
+    req: IndexDeleteByFileIdsRequest,
+) -> IndexDeleteByFileIdsResponse:
+    """从向量索引中删除指定文件的全部向量行（目录级移除用）。
+
+    Args:
+        req: 目标表名 + 文件 ID 列表。
+
+    Returns:
+        成功删除向量的文件数。
+
+    Raises:
+        HTTPException 503: 向量库未初始化。
+    """
+    mgr = state.get_lancedb()
+    if mgr is None:
+        raise HTTPException(status_code=503, detail="向量库未初始化")
+
+    # LanceDB 删除为阻塞 I/O，放线程池避免阻塞事件循环
+    deleted = await asyncio.to_thread(delete_by_file_ids_service, req.table_name, req.file_ids, mgr)
+    # 索引数据已变更，查询缓存全部失效
+    await get_query_cache().clear()
+    return IndexDeleteByFileIdsResponse(deleted_files=deleted)

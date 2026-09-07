@@ -8,7 +8,7 @@
 
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
-import type { FileInfo, FileStats } from '../types/ipc';
+import type { FileInfo, FileStats, ScannedDirectory } from '../types/ipc';
 import { useClassifyStore } from './classifyStore';
 
 // FE-C4：文件列表请求序号——scanFiles/loadAllFiles 共用。
@@ -29,6 +29,8 @@ interface FileState {
   stats: FileStats | null;
   /** 已选中文件的 id 列表 */
   selectedIds: string[];
+  /** 已扫描目录列表（目录级移除用） */
+  scannedDirectories: ScannedDirectory[];
   /** 错误信息 */
   error: string | null;
 
@@ -38,6 +40,10 @@ interface FileState {
   loadAllFiles: () => Promise<void>;
   /** 加载文件库统计 */
   loadStats: () => Promise<void>;
+  /** 加载已扫描目录列表 */
+  loadScannedDirectories: () => Promise<void>;
+  /** 移除目录：从索引中软删该目录下所有文件 + 清理向量，不删除磁盘文件 */
+  removeDirectory: (path: string) => Promise<number>;
   /** 删除文件：把选中的文件移入系统回收站（成功项从列表移除，失败项保留并置 error） */
   deleteFiles: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
   /** 切换单个文件的选中态 */
@@ -59,6 +65,7 @@ export const useFileStore = create<FileState>()((set) => ({
   isScanning: false,
   stats: null,
   selectedIds: [],
+  scannedDirectories: [],
   error: null,
 
   scanFiles: async (path) => {
@@ -74,8 +81,9 @@ export const useFileStore = create<FileState>()((set) => ({
         isScanning: false,
         selectedIds: [],
       });
-      // 扫描完成后刷新统计
+      // 扫描完成后刷新统计 + 目录列表
       await useFileStore.getState().loadStats();
+      await useFileStore.getState().loadScannedDirectories();
     } else {
       set({ isScanning: false, error: result.error });
     }
@@ -109,6 +117,35 @@ export const useFileStore = create<FileState>()((set) => ({
     } else {
       set({ error: result.error });
     }
+  },
+
+  loadScannedDirectories: async () => {
+    const result = await fileIpc.listScannedDirectories();
+    if (result.status === 'ok') {
+      set({ scannedDirectories: result.data });
+    } else {
+      set({ error: result.error });
+    }
+  },
+
+  removeDirectory: async (path) => {
+    const result = await fileIpc.removeDirectory(path);
+    if (result.status !== 'ok') {
+      set({ error: result.error });
+      throw new Error(result.error);
+    }
+    // 移除后刷新：文件列表、统计、目录列表
+    set((state) => ({
+      // 从当前文件列表中移除该目录下的文件（path 以被移除目录开头）
+      files: state.files.filter((f) => !f.path.startsWith(`${path}/`)),
+      scannedDirectories: state.scannedDirectories.filter((d) => d.path !== path),
+      selectedIds: state.selectedIds.filter((id) => {
+        const f = state.files.find((x) => x.id === id);
+        return f ? !f.path.startsWith(`${path}/`) : true;
+      }),
+    }));
+    await useFileStore.getState().loadStats();
+    return result.data.removed_files;
   },
 
   deleteFiles: async (ids) => {

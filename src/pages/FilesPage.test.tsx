@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   readFilePreview: vi.fn(),
   scanDirectory: vi.fn(),
   listAllFiles: vi.fn(),
+  listScannedDirectories: vi.fn(),
+  removeDirectory: vi.fn(),
   getFileStats: vi.fn(),
   e2eGetTestDir: vi.fn(),
   open: vi.fn(),
@@ -25,6 +27,8 @@ vi.mock('@/lib/ipc', () => ({
     readFilePreview: mocks.readFilePreview,
     scanDirectory: mocks.scanDirectory,
     listAllFiles: mocks.listAllFiles,
+    listScannedDirectories: mocks.listScannedDirectories,
+    removeDirectory: mocks.removeDirectory,
     getFileStats: mocks.getFileStats,
     e2eGetTestDir: mocks.e2eGetTestDir,
   },
@@ -66,6 +70,7 @@ function seed(overrides: Partial<Parameters<typeof useFileStore.setState>[0]> = 
   });
   mocks.e2eGetTestDir.mockResolvedValue(null);
   mocks.getFileStats.mockResolvedValue({ status: 'ok', data: { total_files: 0 } });
+  mocks.listScannedDirectories.mockResolvedValue({ status: 'ok', data: [] });
 }
 
 function renderPage(): void {

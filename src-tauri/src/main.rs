@@ -479,6 +479,8 @@ fn main() {
             commands::rules::reorder_rules,
             commands::rules::list_categories,
             commands::file_ops::scan_directory,
+            commands::file_ops::list_scanned_directories,
+            commands::file_ops::remove_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
             commands::file_ops::delete_files,

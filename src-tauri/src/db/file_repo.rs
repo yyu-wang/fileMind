@@ -357,6 +357,39 @@ impl FileRepo {
         Ok(())
     }
 
+    /// 按路径前缀批量软删除（目录级移除用）。
+    ///
+    /// 匹配规则 `path LIKE prefix || '/%'`，避免 `/a/b` 误匹配 `/a/bc`。
+    /// 返回受影响的行数；无匹配时返回 0（不报错，幂等）。
+    ///
+    /// # Errors
+    ///
+    /// 更新失败时返回数据库错误。
+    pub fn soft_delete_by_path_prefix(conn: &Connection, path_prefix: &str) -> AppResult<i64> {
+        let affected = conn.execute(
+            "UPDATE files SET is_deleted = 1, updated_at = datetime('now')
+             WHERE is_deleted = 0 AND path LIKE ?1 || '/%'",
+            params![path_prefix],
+        )?;
+        i64::try_from(affected).map_err(|e| AppError::Internal(format!("行数转换失败: {e}")))
+    }
+
+    /// 按路径前缀获取所有未软删除文件的 ID（清理向量索引用）。
+    ///
+    /// 匹配规则同 [`Self::soft_delete_by_path_prefix`]。
+    ///
+    /// # Errors
+    ///
+    /// 语句准备或行读取失败时返回数据库错误。
+    pub fn get_ids_by_path_prefix(conn: &Connection, path_prefix: &str) -> AppResult<Vec<String>> {
+        let mut stmt =
+            conn.prepare("SELECT id FROM files WHERE is_deleted = 0 AND path LIKE ?1 || '/%'")?;
+        let ids = stmt
+            .query_map(params![path_prefix], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
     /// 按路径批量回查既存分类（扫描后回显「已整理」状态用）。
     ///
     /// 返回 `path → category`，仅包含库中存在且未软删除、且已有分类的路径。
