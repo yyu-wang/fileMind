@@ -69,6 +69,28 @@ def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
     return [ConversationTurn(user=turn.user, assistant=turn.assistant) for turn in history]
 
 
+def _resolve_chat_provider(request: ChatStreamRequest) -> LLMProvider | None:
+    """按请求的推理模式解析生成 Provider。
+
+    推理模式（``inference_mode``）是用户当前生效选择的权威来源：仅显式
+    ``cloud`` 才解析云端 Provider，其余（``local``/``hybrid``/未知值）一律
+    回落本地 Ollama（返回 ``None``）。若不先过滤 ``local``，Rust 启动
+    Sidecar 时注入的 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在
+    撤回云端同意 / 切回本地后仍然生效（Sidecar 进程不随模式切换重启，
+    env 冻结），导致本地模型名也被 :func:`resolve_cloud_provider` 判定为
+    云端并打到云端代理，最终因缺 Key 报 401。
+
+    Args:
+        request: 流式请求（含 ``inference_mode`` 与 ``llm_model``）。
+
+    Returns:
+        云端 Provider 实例；非云端模式返回 ``None``（调用方走 Ollama 路径）。
+    """
+    if request.inference_mode.strip().lower() != "cloud":
+        return None
+    return resolve_cloud_provider(request.llm_model)
+
+
 def _cache_key(request: ChatStreamRequest) -> tuple[object, ...]:
     """检索缓存 key：覆盖影响检索结果的输入。
 
@@ -219,7 +241,10 @@ async def _rag_event_stream(
     """
     session_id = request.session_id or uuid.uuid4().hex
     started = time.monotonic()
-    provider = resolve_cloud_provider(request.llm_model)
+    # 按请求的推理模式选 Provider：local（含撤回云端同意后的状态）一律本地，
+    # 避免 Sidecar 启动期冻结的 FILEMIND_ACTIVE_CLOUD_PROVIDER env 把本地
+    # 模型也误判为云端（回归：切回本地仍报 401 的内部错误）。
+    provider = _resolve_chat_provider(request)
     version = provider.version if provider is not None else "local"
 
     retrieve_started = time.monotonic()
