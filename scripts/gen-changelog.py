@@ -7,7 +7,7 @@
 
 用法：
     python3 scripts/gen-changelog.py                # 全量历史草稿到 stdout
-    python3 scripts/gen-changelog.py --range v0.1.0..HEAD
+    python3 scripts/gen-changelog.py --range v1.0.0..HEAD
     python3 scripts/gen-changelog.py --write docs/changelog-draft.md
 """
 

@@ -30,7 +30,7 @@
 //   </div>
 //
 // 后端约束：rule_type 仅支持 extension / path_keyword / regex；magic_number / size
-// 以禁用占位呈现，避免用户创建永不生效的规则。多条件构造（AND/OR）需要后端
+// P1 未开发，已从条件类型下拉中隐藏（不渲染禁用占位）。多条件构造（AND/OR）需要后端
 // 支持，当前仅渲染单 condition-row 与 rule_type/pattern 一对一映射。
 
 import { useState } from 'react';
@@ -50,11 +50,12 @@ interface RuleFormProps {
   onDelete?: (rule: Rule) => void;
 }
 
-const RULE_TYPE_OPTIONS = (Object.keys(RULE_TYPE_META) as RuleType[]).map((value) => ({
-  value,
-  label: RULE_TYPE_META[value].label,
-  disabled: RULE_TYPE_META[value].disabled,
-}));
+const RULE_TYPE_OPTIONS = (Object.keys(RULE_TYPE_META) as RuleType[])
+  .filter((value) => !RULE_TYPE_META[value].disabled)
+  .map((value) => ({
+    value,
+    label: RULE_TYPE_META[value].label,
+  }));
 
 export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: RuleFormProps) {
   const [name, setName] = useState(initial?.name ?? '');
@@ -158,9 +159,8 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
                 onChange={(e) => setRuleType(e.target.value as RuleType)}
               >
                 {RULE_TYPE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value} disabled={opt.disabled}>
+                  <option key={opt.value} value={opt.value}>
                     {opt.label}
-                    {opt.disabled ? '（即将推出）' : ''}
                   </option>
                 ))}
               </select>

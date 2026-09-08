@@ -167,7 +167,7 @@
 
 - macOS：Developer ID 签名 + 公证（Gatekeeper）；CI 签名可在拿到证书后接入（`APPLE_CERTIFICATE` secrets）
 - Windows：OV/EV 代码签名证书（SmartScreen）
-- 版本号按 [release.md](rules/release.md)：当前统一 `0.1.0`，发正式候选前升 `0.1.0-beta.1` 并同步 package.json / Cargo.toml / tauri.conf.json / python main.py
+- 版本号按 [release.md](rules/release.md)：当前已统一升至 `1.0.0`（package.json / Cargo.toml / tauri.conf.json / python main.py / routes_health.py + 前端展示全部同步），后续发版按 MINOR/PATCH 规则递增
 - Changelog：`[Unreleased]` → 版本化 + 补本条 T1.3 打包集成条目
 
 ---

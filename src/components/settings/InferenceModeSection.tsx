@@ -1,5 +1,6 @@
 // 推理模式区块（设置页 · 对齐交互原型 §设置 §推理模式）：
-// mode-selector(local/cloud/hybrid) + radio-dot 选中态。
+// mode-selector(local/cloud) + radio-dot 选中态。
+// 混合模式（hybrid）P1 未开发，不渲染占位选项。
 //
 // 安全约束（04 API §2-3）：切回本地经 setInferenceMode（安全阀放行）；
 // 切换到云端必须走 signCloudConsent（同意书通道），setInferenceMode 在
@@ -15,7 +16,6 @@
 //       <div class="radio-dot"></div>
 //     </div>
 //     <div class="mode-option cloud">...</div>
-//     <div class="mode-option hybrid">...</div>
 //   </div>
 //   <div class="settings-row settings-row--actions">
 //     <button>查看知情同意书</button>
@@ -38,15 +38,13 @@ function formatSignedAt(iso: string): string {
   });
 }
 
-type ModeValue = 'local' | 'cloud' | 'hybrid';
+type ModeValue = 'local' | 'cloud';
 
 interface ModeOption {
   value: ModeValue;
   icon: string;
   name: string;
   desc: string;
-  /** 是否可点击切换（hybrid 暂未支持，仅展示） */
-  clickable: boolean;
 }
 
 const MODE_OPTIONS: ModeOption[] = [
@@ -55,21 +53,12 @@ const MODE_OPTIONS: ModeOption[] = [
     icon: '🛡️',
     name: '本地模式',
     desc: 'Ollama 本地推理 · 数据不离开设备',
-    clickable: true,
   },
   {
     value: 'cloud',
     icon: '☁️',
     name: '云端模式',
     desc: 'API 推理 · 文件内容上传第三方',
-    clickable: true,
-  },
-  {
-    value: 'hybrid',
-    icon: '🔀',
-    name: '混合模式',
-    desc: '按功能配置推理位置 · P1 不支持，敬请期待',
-    clickable: false,
   },
 ];
 
@@ -105,7 +94,6 @@ export function InferenceModeSection() {
    * 点击 mode-option 的语义：
    * - 点 local：当前已是 local 则 noop；当前 cloud 则触发撤回流程
    * - 点 cloud：当前已是 cloud 则 noop；当前 local 则触发同意书弹窗
-   * - 点 hybrid：P1 不支持，noop
    */
   const handleModeClick = (value: ModeValue) => {
     if (value === currentMode) return;
@@ -151,10 +139,10 @@ export function InferenceModeSection() {
               aria-checked={isSelected}
               aria-label={`${opt.icon} ${opt.name}${isSelected ? '（当前）' : ''}`}
               data-testid={`mode-option-${opt.value}`}
-              tabIndex={opt.clickable ? 0 : -1}
-              onClick={() => opt.clickable && handleModeClick(opt.value)}
+              tabIndex={0}
+              onClick={() => handleModeClick(opt.value)}
               onKeyDown={(e) => {
-                if (opt.clickable && (e.key === 'Enter' || e.key === ' ')) {
+                if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   handleModeClick(opt.value);
                 }

@@ -1,7 +1,7 @@
 // Embedding 模型区块（设置页）：展示当前模型与可选模型可用性。
 //
 // 支持手动安装未安装的 Embedding 模型（从 Ollama 拉取）。
-// 切换模型仍需重建索引，属后续建索引任务（T11+）。
+// 切换模型需重建全部索引，P1 未支持，不渲染切换占位按钮。
 // 原型 05_交互原型 §设置页 Embedding 管理：.panel 展示当前模型 + .model-item 列表。
 
 import { useEffect } from 'react';
@@ -30,7 +30,7 @@ export function EmbeddingModelSection() {
       <h3 id="settings-embedding-title" className="settings-section__title">
         📐 Embedding 模型管理
       </h3>
-      <p className="section-desc">切换 Embedding 模型需重建全部向量索引</p>
+      <p className="section-desc">管理本机 Embedding 模型；当前版本不支持切换模型</p>
 
       <div className="panel" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -59,7 +59,7 @@ export function EmbeddingModelSection() {
       )}
 
       <div className="section-desc" style={{ marginBottom: 8 }}>
-        可切换模型：
+        可用 Embedding 模型：
       </div>
       {embeddingModelOptions.length === 0 ? (
         <div className="model-item">
@@ -95,26 +95,6 @@ export function EmbeddingModelSection() {
                   title={ollamaAvailable ? '点击安装此模型' : 'Ollama 不可用，请先启动 Ollama'}
                 >
                   {isInstalling ? '安装中...' : '安装'}
-                </button>
-              )}
-              {isCurrent && m.available && (
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  disabled
-                  title="当前模型，切换需重建全部向量索引，敬请期待"
-                >
-                  当前
-                </button>
-              )}
-              {m.available && !isCurrent && (
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  disabled
-                  title="切换需重建全部向量索引，敬请期待"
-                >
-                  切换
                 </button>
               )}
             </div>

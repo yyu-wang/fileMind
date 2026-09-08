@@ -68,7 +68,7 @@ export function StatusBar() {
       )}
       <div className="status-right">
         <span className="status-item" title="版本号">
-          v0.1.0
+          v1.0.0
         </span>
       </div>
     </footer>

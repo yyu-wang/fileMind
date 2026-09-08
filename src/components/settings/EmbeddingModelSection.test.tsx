@@ -1,4 +1,4 @@
-// EmbeddingModelSection 单元测试：当前模型 panel、可用性列表、空态与切换按钮 disabled。
+// EmbeddingModelSection 单元测试：当前模型 panel、可用性列表与空态展示。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -91,7 +91,7 @@ describe('EmbeddingModelSection', () => {
     expect(screen.getAllByText('未安装')).toHaveLength(1);
   });
 
-  it('renders disabled switch/install buttons for each model option', () => {
+  it('renders install button for uninstalled model and hides switch buttons', () => {
     seed({
       embeddingModel: 'bge-small-zh',
       embeddingModelOptions: [
@@ -100,10 +100,11 @@ describe('EmbeddingModelSection', () => {
       ],
     });
     render(<EmbeddingModelSection />);
-    // 当前模型按钮文案「当前」，disabled
-    expect(screen.getByRole('button', { name: '当前' })).toBeDisabled();
     // 未安装模型按钮文案「安装」，Ollama 不可用时 disabled
     expect(screen.getByRole('button', { name: '安装' })).toBeDisabled();
+    // P1 未开发的模型切换功能不渲染占位按钮
+    expect(screen.queryByRole('button', { name: '切换' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '当前' })).not.toBeInTheDocument();
   });
 
   it('renders indexed file count from fileStore stats', () => {

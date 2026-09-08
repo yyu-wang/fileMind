@@ -1,6 +1,6 @@
 // 步骤一：推理模式选择（对齐交互原型 §Onboarding Step 1）。
 //
-// 三个选项：Local（推荐）/ Cloud / Hybrid（禁用，T11）
+// 两个选项：Local（推荐）/ Cloud。混合模式（Hybrid）P1 未开发，不渲染占位选项。
 // 选 Local → 直接进 directory；选 Cloud → 进 consent
 // Ollama 检测：挂载时 probeOllama，callout 反映真实状态。
 
@@ -12,16 +12,13 @@ interface StepModeSelectProps {
   onNext: (mode: InferenceMode) => void;
 }
 
-type ModeOptionValue = InferenceMode | 'Hybrid';
-
 interface ModeOption {
-  value: ModeOptionValue;
+  value: InferenceMode;
   icon: string;
   label: string;
   desc: string;
   tag?: string;
   tagClass?: string;
-  disabled?: boolean;
 }
 
 const MODE_OPTIONS: ModeOption[] = [
@@ -39,19 +36,10 @@ const MODE_OPTIONS: ModeOption[] = [
     label: '云端模式',
     desc: '使用 OpenAI/DeepSeek 云端 API。效果更强但文件内容会上传到第三方服务器。',
   },
-  {
-    value: 'Hybrid',
-    icon: '🔀',
-    label: '混合模式',
-    desc: '按功能粒度配置：分类用本地、问答用云端等。适合高级用户。',
-    tag: '即将推出',
-    tagClass: 'tag-gray',
-    disabled: true,
-  },
 ];
 
 export function StepModeSelect({ onNext }: StepModeSelectProps) {
-  const [selected, setSelected] = useState<ModeOptionValue>('Local');
+  const [selected, setSelected] = useState<InferenceMode>('Local');
   const ollamaStatus = useSettingsStore((s) => s.ollamaStatus);
   const ollamaProbing = useSettingsStore((s) => s.ollamaProbing);
   const probeOllama = useSettingsStore((s) => s.probeOllama);
@@ -97,19 +85,18 @@ export function StepModeSelect({ onNext }: StepModeSelectProps) {
           return (
             <div
               key={opt.value}
-              className={`mode-option ${opt.value.toLowerCase()}${isSelected ? ' selected' : ''}${opt.disabled ? ' disabled' : ''}`}
+              className={`mode-option ${opt.value.toLowerCase()}${isSelected ? ' selected' : ''}`}
               role="radio"
               aria-checked={isSelected}
-              aria-label={`${opt.label}${opt.disabled ? '（即将推出）' : ''}`}
-              tabIndex={opt.disabled ? -1 : 0}
-              onClick={() => !opt.disabled && setSelected(opt.value)}
+              aria-label={opt.label}
+              tabIndex={0}
+              onClick={() => setSelected(opt.value)}
               onKeyDown={(e) => {
-                if (!opt.disabled && (e.key === 'Enter' || e.key === ' ')) {
+                if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   setSelected(opt.value);
                 }
               }}
-              style={opt.disabled ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
             >
               <div className="mode-icon" aria-hidden>
                 {opt.icon}
@@ -139,12 +126,7 @@ export function StepModeSelect({ onNext }: StepModeSelectProps) {
           type="button"
           className="btn btn--primary"
           data-testid="onboarding-next"
-          onClick={() => {
-            if (selected === 'Local' || selected === 'Cloud') {
-              onNext(selected);
-            }
-          }}
-          disabled={selected === 'Hybrid'}
+          onClick={() => onNext(selected)}
         >
           下一步 →
         </button>

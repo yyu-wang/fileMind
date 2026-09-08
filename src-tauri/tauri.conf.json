@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "FileMind",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.filemind.desktop",
   "build": {
     "frontendDist": "../dist",

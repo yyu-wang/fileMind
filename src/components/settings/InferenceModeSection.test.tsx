@@ -32,13 +32,18 @@ beforeEach(() => {
 });
 
 describe('InferenceModeSection', () => {
-  it('renders three mode-options with local selected by default', () => {
+  it('renders local and cloud mode-options with local selected by default', () => {
     render(<InferenceModeSection />);
     expect(screen.getByTestId('mode-option-local')).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByTestId('mode-option-cloud')).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByTestId('mode-option-hybrid')).toHaveAttribute('aria-checked', 'false');
     // 本地 mode-option 的 aria-label 应包含「本地模式（当前）」
     expect(screen.getByTestId('mode-option-local')).toHaveAccessibleName(/本地模式（当前）/);
+  });
+
+  it('does not render hybrid mode-option (P1 unsupported)', () => {
+    render(<InferenceModeSection />);
+    // P1 未开发功能直接隐藏，不渲染混合模式占位选项
+    expect(screen.queryByTestId('mode-option-hybrid')).not.toBeInTheDocument();
   });
 
   it('opens the consent dialog when clicking cloud mode-option from local', async () => {
@@ -88,15 +93,5 @@ describe('InferenceModeSection', () => {
     await screen.findByTestId('mode-option-local');
     expect(screen.getByTestId('mode-option-local')).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryByText(/已签署同意书/)).not.toBeInTheDocument();
-  });
-
-  it('disables hybrid mode-option click (P1 unsupported)', async () => {
-    const user = userEvent.setup();
-    render(<InferenceModeSection />);
-    // hybrid 不可聚焦（tabIndex=-1）也不可点击切换
-    expect(screen.getByTestId('mode-option-hybrid')).toHaveAttribute('tabindex', '-1');
-    await user.click(screen.getByTestId('mode-option-hybrid'));
-    // 不应触发同意书弹窗
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

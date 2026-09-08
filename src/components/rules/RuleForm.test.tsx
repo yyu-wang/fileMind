@@ -158,14 +158,16 @@ describe('RuleForm', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it('shows coming-soon disabled options for magic_number and size', () => {
+  it('hides unsupported magic_number and size rule types (P1 未开发)', () => {
     render(<RuleForm initial={null} categories={categories} onSave={vi.fn()} onCancel={vi.fn()} />);
     const select = screen.getByLabelText('规则类型');
     const option = (value: string) =>
       Array.from(select.querySelectorAll('option')).find((o) => o.value === value);
-    expect(option('magic_number')?.disabled).toBe(true);
-    expect(option('size')?.disabled).toBe(true);
-    expect(screen.getAllByText(/（即将推出）/)).toHaveLength(2);
+    expect(option('magic_number')).toBeUndefined();
+    expect(option('size')).toBeUndefined();
+    // 已支持的类型应保留
+    expect(option('extension')).toBeDefined();
+    expect(option('regex')).toBeDefined();
   });
 
   it('toggles is_enabled via toggle button', async () => {

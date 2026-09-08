@@ -50,21 +50,21 @@ npm run build:tauri -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 
 ```json
 {
-  "version": "0.1.1",
+  "version": "1.0.0",
   "notes": "修复 xxx / 新增 xxx",
   "pub_date": "2026-09-06T10:00:00Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "<FileMind_0.1.1_aarch64.app.tar.gz.sig 内容>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v0.1.1/FileMind_0.1.1_aarch64.app.tar.gz"
+      "signature": "<FileMind_1.0.0_aarch64.app.tar.gz.sig 内容>",
+      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_aarch64.app.tar.gz"
     },
     "darwin-x86_64": {
       "signature": "<...>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v0.1.1/FileMind_0.1.1_x64.app.tar.gz"
+      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_x64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "<FileMind_0.1.1_x64-setup.exe.sig 内容>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v0.1.1/FileMind_0.1.1_x64-setup.exe"
+      "signature": "<FileMind_1.0.0_x64-setup.exe.sig 内容>",
+      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_x64-setup.exe"
     }
   }
 }
@@ -80,10 +80,10 @@ npm run build:tauri -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 
 ## 5. 发布步骤
 
-1. `release.md` 流程发版（版本号同步 4 处 + AboutSection `APP_VERSION`）
+1. `release.md` 流程发版（版本号同步：package.json / Cargo.toml / tauri.conf.json / python main.py / routes_health.py + 前端 StatusBar / Sidebar / AboutSection）
 2. 构建（第 3 节）→ 校验产物与 `.sig`
 3. 填好 `latest.json`，签名内容取自 `.sig` 文件
-4. GitHub Release：tag `v0.1.1`，上传全部安装包 + 各自 `.sig` + `latest.json`
+4. GitHub Release：tag `v1.0.0`，上传全部安装包 + 各自 `.sig` + `latest.json`
 5. 用户端点「检查更新」验证：桌面环境建议先装上一版再发新版实测一次
 
 ## 6. 常见问题

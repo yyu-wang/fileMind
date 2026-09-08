@@ -133,17 +133,19 @@ beforeEach(() => {
 });
 
 describe('OnboardingWizard step 1（模式选择）', () => {
-  it('renders three mode options with Local preselected and Ollama detected callout', async () => {
+  it('renders two mode options with Local preselected and Ollama detected callout', async () => {
     render(<OnboardingWizard />);
     expect(screen.getByText('选择你的 AI 推理模式')).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByText(/已检测到 Ollama/)).toBeInTheDocument();
     });
     expect(screen.getByRole('radio', { name: /本地模式/ })).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('radio', { name: /混合模式/ })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: /云端模式/ })).toHaveAttribute(
       'aria-checked',
       'false',
     );
+    // P1 未开发功能直接隐藏：不渲染混合模式选项
+    expect(screen.queryByRole('radio', { name: /混合模式/ })).not.toBeInTheDocument();
   });
 
   it('shows warning callout when Ollama unavailable', async () => {
