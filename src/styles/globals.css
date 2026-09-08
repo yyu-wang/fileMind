@@ -3692,13 +3692,21 @@ select.input:disabled {
   background: var(--bg2);
   border-radius: var(--radius-lg);
   padding: var(--sp-6);
-  max-width: 520px;
+  max-width: 720px;
   width: 100%;
   max-height: 85vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
+}
+
+/* 弹窗内同意书滚动区：撑满对话框剩余高度（替代基础样式的 320px 上限），
+   窗口足够高时全文直接可见；不足时仅在滚动区内滚动，避免双层滚动条 */
+.settings-dialog .consent-agreement__scroll {
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: none;
 }
 
 .settings-dialog__title {
