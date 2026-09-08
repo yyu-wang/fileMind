@@ -69,16 +69,18 @@ jobs:
 
       - run: npm ci
 
+      # Sidecar onefile（<400MB 门控见 scripts/build-sidecar.sh）。文件名
+      # filemind-sidecar-{triple}[.exe] 与 tauri.conf externalBin 期望一致。
+      # ⚠️ 必须在 gen:ipc 之前：cargo run 会触发 tauri-build 的 build.rs，
+      #    校验 externalBin 声明的 sidecar 产物存在，顺序颠倒则直接编译失败。
+      - name: Build Sidecar (${{ matrix.label }})
+        shell: bash
+        run: bash scripts/build-sidecar.sh --target ${{ matrix.target }}
+
       # src/types/ipc.ts 是 specta 生成的类型文件（gitignored），CI 全新检出没有它；
       # 必须先生成，否则 tsc 报 Cannot find module '@/types/ipc' 全崩。
       - name: Generate IPC types
         run: npm run gen:ipc
-
-      # Sidecar onefile（<400MB 门控见 scripts/build-sidecar.sh）。文件名
-      # filemind-sidecar-{triple}[.exe] 与 tauri.conf externalBin 期望一致。
-      - name: Build Sidecar (${{ matrix.label }})
-        shell: bash
-        run: bash scripts/build-sidecar.sh --target ${{ matrix.target }}
 
       # 原生构建 + externalBin 自动打进安装包（主可执行同目录）
       - name: Build Tauri (${{ matrix.label }})
