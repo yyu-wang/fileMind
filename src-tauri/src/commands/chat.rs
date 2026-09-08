@@ -19,8 +19,9 @@ use crate::sidecar::proxy;
 use crate::sidecar::sse::SseParser;
 use crate::AppState;
 
-/// FTS5 单文件读取上限（1MB，避免大文件撑爆请求体）。
-const MAX_CHAT_FTS_BYTES: u64 = 1_048_576;
+/// FTS5 单文件读取上限（50MB，对齐 `MAX_FTS_FILE_BYTES` 与 Python `MAX_FILE_BYTES`；
+/// 超大正文注入会放大请求体，Sidecar 侧 `MAX_BODY_SIZE` 已同步放宽到 64MB）。
+const MAX_CHAT_FTS_BYTES: u64 = 50 * 1024 * 1024;
 
 /// 一轮对话历史（P-02 查询改写输入），对齐 Sidecar `ChatTurn`。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

@@ -56,8 +56,8 @@ TEXT_EXTENSIONS: set[str] = {
     "sql",
 }
 
-#: 单文件读取上限（2MB）。超限截断，避免超大文本耗尽内存/embedding 预算
-MAX_FILE_BYTES: int = 2 * 1024 * 1024
+#: 单文件读取上限（50MB）。超限截断，避免超大文本耗尽内存/embedding 预算
+MAX_FILE_BYTES: int = 50 * 1024 * 1024
 #: 分块目标长度（字符），对齐 P-03 上下文片段 CONTENT_MAX=500
 CHUNK_TARGET_CHARS: int = 500
 #: 单次 Embedding 调用最大文本条数（对齐并发/内存预算）

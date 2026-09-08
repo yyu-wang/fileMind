@@ -224,7 +224,7 @@ function TextPreview({ text, fileName, truncated }: TextPreviewProps) {
   const loadKey = `${fileName}::${text?.length ?? 0}`;
   return (
     <div className="files-preview__text" key={loadKey}>
-      {truncated && <div className="files-preview__hint">内容过长，仅预览前 512KB</div>}
+      {truncated && <div className="files-preview__hint">内容过长，仅预览前 50MB</div>}
       {isHtml ? <HtmlFrame text={text} fileName={fileName} /> : <pre>{text ?? ''}</pre>}
     </div>
   );

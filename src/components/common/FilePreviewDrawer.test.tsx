@@ -81,7 +81,7 @@ describe('FilePreviewDrawer', () => {
       data: makePreview({ truncated: true, text: 'x' }),
     });
     render(<FilePreviewDrawer file={makeFile()} onClose={vi.fn()} />);
-    expect(await screen.findByText(/仅预览前 512KB/)).toBeInTheDocument();
+    expect(await screen.findByText(/仅预览前 50MB/)).toBeInTheDocument();
   });
 
   it('renders error state', async () => {

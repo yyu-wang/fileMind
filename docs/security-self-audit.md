@@ -206,7 +206,7 @@
 
 **缓解实现**：
 
-- Python `ingest_service.py`：`MAX_FILE_BYTES = 2MB` 单文件读取上限，超限截断，避免超大文本耗尽内存/embedding 预算
+- Python `ingest_service.py`：`MAX_FILE_BYTES = 50MB` 单文件读取上限，超限截断，避免超大文本耗尽内存/embedding 预算
 - Rust 配置 `max_file_size_mb`（默认 100）约束扫描范围
 
 **自动化证据**：
@@ -215,7 +215,7 @@
 
 **人工验证步骤**：
 
-1. 索引 ≥2MB 文本文件 → 观察进程内存平稳、内容被截断而非崩溃
+1. 索引 ≥50MB 文本文件 → 观察进程内存平稳、内容被截断而非崩溃
 
 **结论**：✅ 通过（单测覆盖 + 手动冒烟）
 

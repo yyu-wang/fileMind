@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 
 logger = getLogger("filemind.doc_extract")
 
-#: 抽取文本字符上限（防超大文档耗尽 embedding 预算）
-MAX_EXTRACT_CHARS: int = 200_000
+#: 抽取文本字符上限（防超大文档耗尽 embedding 预算；放宽到 5M 字符以覆盖 50MB 级大文档正文）
+MAX_EXTRACT_CHARS: int = 5_000_000
 
 
 class DocumentExtractError(Exception):

@@ -17,7 +17,7 @@ use crate::sidecar::proxy;
 use crate::AppState;
 
 /// 文本预览上限（字节）。超出时截断并标记 `truncated=true`。
-const MAX_TEXT_BYTES: u64 = 512 * 1024;
+const MAX_TEXT_BYTES: u64 = 50 * 1024 * 1024;
 /// 图片预览上限（字节）。超出返回 `FILE-E-004`，不降级截断（图片截断无法显示）。
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// PDF 预览上限（字节）。超出返回 `FILE-E-004`。
@@ -203,7 +203,7 @@ async fn read_document_preview_async(path: &str, state: &AppState) -> AppResult<
 
 /// 文本上限的 `usize` 视图。
 ///
-/// 常量 `MAX_TEXT_BYTES` 声明为 `u64` 以对齐 `metadata.len()`；512KB 必然在 `usize`
+/// 常量 `MAX_TEXT_BYTES` 声明为 `u64` 以对齐 `metadata.len()`；50MB 必然在 `usize`
 /// 范围内，`unwrap_or(usize::MAX)` 仅满足类型约束、实际永不触发。
 fn text_cap_usize() -> usize {
     usize::try_from(MAX_TEXT_BYTES).unwrap_or(usize::MAX)

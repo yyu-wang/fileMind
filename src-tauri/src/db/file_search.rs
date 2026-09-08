@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::db::models::FileRecord;
 use crate::error::{AppError, AppResult};
 
-/// 单文件读取上限（2MB，对齐 Python sidecar `MAX_FILE_BYTES`）。
-const MAX_FTS_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// 单文件读取上限（50MB，对齐 Python sidecar `MAX_FILE_BYTES`）。
+const MAX_FTS_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// 文本文件扩展名白名单（与 Python sidecar 保持一致）。
 const TEXT_EXTENSIONS: &[&str] = &[
@@ -382,7 +382,7 @@ mod tests {
         // 4) 空白内容 → skipped
         let empty_path = dir.path().join("empty.txt");
         std::fs::write(&empty_path, "   ")?;
-        // 5) 超过 2MB 上限 → skipped
+        // 5) 超过 50MB 上限 → skipped
         let big_path = dir.path().join("big.txt");
         let big_len = usize::try_from(MAX_FTS_FILE_BYTES + 1)?;
         std::fs::write(&big_path, vec![b'x'; big_len])?;
