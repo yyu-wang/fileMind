@@ -147,7 +147,12 @@ if [[ ! -f "${SRC}" ]]; then
   exit 4
 fi
 SIZE_MB="$(du -m "${SRC}" | awk '{print $1}')"
-SHA="$(shasum -a 256 "${SRC}" | awk '{print $1}')"
+# Windows Git Bash 无 shasum（Perl 脚本），回退 sha256sum（coreutils 自带）
+if command -v shasum >/dev/null 2>&1; then
+  SHA="$(shasum -a 256 "${SRC}" | awk '{print $1}')"
+else
+  SHA="$(sha256sum "${SRC}" | awk '{print $1}')"
+fi
 echo "[build] 产物: ${SRC}"
 echo "           size: ${SIZE_MB}MB"
 echo "           sha256: ${SHA}"
