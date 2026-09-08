@@ -25,17 +25,19 @@ jobs:
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           # macOS Apple Silicon（arm64 runner 原生构建）
+          # app,dmg：app 目标产出 updater 用的 .tar.gz + .sig（对齐 docs/auto-update-setup.md 发布命令），
+          # 同时避免 dmg-only 打包后 .app 被清理导致冒烟检查扑空
           - os: macos-14
             target: aarch64-apple-darwin
             label: macos-arm64
-            bundles: dmg
+            bundles: app,dmg
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           # macOS Intel：x64 runner 原生构建（PyInstaller 无法跨 mac 架构，必须 x64 机器）
           - os: macos-13
             target: x86_64-apple-darwin
             label: macos-x64
-            bundles: dmg
+            bundles: app,dmg
             artifacts: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           # 说明：Linux(deb/AppImage) job 暂移除——打包态 Sidecar 解析当前仅支持
@@ -83,8 +85,12 @@ jobs:
         run: npm run gen:ipc
 
       # 原生构建 + externalBin 自动打进安装包（主可执行同目录）
+      # TAURI_SIGNING_PRIVATE_KEY：updater 签名私钥（bundle.createUpdaterArtifacts=true 时，
+      # msi/nsis/app 目标构建后必须签名更新产物，缺密钥构建直接失败）
       - name: Build Tauri (${{ matrix.label }})
         run: npm run build:tauri -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
       # 打包态冒烟：安装包内必须真实包含 Sidecar 可执行文件（缺它 = 装完即崩），显式失败
       - name: Smoke check Sidecar bundled
