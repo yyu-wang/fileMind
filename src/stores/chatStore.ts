@@ -157,7 +157,7 @@ let chatUnlisten: (() => void) | null = null;
 // FE-C2/FE-C3 模块级流控制状态（瞬态，不进 store 持久化）：
 // - activeSeq：当前流的 seq（null = 无流 / 新流 invoke 未返回）
 // - lastSeq：最近一次 invoke 返回的 seq（收编「首帧先于 invoke 返回」的事件）
-// - 看门狗 timer：空闲 90s / 总量 600s 超时兜底复位 isStreaming
+// - 看门狗 timer：空闲 300s / 总量 1200s 超时兜底复位 isStreaming
 let activeSeq: number | null = null;
 let lastSeq = 0;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
