@@ -13,3 +13,6 @@ jieba==0.42.1
 numpy==2.5.2
 psutil>=5.9
 sentence-transformers==6.0.0
+# transformers 是 sentence-transformers 的传递依赖，不锁会版本漂移：
+# CI 装到 5.16.1 而本地 venv 是 5.15.1。锁定为本地实测可用的版本。
+transformers==5.15.1

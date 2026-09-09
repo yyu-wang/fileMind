@@ -31,7 +31,7 @@ use filemind_lib::sidecar::{
     cleanup_orphan_sidecar, resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv,
     SidecarManager, WatchdogAction, SIDECAR_PORT,
 };
-use filemind_lib::tray::handle_tray_menu_event;
+use filemind_lib::tray::{handle_tray_menu_event, reveal_main_window};
 use filemind_lib::AppState;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -159,24 +159,18 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                             log::warn!("Sidecar 需要重启，退避等待 {backoff:?} 后开始");
                             tokio::time::sleep(backoff).await;
                             // 阶段 B：重启（持锁，期间阻塞其他方访问 manager 可接受）
-                            // 注：restart 路径用一次性 tokio runtime，避免主 runtime `rt`
-                            // 已被 move 进外层 async 块无法再被借用到的借用错误。
+                            // 注：直接在外层 runtime 上 await——嵌套 `block_on`
+                            // （旧实现：此处新建 inner_rt 并 block_on）会触发 tokio
+                            // panic「Cannot start a runtime from within a runtime」，
+                            // 且 release profile 为 panic=abort，整进程直接闪退
+                            // （回归：打包版首次提问时 sidecar 加载 rerank 模型
+                            // 饥饿事件循环 → /health 连续失败 → watchdog 重启 → 崩溃）。
                             let restart_result: Result<Vec<u8>, AppError> = {
                                 let state = app_handle.state::<AppState>();
                                 let Ok(mut manager) = state.sidecar_manager.lock() else {
                                     return;
                                 };
-                                let inner_rt = match tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                {
-                                    Ok(rt) => rt,
-                                    Err(e) => {
-                                        log::error!("restart 阶段 tokio runtime 失败: {e}");
-                                        return;
-                                    }
-                                };
-                                inner_rt.block_on(manager.restart())
+                                manager.restart().await
                             };
                             match restart_result {
                                 Ok(new_psk) => {
@@ -225,6 +219,59 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
         // 线程创建失败（极罕见，通常是系统资源耗尽）：打日志继续运行，
         // 缺少自动恢复 ≠ 主功能不可用
         log::error!("sidecar-watchdog 线程创建失败，跳过自动健康监控: {e}");
+    }
+}
+
+/// 启动期窗口自愈守卫（缓解 macOS 26 + tao 0.35.x 上游间歇缺陷：
+/// 窗口按 `visible: true` 创建但 `show` 偶发被系统静默吞掉，导致冷启动后
+/// 进程/WebView 正常却无可见窗口，见 tauri#15517 / open-pdf-studio#208）。
+///
+/// 规则：仅当主窗口**从启动起从未可见**时才反复 `reveal`（最多约 8 次 / 20s）；
+/// 一旦观察到窗口可见过即退出，之后用户「关闭到托盘」等主动隐藏不再被干扰——
+/// 因此不会把用户刚藏起的窗口弹回来。
+///
+/// 该守卫是纯增量保险：正常启动（窗口秒现）首次轮询即 `is_visible == true`
+/// 直接退出，零开销；上游修复后此函数可整体移除。
+fn spawn_startup_window_guard(app: tauri::AppHandle) {
+    const GUARD_MAX_MS: u64 = 20_000;
+    const GUARD_INTERVAL_MS: u64 = 2_500;
+    let spawn_result = std::thread::Builder::new()
+        .name("startup-window-guard".into())
+        .spawn(move || {
+            let mut elapsed_ms = 0u64;
+            let mut seen_visible = false;
+            while elapsed_ms < GUARD_MAX_MS {
+                std::thread::sleep(Duration::from_millis(GUARD_INTERVAL_MS));
+                elapsed_ms += GUARD_INTERVAL_MS;
+                let Some(window) = app.get_webview_window("main") else {
+                    // 主窗口尚未创建（启动早期）或已销毁：跳过本轮
+                    continue;
+                };
+                match window.is_visible() {
+                    Ok(true) => {
+                        seen_visible = true;
+                    }
+                    Ok(false) if !seen_visible => {
+                        // 从未可见 = 疑似 show 被吞，重试唤回
+                        log::warn!(
+                            "启动守卫：主窗口启动 {elapsed_ms}ms 仍不可见，重试显示（macOS 26 上游缺陷缓解）"
+                        );
+                        reveal_main_window(&app);
+                    }
+                    Ok(false) => {
+                        // 曾可见后被主动隐藏（关闭到托盘等）：尊重用户操作，不干预
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("启动守卫：is_visible 查询失败: {e}");
+                    }
+                }
+            }
+            // 20s 仍从未可见：交回给用户（Dock/托盘仍可唤回），仅告警一次
+            log::warn!("启动守卫：主窗口 20s 内未能确认可见，请通过 Dock/托盘图标唤回");
+        });
+    if let Err(e) = spawn_result {
+        log::error!("startup-window-guard 线程创建失败: {e}");
     }
 }
 
@@ -369,9 +416,16 @@ fn main() {
     };
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
 
-    // T7.4 云端代理（07-§4）：生成调用方共享 token → 启动本机代理（127.0.0.1:8766）→
-    // 按当前推理模式决定给 Sidecar 注入哪些云端 env（含脱敏开关）。
-    // 失败即退出（安全边界初始化不可跳过，模式与 log_redact 一致）。
+    // T7.4 云端代理（07-§4）：生成调用方共享 token → 在 setup 阶段启动本机代理
+    // （127.0.0.1:8766）→ 按当前推理模式决定给 Sidecar 注入哪些云端 env（含脱敏开关）。
+    //
+    // ⚠️ 端口绑定（spawn_proxy_server）**必须延迟到 Tauri `Builder` 构建之后**（即
+    // setup 回调内执行）：tauri-plugin-single-instance 的「唤醒已有实例并退出」逻辑
+    // 只在 `builder.build()` 阶段才生效。若在 main 早期（插件生效前）抢先绑定 8766，
+    // 当上一实例/残留进程已占用该端口时，第二实例会在插件检测前因 Address already
+    // in use 直接闪退——用户表现为「点击启动无任何页面」。推迟后第二实例由单实例
+    // 插件通知主实例 reveal 主窗口并干净退出，主实例 setup 绑定失败才中止。
+    // token 生成失败仍即退出（安全边界初始化不可跳过，模式与 log_redact 一致）。
     let proxy_token = match generate_token() {
         Ok(token) => token,
         Err(e) => {
@@ -381,10 +435,6 @@ fn main() {
     };
     let proxy_state =
         cloud_proxy::CloudProxyState::new(proxy_token.clone()).with_db(Arc::clone(&database));
-    if let Err(e) = cloud_proxy::spawn_proxy_server(proxy_state) {
-        log::error!("云端代理启动失败: {e}");
-        std::process::exit(1);
-    }
     // 脱敏仅云端需要（本地 Ollama 需要原始内容做 RAG）；读失败按本地处理，不阻断启动
     // P-07：同时读出 active_cloud_provider（默认空串），用于 Sidecar env 注入
     let (masking_on, active_cloud_provider) = {
@@ -400,9 +450,6 @@ fn main() {
             Err(_) => (false, String::new()),
         }
     };
-    log::info!(
-        "云端代理就绪: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}, masking={masking_on}, active_provider={active_cloud_provider}"
-    );
     sidecar_manager.set_cloud_env(CloudSidecarEnv {
         proxy_url: format!("http://{CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}"),
         proxy_token,
@@ -452,10 +499,7 @@ fn main() {
     let builder = tauri::Builder::default()
         // T6.1 单实例：第二个进程启动时回调里把已有窗口显示出来并聚焦，新进程随后退出
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            reveal_main_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -528,6 +572,15 @@ fn main() {
             commands::e2e::e2e_get_test_dir,
         ])
         .setup(move |app| {
+            // T7.4：云端代理在 127.0.0.1:8766 的绑定放到 setup 首步（见 main 处注释）：
+            // 二次启动的第二实例在此阶段之前已被 single-instance 插件接管退出，不会
+            // 因端口占用在无 UI 阶段闪退；此处只有主实例会执行，绑定失败才中止。
+            if let Err(e) = cloud_proxy::spawn_proxy_server(proxy_state) {
+                log::error!("云端代理启动失败（setup 阶段）: {e}");
+                return Err(e.into());
+            }
+            log::info!("云端代理已就绪（setup）: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}");
+
             // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖
             //
             // 规则矩阵（main dev 解析先用，这里可能替换）：
@@ -667,13 +720,13 @@ fn main() {
                 .on_tray_icon_event(|tray, _event| {
                     // 点击托盘图标时显示主窗口（macOS 上 on_menu_event 的 show 已覆盖左键点击；
                     // 这里兜底 Windows/Linux 行为）
-                    let app = tray.app_handle();
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    reveal_main_window(tray.app_handle());
                 })
                 .build(app)?;
+
+            // T6.1-bug：macOS 26 冷启动窗口偶发不可见的上游缺陷缓解守卫
+            // （依赖 setup 已跑完、主窗口已由 config 创建；线程内按 20s 窗口轮询）
+            spawn_startup_window_guard(app.handle().clone());
             Ok(())
         });
 
@@ -729,12 +782,33 @@ fn main() {
         }
     });
 
-    let run_result = builder.run(tauri::generate_context!());
+    // app 级事件（macOS Dock 激活 Reopen 等）需要自定义 run 回调分发；
+    // 先 build 拿 App 再 `app.run`。build 失败 = Tauri 初始化级错误（资源/配置
+    // 缺失），无 UI 可补救，打日志退出。
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(e) => {
+            log::error!("Error while building tauri application: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    if let Err(e) = run_result {
-        log::error!("Error while running tauri application: {e}");
-        std::process::exit(1);
-    }
+    app.run(|app_handle, event| {
+        // macOS Dock/Finder 图标激活已运行实例：若窗口被「关闭到托盘」（hide）后
+        // 无可见窗口，标准 macOS 行为是唤回主窗口；此前无 Reopen 处理导致
+        // 「点红钮关闭后，从 Dock 再点打不开窗口」（tauri RunEvent::Reopen 仅 macOS 发射）。
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = event
+        {
+            log::info!("Dock 图标激活：无可见窗口，唤回主窗口");
+            reveal_main_window(app_handle);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 
     // 后备：若主窗口关闭事件路径未触发（极少，仅 headless/菜单退出等非 CloseRequested），
     // SidecarManager 此时由 Tauri managed state 析构 → Drop → stop_hard() 兜底杀一次。

@@ -8,7 +8,9 @@ ollama/openai、sentence-transformers（离线 embedding/rerank，拖入 torch�
 无法靠 excludes 压回 80MB。决策记录：docs/packaging-implementation-plan.md §1 D1。
 
 体积优化策略（当前有效）：
-1. **``optimize=2``**：``.pyo`` 级别（删除 docstring + assert）。
+1. **``optimize=1``**：``-O`` 级别（仅删 assert，**保留 docstring**——transformers
+   5.x 运行时解析 docstring，``optimize=2`` 会导致 rerank 模型加载失败，见下方
+   ``Analysis(optimize=...)`` 处注释）。
 2. **``strip=True``**：剥离 native 扩展 / stdlib 符号。
 3. **``excludes`` 仅剔除确认用不到的冗余**：tkinter/venv/lib2to3 等 stdlib 与
    pytest/ruff/mypy 等 dev 依赖（运行依赖一律不排除）。
@@ -136,7 +138,12 @@ a = Analysis(
     runtime_hooks=[],
     excludes=_excludes,
     noarchive=False,
-    optimize=2,
+    # optimize=1（-O）：仅去 assert，保留 docstring。曾用 2（-OO，连 docstring
+    # 一起剥离）压缩体积，但 transformers 5.x 加载 CrossEncoder 时需在运行时
+    # 解析 ModelOutput 的 docstring（auto_docstring.py），docstring 被剥离会抛
+    # 「No `Args` or `Parameters` section is found」→ rerank 永远不可用
+    # （dev 直跑 venv 未剥离所以无此错误；已用 `python -OO` 复现实锤）。
+    optimize=1,
 )
 
 pyz = PYZ(a.pure)
