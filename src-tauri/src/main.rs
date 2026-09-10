@@ -795,16 +795,22 @@ fn main() {
 
     app.run(|app_handle, event| {
         // macOS Dock/Finder 图标激活已运行实例：若窗口被「关闭到托盘」（hide）后
-        // 无可见窗口，标准 macOS 行为是唤回主窗口；此前无 Reopen 处理导致
-        // 「点红钮关闭后，从 Dock 再点打不开窗口」（tauri RunEvent::Reopen 仅 macOS 发射）。
+        // 无可见窗口，标准 macOS 行为是唤回主窗口（tauri RunEvent::Reopen 仅 macOS 发射）。
+        //
+        // 修复「点红钮关闭后，从 Dock 再点打不开窗口」：不信任 macOS 的
+        // has_visible_windows 标志——它对「已隐藏/迷你化」的窗口可能仍上报 true
+        // （Apple 文档：迷你化窗口在 hasVisibleWindows 中算可见），旧实现
+        // `has_visible_windows: false` 匹配不到导致唤回被跳过。改用主窗口实际
+        // 可见性判断：只要当前不可见就唤回，窗口正可见时则不抢焦点。
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Reopen {
-            has_visible_windows: false,
-            ..
-        } = event
-        {
-            log::info!("Dock 图标激活：无可见窗口，唤回主窗口");
-            reveal_main_window(app_handle);
+        if let tauri::RunEvent::Reopen { .. } = event {
+            let needs_reveal = app_handle
+                .get_webview_window("main")
+                .is_some_and(|w| !w.is_visible().unwrap_or(false));
+            if needs_reveal {
+                log::info!("Dock 图标激活：主窗口不可见，唤回主窗口");
+                reveal_main_window(app_handle);
+            }
         }
         #[cfg(not(target_os = "macos"))]
         let _ = (app_handle, event);
