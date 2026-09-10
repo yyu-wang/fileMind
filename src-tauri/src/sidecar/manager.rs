@@ -894,70 +894,69 @@ pub fn cleanup_orphan_sidecar(port: u16) {
                 .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
         }
 
-        /// 进程身份匹配：打包模式（comm 含 `filemind-sidecar`），或 dev 模式
-        /// （进程名 python 且命令行带 `-m app` / `sidecar_entry.py` 入口特征）。
-        fn is_sidecar(pid: u32) -> bool {
-            let Some(comm) = read_ps(pid, "comm=") else {
-                return false;
-            };
-            let comm = comm.to_lowercase();
-            if comm.contains("filemind-sidecar") {
-                return true;
-            }
-            if comm.contains("python") {
-                return read_ps(pid, "args=").is_some_and(|args| {
-                    args.contains("-m app") || args.contains("sidecar_entry.py")
-                });
-            }
-            false
-        }
-
-        let lsof = std::process::Command::new("lsof")
-            .args(["-ti", &format!("tcp:{port}")])
+        // 全量扫描所有进程（`ps -axo`），不依赖 lsof 端口过滤。端口过滤只能命中
+        // 「已就绪监听」的孤儿，会漏杀「仍在启动中、尚未监听端口」的孤儿——后者在
+        // cleanup 之后才占用端口，导致新 Sidecar 握手命中旧进程 401（时序竞态，
+        // 2026-09-10 实测：孤儿 Sidecar 在 cleanup 执行时尚未监听 8765）。
+        let ps_all = std::process::Command::new("ps")
+            .args(["-axo", "pid=,ppid=,comm="])
             .output();
-        let Ok(out) = lsof else {
-            log::info!("孤儿清理跳过：lsof 不可用");
+        let Ok(out) = ps_all else {
+            log::info!("孤儿清理跳过：ps 不可用");
             return;
         };
         if !out.status.success() {
-            return; // 无进程监听该端口（lsof 非零退出）——正常情况
+            return;
         }
-        let pids = String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .filter_map(|s| s.parse::<u32>().ok())
-            .collect::<Vec<u32>>();
-        let mut to_kill: Vec<u32> = Vec::new();
-        for pid in pids {
-            if !is_sidecar(pid) {
-                log::info!("孤儿清理跳过 pid={pid}：进程名/命令行不匹配");
+        // 收集所有 Sidecar 进程：打包模式（comm 含 `filemind-sidecar`），或 dev 模式
+        // （进程名 python 且命令行带 `-m app` / `sidecar_entry.py` 入口特征）。
+        let mut sidecar_procs: Vec<(u32, u32)> = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut parts = line.split_whitespace();
+            let Some(pid) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
+            };
+            let Some(parent_pid) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            let comm = parts.next().unwrap_or("").to_lowercase();
+            let is_sidecar = if comm.contains("filemind-sidecar") {
+                true
+            } else if comm.contains("python") {
+                read_ps(pid, "args=")
+                    .is_some_and(|a| a.contains("-m app") || a.contains("sidecar_entry.py"))
+            } else {
+                false
+            };
+            if is_sidecar {
+                sidecar_procs.push((pid, parent_pid));
             }
-            let ppid = read_ps(pid, "ppid=").and_then(|s| s.parse::<u32>().ok());
+        }
+        let mut to_kill: Vec<u32> = Vec::new();
+        for (pid, parent_pid) in &sidecar_procs {
             // 孤儿判定放宽到「两级祖先」：
             // - 自身父进程已死（ppid==1），被 init 收养的真孤儿；
             // - 或父进程也是 Sidecar（PyInstaller onefile 实为 bootloader(父) +
             //   服务进程(子) 两进程，端口监听者是子进程，其 ppid 指向父 bootloader
             //   而非 1）且父进程的父进程已死——旧逻辑只认 ppid==1，漏杀整对
-            //   进程，子进程继续占住端口导致下一次启动握手失败崩溃
-            //   （2026-09-04 实测：main 崩溃遗留的 sidecar 孤儿对占 8765，
-            //   新实例 /health 命中旧进程、新 PSK 握手 401 → 启动中止）。
-            let orphan = if ppid == Some(1) {
-                true
-            } else if let Some(parent) = ppid {
-                is_sidecar(parent)
-                    && read_ps(parent, "ppid=").and_then(|s| s.parse::<u32>().ok()) == Some(1)
-            } else {
-                false
-            };
+            //   进程，子进程继续占住端口导致下一次启动握手失败崩溃。
+            let orphan = *parent_pid == 1
+                || sidecar_procs
+                    .iter()
+                    .any(|(parent, grand_ppid)| *parent == *parent_pid && *grand_ppid == 1);
             if !orphan {
                 log::info!("孤儿清理跳过 pid={pid}：父进程仍存活（非孤儿）");
                 continue;
             }
-            to_kill.push(pid);
-            // 打包态父子对：同时终止父 bootloader（自身不监听端口、不会进 lsof 列表）
-            if let Some(parent) = ppid {
-                if parent != 1 && is_sidecar(parent) && !to_kill.contains(&parent) {
-                    to_kill.push(parent);
+            if !to_kill.contains(pid) {
+                to_kill.push(*pid);
+            }
+            // 一并终止父 bootloader（自身不监听端口）
+            if *parent_pid != 1 {
+                if let Some(parent) = sidecar_procs.iter().find(|(p, _)| *p == *parent_pid) {
+                    if !to_kill.contains(&parent.0) {
+                        to_kill.push(parent.0);
+                    }
                 }
             }
         }
