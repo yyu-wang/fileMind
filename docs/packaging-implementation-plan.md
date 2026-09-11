@@ -216,6 +216,11 @@
      78% 作为防退化线（未覆盖的 156 个函数散落在 20 个既有文件，属既有技术债，不并入本 PR）
   3. `e2e-smoke` 的 `--ci` 闸门缺失：文档（[e2e-run.sh](scripts/e2e-run.sh) 用法、workflow 文件头、
      步骤名「E2E-001/002」）三处均声明 CI 只跑 001/002，但脚本实际把 004/005 也跑了；补上闸门
+  4. `rust-check` 的 `cargo test` 卡满 6h 上限致整轮 cancelled：编译仅 ~6min，卡点在
+     `spawn_orphan_listener` 用 `Command::output()` 启动 `sh -c 'nc -l PORT &'`——`output()`
+     要读 stdout/stderr 管道到 EOF，而 `nc` 继承了这两个 fd 且长期持有不关闭，等待永不返回
+     （本机 macOS 的 nc 行为不同才没暴露）。改为三个 stdio 全部丢弃 + `.status()`；
+     并给 `rust-check` 加 `timeout-minutes: 30` 保险阀（下次挂死 30min 失败而非 6h）
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按

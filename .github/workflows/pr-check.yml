@@ -43,6 +43,9 @@ jobs:
 
   rust-check:
     runs-on: ubuntu-latest
+    # 保险阀：实测编译 ~6min + 测试 ~1min。若将来再有用例挂死，30min 失败远好过
+    # 默认 6h 上限（2026-09-11 曾被 orphan 清理用例卡满 6h 导致整轮 cancelled）。
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

@@ -722,11 +722,19 @@ fn spawn_orphan_listener(port: u16, name: &str) -> Option<u32> {
         perms.set_mode(perms.mode() | 0o755);
         std::fs::set_permissions(&fake, perms).expect("设置执行位失败");
     }
-    // sh 启动后台子进程后立即退出 → 子进程成孤儿（ppid=1）后监听端口
+    // sh 启动后台子进程后立即退出 → 子进程成孤儿（ppid=1）后监听端口。
+    //
+    // ⚠️ 这里**不能**用 `.output()`（或 `status()` 之外的捕获变体）：`output()` 会一直
+    // 读 stdout/stderr 管道直到 EOF，而 `nc -l` 继承了这两个 fd 且长期持有不关闭，
+    // 于是等待永不返回——CI Linux 上实测卡死到 job 6 小时上限（本机 macOS 的 nc
+    // 行为不同才没暴露）。故把三个 stdio 全部丢弃，只等 `sh` 自身退出。
     let _ = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{} -l {port} &", fake.display()))
-        .output();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     let pid = wait_listener(port, std::time::Duration::from_secs(5));
     if pid.is_none() {
         force_kill_listeners(port);
