@@ -181,7 +181,8 @@
   `scripts/build-sidecar.sh`（目录产物：体积/SHA/拷贝/软链）、`src-tauri/tauri.conf.json`
   （`externalBin` → `bundle.resources` 目录映射）、`src-tauri/src/sidecar/manager.rs`
   （dev/bundle 目录形态解析）、`.github/workflows/merge-build.yml`（smoke check 路径）、
-  `.github/workflows/e2e-smoke.yml`（补最小占位产物目录，见下）、`eslint.config.js`
+  `.github/workflows/{e2e-smoke,pr-check}.yml` + `scripts/stub-sidecar-product.sh`
+  （CI 占位 sidecar 产物，见下）、`eslint.config.js`
   （忽略 `filemind/binaries/`——onedir 内含第三方 .js 资源）、
   `scripts/verify-packaged-app.sh`、`scripts/go-no-go.py`、`Makefile`
 - 关键结论（本机 aarch64 实测）：
@@ -199,9 +200,14 @@
 - 显式覆盖语义保留：`FILEMIND_SIDECAR_BINARY` 同时接受 onedir **目录**与可执行**文件**——
   CI E2E（`scripts/e2e-sidecar-wrapper.sh`）与本地 dev（`binaries/filemind-sidecar-dev`，wrapper 脚本）
   以文件形态注入 `python -m app`，是文件而非目录。**布局发现**（dev/bundle）只认 onedir，不扫描旧 onefile。
-- E2E job 适配：`tauri-build` 的 build.rs 会按 `bundle.resources` 收集资源并**校验存在性**（缺则编译失败），
-  而 E2E 为省 5-10min 不跑 PyInstaller；故 e2e-smoke.yml 增加一步造**最小占位产物目录**
-  （把 wrapper stub 复制为 `filemind/binaries/filemind-sidecar/filemind-sidecar`）。
+- CI 适配（PR #2 首跑暴露）：`tauri-build` 的 build.rs 会按 `bundle.resources` 收集资源并**校验存在性**
+  （缺则 `cargo build/clippy/test` 直接 exit 101）。该路径已 gitignore，而 frontend-check / rust-check /
+  build-check / e2e-smoke 都**不需要真实 sidecar**（E2E 运行时由 `FILEMIND_SIDECAR_BINARY` 指向 wrapper），
+  为省 5-10min 均不跑 PyInstaller。故抽出 `scripts/stub-sidecar-product.sh` 统一造**最小占位产物目录**
+  （把 wrapper stub 复制为 `filemind/binaries/filemind-sidecar/filemind-sidecar`，幂等、已有真实产物则跳过），
+  四个 job 在**首次 cargo 调用前**调用它；`build-check` 同时补 `gen:ipc`（beforeBuildCommand 的 tsc
+  依赖 gitignored 的 `src/types/ipc.ts`，与 merge-build.yml 同理）。
+  本地已实测复现：移走产物 → `resource path ... doesn't exist`；跑脚本后 `cargo check` 通过。
 - 验证：`verify-packaged-app.sh` 对真实 `.app` **4 PASS / 0 FAIL**；`.app` 内 bundled sidecar
   直接运行稳态 1.1~1.3s 且 LanceDB 可用（`/index/delete_by_file_ids` HTTP 200）；
   新增「真实 `.app` 布局命中 bundle 侧车」单测作为长期契约回归。

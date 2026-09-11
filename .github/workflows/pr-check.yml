@@ -28,6 +28,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
       - run: npm ci
+      # tauri-build 的 build.rs 按 bundle.resources 校验 `../filemind/binaries/filemind-sidecar/`
+      # 存在性（gitignored，全新检出必缺失），缺失则 cargo 直接失败。本 job 不需要真实
+      # sidecar，造占位目录即可（详见脚本头注释）。
+      - name: Stub sidecar product dir
+        run: bash scripts/stub-sidecar-product.sh
       - name: Generate IPC types
         run: npm run gen:ipc
       - run: npm run format:check
@@ -46,6 +51,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # 同 frontend-check：cargo clippy/test 会触发 build.rs 的资源存在性校验
+      - name: Stub sidecar product dir
+        run: bash scripts/stub-sidecar-product.sh
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
@@ -97,5 +105,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      # 下面两步与 merge-build.yml 同理，缺一不可：
+      #   1) 占位 sidecar 目录 —— tauri-build 的 build.rs 资源存在性校验
+      #   2) gen:ipc —— beforeBuildCommand `npm run build` 里 tsc 依赖 src/types/ipc.ts
+      #      （gitignored），且 cargo run 自身也会触发 build.rs，故必须在 1) 之后
+      - name: Stub sidecar product dir
+        run: bash scripts/stub-sidecar-product.sh
+      - name: Generate IPC types
+        run: npm run gen:ipc
       - name: Build Tauri (dev mode)
         run: npm run build:tauri:dev
