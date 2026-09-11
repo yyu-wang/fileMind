@@ -96,6 +96,16 @@ for spec in e2e/specs/*.e2e.ts; do
       ;;
   esac
 
+  # CI 冒烟只跑 001/002（文件头与 workflow 步骤名「E2E-001/002」的一致约束）：
+  # 004/005 依赖更多交互细节，不属 lean 冒烟范围——此前本脚本漏了这道闸，
+  # `--ci` 实际把 004/005 也跑了（与文档不符），在 Linux WebKitGTK 上必然失败。
+  if [ "$CI_MODE" = 1 ]; then
+    case "$name" in
+      001-*|002-*) ;;
+      *) echo "── 跳过 ${name}（CI 冒烟仅 001/002）──"; continue ;;
+    esac
+  fi
+
   # 每个 spec 全新临时目录：数据根 + 文件目录（fixture 复制进去）
   APP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fm-e2e-app-XXXXXX")"
   SCAN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fm-e2e-scan-XXXXXX")"
