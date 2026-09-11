@@ -68,6 +68,9 @@ fn main() {
             commands::cloud_providers::list_cloud_providers,
             commands::cloud_providers::upsert_cloud_provider,
             commands::cloud_providers::delete_cloud_provider,
+            // P1-1 Sidecar 生命周期查询 / 手动重试
+            commands::sidecar::get_sidecar_status,
+            commands::sidecar::retry_sidecar_start,
         ]);
 
     if let Err(e) = builder.export(specta_typescript::Typescript::default(), &output_path) {

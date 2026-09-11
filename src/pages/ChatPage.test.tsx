@@ -9,6 +9,7 @@ import type { FileInfo } from '@/types/ipc';
 
 import { useChatStore } from '@/stores/chatStore';
 import { useFileStore } from '@/stores/fileStore';
+import { useSidecarStore } from '@/stores/sidecarStore';
 import { ChatPage } from './ChatPage';
 
 const mocks = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   buildIndex: vi.fn(),
   chatStream: vi.fn(),
   listenChatEvent: vi.fn(),
+  retrySidecarStart: vi.fn(),
   Document: vi.fn((props: { children?: unknown }) => props.children),
   Page: vi.fn(() => null),
 }));
@@ -34,6 +36,14 @@ vi.mock('@/lib/ipc', () => ({
 vi.mock('@/lib/ipc/chatIpc', () => ({
   chatStream: mocks.chatStream,
   listenChatEvent: mocks.listenChatEvent,
+}));
+
+// P1-1：sidecarStore 通过命令重试；测试环境无 Tauri，mock 掉 retrySidecarStart。
+// 本文件仅以 type-only 方式引用 '@/types/ipc'（运行期已擦除），全量 mock 不影响。
+vi.mock('@/types/ipc', () => ({
+  commands: {
+    retrySidecarStart: mocks.retrySidecarStart,
+  },
 }));
 
 vi.mock('react-pdf', () => ({
@@ -70,6 +80,9 @@ function seed(overrides: Partial<Parameters<typeof useChatStore.setState>[0]> = 
     },
   });
   useFileStore.setState({ files: [], total: 0 });
+  // P1-1：默认引擎就绪，让既有「建索引」用例按原行为执行；引擎未就绪的
+  // 禁用态由独立用例显式 setState 覆盖验证。
+  useSidecarStore.setState({ status: 'ready', message: null });
   useChatStore.setState({
     messages: [],
     isStreaming: false,
@@ -119,6 +132,26 @@ describe('ChatPage', () => {
     renderPage();
     await user.click(screen.getByTestId('build-index'));
     expect(await screen.findByText('索引失败：向量化失败')).toBeInTheDocument();
+  });
+
+  it('disables AI features while engine is not ready', () => {
+    // P1-1：引擎启动中 → 建索引按钮禁用 + 输入框禁用 + 提示可见
+    useSidecarStore.setState({ status: 'starting', message: null });
+    renderPage();
+    expect(screen.getByTestId('build-index')).toBeDisabled();
+    expect(screen.getByPlaceholderText('输入问题，Enter 发送，Shift+Enter 换行')).toBeDisabled();
+    expect(screen.getByText('AI 引擎启动中，就绪后可开始问答…')).toBeInTheDocument();
+  });
+
+  it('shows retry entry when engine failed', async () => {
+    // P1-1：引擎失败 → 提示「重试」入口，点击后乐观转 starting
+    mocks.retrySidecarStart.mockResolvedValue({ status: 'ok', data: null });
+    useSidecarStore.setState({ status: 'failed', message: '握手失败' });
+    renderPage();
+    const retryButton = screen.getByRole('button', { name: '重试' });
+    expect(retryButton).toBeInTheDocument();
+    await userEvent.click(retryButton);
+    expect(useSidecarStore.getState().status).toBe('starting');
   });
 
   it('renders messages and 清空对话 clears them', async () => {

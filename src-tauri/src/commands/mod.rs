@@ -26,3 +26,5 @@ pub mod inference;
 pub mod ollama;
 /// 规则编辑命令（规则 CRUD + 优先级拖拽排序）。
 pub mod rules;
+/// Sidecar 生命周期查询与手动重试命令（P1-1）。
+pub mod sidecar;

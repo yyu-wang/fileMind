@@ -48,12 +48,12 @@ SIDECAR_BASE: str = f"http://127.0.0.1:{SIDECAR_PORT}"
 
 # 7 项定义（顺序与 10_开发任务拆解与排期 第 380 行一致）
 TEST_ITEMS: list[tuple[int, str, str]] = [
-    (1, "启动", "拉起 dev uvicorn 或 onefile Sidecar，/health 在 10~15s 内返回 200（打包态放宽）"),
+    (1, "启动", "拉起 dev uvicorn 或 onedir Sidecar，/health 在 10~15s 内返回 200（打包态放宽）"),
     (2, "握手", "POST /handshake 带 nonce + HMAC-SHA256，双向 proof 验证通过"),
     (3, "IPC", "POST /shutdown 带签名 → 200 shutting_down，进程在 3s 内自退并释放端口"),
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
     (5, "崩溃重启", "SIGKILL 模拟崩溃 → 3s 内重启 → new_pid≠old_pid → 重新 HMAC 握手通过（打包态=Phase2，dev=SKIP）"),
-    (6, "三平台", "PyInstaller --onefile 体积≤400MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
+    (6, "三平台", "PyInstaller --onedir 产物目录体积≤1600MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
     (7, "内存<500MB", "冷启动 GET /metrics → rss_mb < 500 且 within_limit=True"),
 ]
 
@@ -162,13 +162,13 @@ class DevSidecar:
 
     # ---------- 打包模式（env PSK） ----------
     def _start_packaged(self, binary: Path) -> None:
-        """PyInstaller --onefile 二进制启动：
+        """PyInstaller --onedir 主可执行启动（P2-2）：
         - ``PYINSTALLER_RUNTIME=1`` 让 sidecar_entry / lifespan 知道走「环境变量 PSK」分支
         - ``FILEMIND_PSK`` 放 hex PSK（32 字节 = 64 hex 字符）
         - ``SIDECAR_PORT`` 覆盖监听端口，避免与 8765 默认冲突
         """
         if not binary.is_file():
-            raise RuntimeError(f"打包二进制不存在: {binary}")
+            raise RuntimeError(f"打包主可执行不存在: {binary}")
         if not os.access(binary, os.X_OK):
             raise RuntimeError(f"打包二进制无执行权限: {binary}")
         if not _free_port():
@@ -227,9 +227,69 @@ class DevSidecar:
 # ---------------------------------------------------------------------------
 # 启动模式：所有测试共享的「当前使用的 Sidecar 启动方式」
 #   - None = dev（python -m uvicorn + stdin PSK）
-#   - Path = 打包二进制路径（onefile，env PSK）
+#   - Path = 打包产物**主可执行文件**路径（onedir，env PSK）
 # ---------------------------------------------------------------------------
 ACTIVE_BINARY: Path | None = None
+# 打包产物目录（onedir 根目录；体积统计与 _internal 校验用它）。
+# P2-2：`--binary` 传目录时 = 该目录；传主可执行文件时 = 其父目录。
+ACTIVE_PRODUCT_DIR: Path | None = None
+
+#: onedir 主可执行候选名（与 src-tauri manager.rs `resolve_main_exe_names` 对齐）
+_MAIN_EXE_NAMES: tuple[str, ...] = (
+    "filemind-sidecar.exe",
+    "filemind-sidecar",
+    "filemind-sidecar-aarch64-apple-darwin",
+    "filemind-sidecar-x86_64-apple-darwin",
+    "filemind-sidecar-x86_64-pc-windows-msvc",
+    "filemind-sidecar-x86_64-unknown-linux-gnu",
+)
+
+
+def resolve_product(path: Path) -> tuple[Path, Path]:
+    """把 ``--binary`` 入参归一化为 ``(主可执行文件, 产物目录)``。
+
+    P2-2 起产物是 onedir 目录，故接受两种入参：
+    - 目录：在其中按 `_MAIN_EXE_NAMES` 顺序找主可执行文件
+    - 文件：视为主可执行文件，产物目录取其父目录（兼容直接指向 exe 的调用）
+
+    Args:
+        path: ``--binary`` 传入的路径（已 resolve）。
+
+    Returns:
+        ``(exe_path, product_dir)``。
+
+    Raises:
+        FileNotFoundError: 目录内找不到主可执行文件，或路径不存在。
+    """
+    if path.is_dir():
+        for name in _MAIN_EXE_NAMES:
+            cand = path / name
+            if cand.is_file():
+                return cand, path
+        raise FileNotFoundError(
+            f"onedir 目录内未找到主可执行文件（候选 {list(_MAIN_EXE_NAMES)}）: {path}"
+        )
+    if path.is_file():
+        return path, path.parent
+    raise FileNotFoundError(f"打包产物不存在: {path}")
+
+
+def _du_mb(path: Path) -> float:
+    """统计产物体积（MB）：文件取其大小，目录递归累加其内所有文件。
+
+    纯 Python 实现（不依赖 `du`），跨 Windows/macOS/Linux 口径一致；
+    与 scripts/build-sidecar.sh 的 `du -sm` 结果对齐（差异仅在文件系统块对齐，可忽略）。
+
+    Args:
+        path: 产物文件或 onedir 目录。
+
+    Returns:
+        体积（MB，浮点）。
+    """
+    if path.is_file():
+        return path.stat().st_size / (1024 * 1024)
+    total = sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+    return total / (1024 * 1024)
 
 
 def _new_sc() -> DevSidecar:
@@ -421,8 +481,8 @@ def run_t5_crash_restart() -> TestResult:
     """崩溃重启：「SIGKILL 模拟崩溃 → 重新拉起 → new_pid ≠ old_pid → 重新 HMAC 握手」。
 
     启动路径优先级：
-    1. 传了 --binary（打包态）：先试 onefile 启动（Phase 2 首选，与 Tauri 最终分发路径一致）。
-       若 onefile 因构建漂移（如 PyInstaller multiprocessing freeze_support 版本差异）无法起，
+    1. 传了 --binary（打包态）：先试 onedir 启动（Phase 2 首选，与 Tauri 最终分发路径一致）。
+       若 onedir 因构建漂移（如 PyInstaller multiprocessing freeze_support 版本差异）无法起，
        自动 fallback 到 dev 模式，并在结果 detail 中标「⚠️ 打包态启动失败→回退 dev 模式」，
        不影响 T5 核心断言（崩溃重启 pid 轮换 + 握手正确性本身与打包无关）。
     2. 未传 --binary（dev 模式）：直接用 python -m uvicorn + stdin PIPE 注入 PSK。
@@ -579,7 +639,7 @@ def run_t5_crash_restart() -> TestResult:
                      "killed_to_healthy_secs": round(restart_span, 3), "mode": mode_label}
             fallback_note = ""
             if use_binary is False and ACTIVE_BINARY is not None:
-                fallback_note = "；⚠️ 打包态 onefile 启动超时（构建漂移 Issue 跟踪中，已独立记录待修），故回退 dev stdin-PIPE 模式验证崩溃重启核心逻辑；与 Rust manager 真实路径等价"
+                fallback_note = "；⚠️ 打包态 onedir 启动超时（构建漂移 Issue 跟踪中，已独立记录待修），故回退 dev stdin-PIPE 模式验证崩溃重启核心逻辑；与 Rust manager 真实路径等价"
             # 只有打包态本身通过（没回退）才承诺 "<3.0s 总窗口"；dev fallback 只承诺重启窗口本身 3s 内
             restart_ok = restart_span < restart_window
             msg = (f"[{mode_label}] pid {pid_old} → {pid_new} 轮换成功；"
@@ -638,7 +698,7 @@ def run_t6_three_platforms() -> TestResult:
     t0 = time.time()
     if ACTIVE_BINARY is None:
         return TestResult(6, "三平台", "SKIP",
-                          "需 T1.2 PyInstaller --onefile + T1.3 路径解析；请加 --binary filemind/binaries/filemind-sidecar-<triple>")
+                          "需 T1.2 PyInstaller --onedir + T1.3 路径解析；请加 --binary filemind/binaries/filemind-sidecar（产物目录）")
     binary = ACTIVE_BINARY
     host_triple = _current_triple()
 
@@ -669,9 +729,12 @@ def run_t6_three_platforms() -> TestResult:
         return TestResult(6, "三平台", "FAIL",
                           f"打包产物无可执行权限: {binary}", time.time() - t0,
                           {"host_triple": host_triple})
-    # 2) 体积断言 ≤400MB（T1.2 DoD 硬约束，2026-09-04 由 80MB 上调，见 docs/packaging-implementation-plan.md D1）
-    size_mb = binary.stat().st_size / (1024 * 1024)
-    max_size_mb = 400.0
+    # 2) 体积断言 ≤1600MB（P2-2 onedir 口径：按产物**目录**逻辑大小统计；
+    #    onefile 时代为 400MB 压缩态。实测 1384MB，用户实际下载体积 tar.gz≈317MB
+    #    与此门控无关，详见 scripts/build-sidecar.sh 文件头）
+    product_dir = ACTIVE_PRODUCT_DIR if ACTIVE_PRODUCT_DIR is not None else binary.parent
+    size_mb = _du_mb(product_dir)
+    max_size_mb = 1600.0
     size_ok = size_mb < max_size_mb
     # 3) 格式判断
     with binary.open("rb") as fh:
@@ -710,7 +773,7 @@ def run_t6_three_platforms() -> TestResult:
     for t in other_triples:
         marker = "✅ PASS (当前已验证)" if t == host_triple and not cross_triple_mismatch_hint else "⏸️ SKIP"
         checklist_lines.append(
-            f"  {marker}  {t}:  $ ./scripts/build-sidecar.sh --target {t} --onefile"
+            f"  {marker}  {t}:  $ ./scripts/build-sidecar.sh --target {t}"
             + ("" if not t.endswith("msvc") else "（Windows: 需 Git Bash + python3 + venv）")
         )
     detail_parts.append(" | ".join(checklist_lines))
@@ -904,11 +967,11 @@ def write_report(results: list[TestResult]) -> Path:
     if fail_n == 0:
         if ACTIVE_BINARY and t5_verdict == "PASS":
             # 阶段 2 全绿 = 正式锁定
-            lines.append("- **PyInstaller --onefile 方案（Epic E1）：✅ 正式锁定**。"
+            lines.append("- **PyInstaller --onedir 方案（Epic E1）：✅ 正式锁定**。"
                          "打包态 7 项功能+崩溃重启+体积门控全部验证通过；"
                          "T6「三平台」在当前架构验证通过，其他三平台作为发布 Checklist 在对应机器补齐（不阻塞 E2 启动）。")
         elif ACTIVE_BINARY:
-            lines.append("- **PyInstaller --onefile 方案（T1.2 阶段 1）：锁定**。"
+            lines.append("- **PyInstaller --onedir 方案（T1.2 阶段 1）：锁定**。"
                          f"{pass_n} 项打包态验证 PASS（T6 体积+格式、T1/2/3/4/7 功能），"
                          f"{skip_n} 项（崩溃重启）待 Tauri app 接入阶段 2 补测。")
         else:
@@ -922,7 +985,7 @@ def write_report(results: list[TestResult]) -> Path:
         lines.append("\n## Final Decision（阶段 2 最终结论）\n")
         if fail_n == 0:
             lines.append("> **结论：Go**（Epic E1 门控通过，正式进入 E2 数据层与索引阶段）\n")
-            lines.append("**锁定方案**：Python Sidecar + FastAPI + PyInstaller --onefile 跨平台打包。\n")
+            lines.append("**锁定方案**：Python Sidecar + FastAPI + PyInstaller --onedir 跨平台打包（P2-2 起）。\n")
             lines.append("**Go 决策依据（7 项逐项）**：")
             for r in results:
                 marker = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏸️"}[r.verdict]
@@ -931,11 +994,11 @@ def write_report(results: list[TestResult]) -> Path:
             triples = [
                 ("aarch64-apple-darwin", "macOS Apple Silicon（本机已过）"),
                 ("x86_64-apple-darwin", "macOS Intel"),
-                ("x86_64-pc-windows-msvc", "Windows x64（需 Python 3.11+，PyInstaller onefile 产出 .exe，建议在 GitHub Actions windows-2022 构建）"),
+                ("x86_64-pc-windows-msvc", "Windows x64（需 Python 3.11+，PyInstaller onedir 产出 .exe，建议在 GitHub Actions windows-2022 构建）"),
                 ("x86_64-unknown-linux-gnu", "Linux x64（debian/ubuntu 镜像内构建，glibc 兼容注意）"),
             ]
             for triple, note in triples:
-                lines.append(f"- `{triple}`：{note}\n  - 构建命令：`$ ./scripts/build-sidecar.sh --target {triple} --onefile`\n  - 验证命令：`FILEMIND_SIDECAR_BINARY=./filemind/binaries/filemind-sidecar-{triple} python scripts/go-no-go.py --all --binary ./filemind/binaries/filemind-sidecar-{triple}`")
+                lines.append(f"- `{triple}`：{note}\n  - 构建命令：`$ ./scripts/build-sidecar.sh --target {triple}`\n  - 验证命令：`FILEMIND_SIDECAR_BINARY=./filemind/binaries/filemind-sidecar python scripts/go-no-go.py --all --binary ./filemind/binaries/filemind-sidecar`")
             lines.append("\n**备选方案切换阈值（不再执行，仅作为归档）**：")
             lines.append("- 若阶段 2 出现 FAIL → 切换 Nuitka `--standalone --follow-imports`；若 Nuitka 仍不满足 → 切换 LangChain.js + Node Sidecar。当前 PASS 未触发。\n")
         else:
@@ -952,7 +1015,7 @@ def write_report(results: list[TestResult]) -> Path:
         lines.append("1. **T1.3 补完**：``tauri.conf.json`` 注册 ``externalBin`` + ``resources``，"
                      "Tauri app 启动时自动拉起二进制（manager.rs start 路径解析支持打包态）。")
         lines.append("2. **崩溃重启补测**：启动 Tauri app，kill -9 Sidecar，验证 watchdog 在 3s 内新起一份并恢复 /health 200。")
-        lines.append("3. **阶段 2 重测**：``scripts/go-no-go.py --all --binary filemind/binaries/filemind-sidecar-xxx`` 跑一遍，"
+        lines.append("3. **阶段 2 重测**：``scripts/go-no-go.py --all --binary filemind/binaries/filemind-sidecar`` 跑一遍，"
                      "预期 7/7 PASS（T5 崩溃重启需另做 Tauri 端到端验证）。\n")
         lines.append("## 备选方案（若阶段 2 失败触发）\n")
         lines.append("按 Epic E1 风险预案，优先级：PyInstaller → Nuitka → LangChain.js。\n")
@@ -961,7 +1024,7 @@ def write_report(results: list[TestResult]) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global ACTIVE_BINARY
+    global ACTIVE_BINARY, ACTIVE_PRODUCT_DIR
     parser = argparse.ArgumentParser(description="T1.6 Go/No-Go 7 项测试（E1 门控，默认 dev 模式，传 --binary 走打包模式）")
     parser.add_argument("--list", action="store_true", help="列出 7 项测试描述并退出")
     parser.add_argument("--test", type=int, choices=list(range(1, 8)), metavar="1-7",
@@ -969,12 +1032,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--all", action="store_true", help="顺序跑 7 项，并生成报告")
     parser.add_argument("--no-report", action="store_true", help="不生成 docs/go-no-go-report.md")
     parser.add_argument("--binary", type=str, default=None, metavar="PATH",
-                        help="指定 PyInstaller --onefile 打包二进制路径；省略时走 dev python -m uvicorn 模式。"
-                             "推荐传 filemind/binaries/filemind-sidecar-aarch64-apple-darwin 这类具体产物。")
+                        help="指定 PyInstaller --onedir 打包**产物目录**（也可直接指向目录内主可执行文件）；"
+                             "省略时走 dev python -m uvicorn 模式。"
+                             "推荐传 filemind/binaries/filemind-sidecar 这类产物目录。")
     args = parser.parse_args(argv)
 
     if args.binary is not None:
-        ACTIVE_BINARY = Path(args.binary).expanduser().resolve()
+        try:
+            ACTIVE_BINARY, ACTIVE_PRODUCT_DIR = resolve_product(
+                Path(args.binary).expanduser().resolve()
+            )
+        except FileNotFoundError as exc:
+            print(f"[FATAL] {exc}", file=sys.stderr)
+            return 2
 
     if args.list:
         print_list()
@@ -996,7 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "打包二进制模式" if ACTIVE_BINARY else "dev 模式"
     print(f"[T1.6] 开始 E1 Go/No-Go 7 项测试（{mode}，port={SIDECAR_PORT}）...")
     if ACTIVE_BINARY:
-        print(f"[T1.6] 使用打包产物: {ACTIVE_BINARY}  ({ACTIVE_BINARY.stat().st_size / 1024 / 1024:.1f}MB)")
+        print(f"[T1.6] 使用打包产物: {ACTIVE_BINARY}  (目录 {_du_mb(ACTIVE_PRODUCT_DIR):.1f}MB)")
     if not _free_port():
         print(f"[WARN] 端口 {SIDECAR_PORT} 被占用，尝试清理残留 Sidecar...")
         _cleanup_any_sidecar()

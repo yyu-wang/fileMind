@@ -18,6 +18,7 @@ import { findFileByName } from '@/lib/citation';
 import { fileIpc } from '@/lib/ipc';
 import { useChatStore } from '@/stores/chatStore';
 import { useFileStore } from '@/stores/fileStore';
+import { useSidecarStore } from '@/stores/sidecarStore';
 import { type ChatCitation } from '@/types/models';
 import type { FileInfo } from '@/types/ipc';
 
@@ -36,6 +37,10 @@ export function ChatPage() {
   const totalFiles = useFileStore((s) => s.total);
   const filesReady = useFileStore((s) => !s.isScanning);
   const loadAllFiles = useFileStore((s) => s.loadAllFiles);
+  // P1-1：AI 引擎未就绪时禁用问答/建索引（避免「点了没反应」）
+  const engineReady = useSidecarStore((s) => s.status === 'ready');
+  const engineFailed = useSidecarStore((s) => s.status === 'failed' || s.status === 'crash_loop');
+  const retrySidecar = useSidecarStore((s) => s.retryStart);
 
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   // 预览抽屉挂载 key：每次打开/切引用 +1，保证 react-pdf 的 Document/Page 组件彻底重挂载，
@@ -203,7 +208,8 @@ export function ChatPage() {
             className="btn btn--ghost btn--sm"
             data-testid="build-index"
             onClick={() => void handleBuildIndex()}
-            disabled={building}
+            disabled={building || !engineReady}
+            title={engineReady ? undefined : 'AI 引擎未就绪，暂时无法建立索引'}
           >
             {building ? '索引中…' : '建立索引'}
           </button>
@@ -260,7 +266,28 @@ export function ChatPage() {
       </div>
 
       <div className="chat-input-area">
-        <ChatInput disabled={isStreaming} onSend={(content) => void sendMessage(content)} />
+        {!engineReady && (
+          <div className="chat-page__engine-hint" role="status">
+            {engineFailed ? (
+              <>
+                <span>AI 引擎启动失败，暂时无法提问。</span>
+                <button
+                  type="button"
+                  className="status-bar__link"
+                  onClick={() => void retrySidecar()}
+                >
+                  重试
+                </button>
+              </>
+            ) : (
+              <span>AI 引擎启动中，就绪后可开始问答…</span>
+            )}
+          </div>
+        )}
+        <ChatInput
+          disabled={isStreaming || !engineReady}
+          onSend={(content) => void sendMessage(content)}
+        />
       </div>
     </div>
   );

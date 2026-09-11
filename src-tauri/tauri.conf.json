@@ -54,8 +54,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["../filemind/binaries/filemind-sidecar"],
-    "resources": [],
+    "externalBin": [],
+    "resources": {
+      "../filemind/binaries/filemind-sidecar/": "sidecar"
+    },
     "createUpdaterArtifacts": true
   },
   "plugins": {

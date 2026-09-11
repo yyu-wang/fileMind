@@ -28,11 +28,11 @@ use filemind_lib::error::AppError;
 use filemind_lib::security::cloud_proxy::{self, CLOUD_PROXY_HOST, CLOUD_PROXY_PORT};
 use filemind_lib::security::{generate_token, log_redact};
 use filemind_lib::sidecar::{
-    cleanup_orphan_sidecar, resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv,
-    SidecarManager, WatchdogAction, SIDECAR_PORT,
+    cleanup_orphan_sidecar, resolve_dev_binary_path, spawn_sidecar_bootstrap,
+    update_sidecar_status, CloudSidecarEnv, SidecarManager, WatchdogAction, SIDECAR_PORT,
 };
 use filemind_lib::tray::{handle_tray_menu_event, reveal_main_window};
-use filemind_lib::AppState;
+use filemind_lib::{AppState, SidecarStatus};
 use tauri::{
     menu::{Menu, MenuItem},
     Emitter, Manager,
@@ -64,21 +64,6 @@ fn get_db_path() -> PathBuf {
         format!("{}/.filemind", home.display())
     });
     PathBuf::from(data_home).join("filemind.db")
-}
-
-/// 启动 Sidecar 并完成 HMAC 握手，返回 PSK。
-///
-/// 由 `block_on` 在当前线程 runtime 上执行（Tauri 初始化阶段没有异步上下文）。
-///
-/// # Errors
-///
-/// 任何启动或握手步骤失败时返回对应错误。
-fn start_sidecar_with_handshake(manager: &mut SidecarManager) -> Result<Vec<u8>, AppError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| AppError::SidecarUnavailable(format!("tokio runtime 初始化失败: {e}")))?;
-    runtime.block_on(async { manager.start_with_handshake().await })
 }
 
 /// 重启成功后同步新 PSK / seq / 重启计数到 `AppState`。
@@ -176,11 +161,18 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                                 Ok(new_psk) => {
                                     // 同步新 PSK / seq / 计数（失败告警见函数注释）
                                     on_restart_success(&app_handle.state::<AppState>(), new_psk);
+                                    // P1-1：重启成功同步前端状态（事件 + AppState）
+                                    update_sidecar_status(&app_handle, SidecarStatus::Ready);
                                 }
                                 Err(e) => {
                                     log::error!("Sidecar 重启失败: {e}");
-                                    // 失败后仍继续循环（下一轮再次 NeedRestart 时退避更长），
-                                    // 直到 CrashLoop 暂停。
+                                    // P1-1：单次重启失败即转 Failed 交给用户重试，
+                                    // 不再无限退避重试（重启后 process/psk 均为 None，
+                                    // watchdog 守卫会停在 Idle，见 manager.rs）
+                                    update_sidecar_status(
+                                        &app_handle,
+                                        SidecarStatus::Failed(e.to_string()),
+                                    );
                                 }
                             }
                         }
@@ -191,6 +183,11 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                         }) => {
                             log::error!(
                                 "Sidecar 进入 CrashLoop（{count}/{window_secs}s）：{message}"
+                            );
+                            // P1-1：同步为 Failed，前端展示错误 + 重试入口
+                            update_sidecar_status(
+                                &app_handle,
+                                SidecarStatus::Failed(message.clone()),
                             );
                             // BE-M7：通知前端展示「自动恢复已暂停」提示；
                             // 本分支自带 60s sleep，事件至多每分钟一条不会刷屏
@@ -384,36 +381,39 @@ fn main() {
         Err(e) => log::error!("操作日志链式哈希校验出错: {e}"),
     }
 
-    // ---- Sidecar 二进制解析与启动策略 ----
+    // ---- Sidecar 二进制解析（仅定位，启动交给 setup 后台引导，P1-1）----
     //
     // 解析优先级：
     //   1) FILEMIND_SIDECAR_BINARY env 强制指定（CI / 调试覆盖）
     //   2) dev 布局解析（CARGO_MANIFEST_DIR / cwd 下的 repo `filemind/binaries/`）
-    //   3) macOS/Windows 打包态：dev 找不到 → **不退出**，推迟到 setup 用 Tauri
+    //   3) macOS/Windows 打包态：dev 找不到 → **不退出**，留空由后台引导按 Tauri
     //      `externalBin` 落地路径（主可执行文件同目录）启动，保证安装包在任意
     //      cwd（用户双击 / Spotlight 启动）下都能跑。
+    // 其他平台无 bundle 兜底，dev 找不到直接退出（与旧行为一致）。
     let env_override = std::env::var("FILEMIND_SIDECAR_BINARY")
         .ok()
         .filter(|s| !s.is_empty());
-    let defer_to_bundle =
+    let can_bundle =
         cfg!(any(target_os = "macos", target_os = "windows")) && env_override.is_none();
-    let (sidecar_binary, dev_started) = match resolve_dev_binary_path(env_override.as_deref()) {
+    let sidecar_binary = match resolve_dev_binary_path(env_override.as_deref()) {
         Ok(p) => {
             log::info!(
                 "Sidecar binary path: {}",
                 log_redact::sanitize_path(&p.display().to_string())
             );
-            (p, true)
+            p
         }
-        Err(e) if defer_to_bundle => {
-            log::warn!("dev 模式未找到 Sidecar 二进制，推迟到 setup 按 bundle 路径启动: {e}");
-            (PathBuf::new(), false)
+        Err(e) if can_bundle => {
+            log::warn!("dev 模式未找到 Sidecar 二进制，交由后台引导按 bundle 路径解析: {e}");
+            PathBuf::new()
         }
         Err(e) => {
             log::error!("Sidecar 二进制解析失败: {e}");
             std::process::exit(1);
         }
     };
+    // 引导线程用（setup 闭包 move 需要独立副本；env_override 直接 move 进闭包）
+    let bootstrap_binary = sidecar_binary.clone();
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
 
     // T7.4 云端代理（07-§4）：生成调用方共享 token → 在 setup 阶段启动本机代理
@@ -463,34 +463,10 @@ fn main() {
     // 兜住该竞态：活实例的 Sidecar ppid 非孤，不会被误杀。
     cleanup_orphan_sidecar(SIDECAR_PORT);
 
-    // dev 模式：本阶段直接启动 + 握手（失败退出，避免未验证身份进入主循环）。
-    // 打包态 defer：本阶段不起进程，由 setup 用 bundle 路径完成启动与握手。
-    let sidecar_psk: Option<Vec<u8>> = if dev_started {
-        match start_sidecar_with_handshake(&mut sidecar_manager) {
-            Ok(psk) => {
-                // 主流程 manager 当前已持有 PSK（start_with_handshake 内部已存进
-                // self.psk），若与 AppState 写入的 psk 不一致以 AppState 为准，
-                // 这里同步拷贝一次保持一致。
-                debug_assert!(sidecar_manager
-                    .psk()
-                    .is_none_or(|inner| Some(inner) == Some(psk.as_slice())));
-                Some(psk)
-            }
-            Err(e) => {
-                log::error!("Sidecar handshake failed: {e}");
-                // BE-M3：std::process::exit 跳过 Drop，必须显式杀掉子进程再退出，
-                // 否则留下孤儿进程占住端口（start_with_handshake 内部已清理一次，
-                // 这里对「错误发生在 start 之前」等残余路径再兜底）。
-                if let Err(kill_err) = sidecar_manager.stop_hard() {
-                    log::error!("退出前清理 Sidecar 子进程失败: {kill_err}");
-                }
-                std::process::exit(1);
-            }
-        }
-    } else {
-        log::info!("Sidecar 已延迟到 setup 启动（bundle 路径）");
-        None
-    };
+    // P1-1：Sidecar 不再在本阶段启动——`setup` 内 `spawn_sidecar_bootstrap`
+    // 起后台线程完成启动 + 握手（打包态冷启动 30s+ 不阻塞窗口显示）。
+    // 失败收敛为 `sidecar-status` 事件 + 前端重试，不再 `process::exit`。
+    log::info!("Sidecar 启动已异步化：由 setup 后台引导线程接管");
 
     // Tauri AppState 生命周期贯穿整个 Tauri 运行期，
     // 同时 main 栈变量也持有 AppState 引用直到 run() 返回；
@@ -516,10 +492,13 @@ fn main() {
         .manage(AppState {
             db: Arc::clone(&database),
             sidecar_manager: Mutex::new(sidecar_manager),
-            sidecar_psk: Mutex::new(sidecar_psk),
+            // P1-1：PSK 由后台引导线程握手成功后写入，初始为 None
+            sidecar_psk: Mutex::new(None),
             sidecar_binary: Mutex::new(sidecar_binary),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
+            // P1-1：初始 Starting，后台引导线程随后更新
+            sidecar_status: Mutex::new(SidecarStatus::Starting),
         })
         .invoke_handler(tauri::generate_handler![
             // T6.6 RAG 问答（Sidecar /chat/stream SSE 代理）
@@ -567,6 +546,9 @@ fn main() {
             commands::cloud_providers::list_cloud_providers,
             commands::cloud_providers::upsert_cloud_provider,
             commands::cloud_providers::delete_cloud_provider,
+            // P1-1 Sidecar 生命周期查询 / 手动重试
+            commands::sidecar::get_sidecar_status,
+            commands::sidecar::retry_sidecar_start,
             // T9.5 E2E 测试专用命令（仅 debug 注册；release 不携带自动化入口）
             #[cfg(debug_assertions)]
             commands::e2e::e2e_get_test_dir,
@@ -581,113 +563,10 @@ fn main() {
             }
             log::info!("云端代理已就绪（setup）: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}");
 
-            // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖
-            //
-            // 规则矩阵（main dev 解析先用，这里可能替换）：
-            //   FILEMIND_SIDECAR_BINARY env 已设置             → 不动，强制 env 路径
-            //   env 未设置 + 命中 macOS/Windows bundle / force → 走 Tauri resource_dir
-            //   env 未设置 + dev cargo run                      → 保持 dev 解析结果
-            let env_override_set = std::env::var("FILEMIND_SIDECAR_BINARY")
-                .ok()
-                .is_some_and(|s| !s.is_empty());
-            let force_bundle = std::env::var("FILEMIND_FORCE_BUNDLE_PATH").is_ok();
-            let native_bundle =
-                cfg!(any(target_os = "macos", target_os = "windows"));
-            let should_try_bundle = !env_override_set && (force_bundle || native_bundle);
-
-            if should_try_bundle {
-                match resolve_bundle_binary_path(app.handle()) {
-                    Ok(bundle_path) => {
-                        log::info!(
-                            "命中 bundle Sidecar 路径: {}; 将替换当前 dev 路径并重新握手",
-                            bundle_path.display()
-                        );
-                        let mut new_mgr = SidecarManager::new(bundle_path.clone());
-                        // T7.4：bundle manager 必须继承 main 阶段解析好的云端 env
-                        // （代理地址/token/脱敏开关/激活提供商），否则打包态云端模式
-                        // 启动后 Sidecar 拿不到代理配置 → 云端请求直连外网（违规）。
-                        {
-                            let state = app.state::<AppState>();
-                            let cloud = state
-                                .sidecar_manager
-                                .lock()
-                                .ok()
-                                .and_then(|m| m.cloud_env().cloned());
-                            if let Some(cloud) = cloud {
-                                new_mgr.set_cloud_env(cloud);
-                            }
-                        }
-                        match start_sidecar_with_handshake(&mut new_mgr) {
-                            Ok(new_psk) => {
-                                let state = app.state::<AppState>();
-                                // 顺序：先锁旧 manager → 调用 stop_hard 占位对象（dev 路径
-                                // 的 manager 其实是真启动，务必杀避免端口/孤儿泄漏）→ 再 replace
-                                {
-                                    let Ok(mut old_mgr) = state.sidecar_manager.lock() else {
-                                        log::error!("setup 替换 manager 时 Mutex 中毒，放弃 bundle 切换（沿用 dev 路径）");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    // 旧 manager 可能已经在握手后启动（真正持有 Child），
-                                    // stop_hard 兜底确保旧进程一定杀掉。
-                                    let _ = old_mgr.stop_hard();
-                                    *old_mgr = new_mgr;
-                                }
-                                {
-                                    let Ok(mut binary_guard) = state.sidecar_binary.lock() else {
-                                        log::error!("setup 替换 sidecar_binary 时 Mutex 中毒");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    *binary_guard = bundle_path;
-                                }
-                                {
-                                    let Ok(mut psk_guard) = state.sidecar_psk.lock() else {
-                                        log::error!("setup 替换 sidecar_psk 时 Mutex 中毒");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    *psk_guard = Some(new_psk);
-                                }
-                                state.request_seq.store(0, Ordering::SeqCst);
-                                log::info!("Sidecar 已切换为 bundle 路径并重新握手成功");
-                            }
-                            Err(e) => {
-                                // 打包态（无 dev 进程）bundle 启动失败 = 核心引擎不可用，
-                                // 直接中止启动，避免半可用应用；dev 场景回退沿用 dev 路径。
-                                let had_dev = app
-                                    .state::<AppState>()
-                                    .sidecar_manager
-                                    .lock()
-                                    .is_ok_and(|m| m.psk().is_some());
-                                if !had_dev {
-                                    log::error!(
-                                        "bundle Sidecar 启动+握手失败且无 dev 回退，应用中止: {e}"
-                                    );
-                                    return Err(e.into());
-                                }
-                                log::warn!("bundle manager 启动+握手失败，回退沿用 dev 路径（已可用）: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // 打包态（无 dev 进程）且 bundle 未命中 = 安装包缺 Sidecar，
-                        // 中止启动；dev 场景未命中属正常，保持 dev 路径。
-                        let had_dev = app
-                            .state::<AppState>()
-                            .sidecar_manager
-                            .lock()
-                            .is_ok_and(|m| m.psk().is_some());
-                        if !had_dev {
-                            log::error!(
-                                "未命中 bundle Sidecar 路径且无 dev 回退，应用中止: {e}"
-                            );
-                            return Err(e.into());
-                        }
-                        log::warn!("未命中 bundle Sidecar 路径（可能是 dev 环境），保持 dev 路径: {e}");
-                    }
-                }
-            }
+            // P1-1：Sidecar 后台引导（不阻塞窗口显示）。
+            // 路径解析（dev/bundle/env）与启动+握手全部在后台线程完成，
+            // 状态经 `sidecar-status` 事件推送；失败由前端展示 + 重试，不退出。
+            spawn_sidecar_bootstrap(app.handle().clone(), bootstrap_binary, env_override);
             spawn_watchdog(app.handle().clone());
 
             // T9.5 E2E：`FILEMIND_E2E=1` 时强制显示主窗口（debug 构建专用，避免依赖

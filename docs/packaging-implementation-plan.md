@@ -58,7 +58,10 @@
 | B. 保持 80MB                           | 需砍掉本地向量库/离线 rerank 等核心能力，等价功能回退                    | 已否决                |
 | C. 分体 sidecar（base+heavy 分离安装） | 体积精细但引入自研加载器，改动面大                                       | 留作 v0.2 后续优化    |
 
-> 补充事实：PyInstaller **onefile** 每次启动需把 315MB 解压到临时目录 → 冷启动 39s + 临时磁盘占用。当前 watchdog 就绪窗口已放宽到 60s（[manager.rs](src-tauri/src/sidecar/manager.rs) L34-36），重启可用；但**升级到 `--onedir` 可显著缩短冷启动**（代价：bundle 里多一个目录，externalBin 需打包为目录/调整拷贝逻辑）。本轮先保 onefile + 预算上调，`--onedir` 列为 D1-A 的后续优化项，不进本轮。
+> 补充事实：PyInstaller **onefile** 每次启动需把 315MB 解压到临时目录 → 冷启动 39s + 临时磁盘占用。当前 watchdog 就绪窗口已放宽到 60s（[manager.rs](src-tauri/src/sidecar/manager.rs) L34-36），重启可用；升级到 `--onedir` 可显著缩短冷启动（代价：bundle 里多一个目录，externalBin 需打包为目录/调整拷贝逻辑）。
+>
+> ✅ **该后续优化已于 P2-2 落地（2026-09-11）**：稳态 `/health` 15.7s → 1.0s，`externalBin` 改为
+> `bundle.resources` 携带 onedir 目录，详见下文「P2-2」小节。
 
 ### D2：CI 构建结构（备选存档）
 
@@ -169,6 +172,47 @@
 - Windows：OV/EV 代码签名证书（SmartScreen）
 - 版本号按 [release.md](rules/release.md)：当前已统一升至 `1.0.0`（package.json / Cargo.toml / tauri.conf.json / python main.py / routes_health.py + 前端展示全部同步），后续发版按 MINOR/PATCH 规则递增
 - Changelog：`[Unreleased]` → 版本化 + 补本条 T1.3 打包集成条目
+
+### P2-2：onefile → onedir（启动性能优化，2026-09-11）
+
+- 背景：D1 决策把 `--onedir` 列为「后续优化」。实测 onefile 每次启动需把归档解压到临时目录，
+  占冷启动 21s / 稳态 15.7s 中的约 14s；P1-1/P1-2 已让窗口秒开，但「AI 引擎可用」仍要等 15.7s。
+- 改动文件：`python-sidecar/filemind-sidecar.spec`（EXE `exclude_binaries=True` + 新增 `COLLECT`）、
+  `scripts/build-sidecar.sh`（目录产物：体积/SHA/拷贝/软链）、`src-tauri/tauri.conf.json`
+  （`externalBin` → `bundle.resources` 目录映射）、`src-tauri/src/sidecar/manager.rs`
+  （dev/bundle 目录形态解析）、`.github/workflows/merge-build.yml`（smoke check 路径）、
+  `.github/workflows/e2e-smoke.yml`（补最小占位产物目录，见下）、`eslint.config.js`
+  （忽略 `filemind/binaries/`——onedir 内含第三方 .js 资源）、
+  `scripts/verify-packaged-app.sh`、`scripts/go-no-go.py`、`Makefile`
+- 关键结论（本机 aarch64 实测）：
+  1. **稳态 `/health` 就绪 15.7s → 1.0s**（连续 4 次 1.01~1.07s）；首启冷页面缓存需读满 ~1.4GB，约 15s
+  2. **下载体积不变**：tar.gz 实测 317MB（原 onefile 319MB）；变的是安装占用（319MB → 源产物 915MB /
+     打包后约 1384MB —— Tauri `copy_resources` 会把源产物里的 36 个 symlink 解引用成真实文件）
+  3. 体积构成：`_internal/torch` 403MB（29%）、lancedb 126MB、pyarrow 118MB
+  4. 内存 RSS 169MB → 149MB
+- 门控口径变更：`MAX_SIZE_MB` 400 → **1600**（onefile 量的是**压缩态**单文件，onedir 是**解压态**目录，
+  两者不可直接比较）。⚠️ 体积一律按**逻辑大小**（`find -type f` 求和、不跟随 symlink）统计：`du` 在
+  APFS 上受 clone/硬链接与 symlink 解引用影响，同一棵树能给出 915MB / 1397MB 等不一致读数。
+- 落地位置变更：`externalBin`（主可执行同目录 `Contents/MacOS/`）→ `bundle.resources`
+  map `{"../filemind/binaries/filemind-sidecar/": "sidecar"}`，即 `Contents/Resources/sidecar/`；
+  Tauri 复制**保留可执行位**（已实测）。
+- 显式覆盖语义保留：`FILEMIND_SIDECAR_BINARY` 同时接受 onedir **目录**与可执行**文件**——
+  CI E2E（`scripts/e2e-sidecar-wrapper.sh`）与本地 dev（`binaries/filemind-sidecar-dev`，wrapper 脚本）
+  以文件形态注入 `python -m app`，是文件而非目录。**布局发现**（dev/bundle）只认 onedir，不扫描旧 onefile。
+- E2E job 适配：`tauri-build` 的 build.rs 会按 `bundle.resources` 收集资源并**校验存在性**（缺则编译失败），
+  而 E2E 为省 5-10min 不跑 PyInstaller；故 e2e-smoke.yml 增加一步造**最小占位产物目录**
+  （把 wrapper stub 复制为 `filemind/binaries/filemind-sidecar/filemind-sidecar`）。
+- 验证：`verify-packaged-app.sh` 对真实 `.app` **4 PASS / 0 FAIL**；`.app` 内 bundled sidecar
+  直接运行稳态 1.1~1.3s 且 LanceDB 可用（`/index/delete_by_file_ids` HTTP 200）；
+  新增「真实 `.app` 布局命中 bundle 侧车」单测作为长期契约回归。
+- ✅ **端到端已验证（2026-09-11）**：退出旧实例后，从 `/tmp`（无 repo 布局）启动 `.app`，日志依次为
+  `dev 模式未找到 Sidecar 二进制，交由后台引导按 bundle 路径解析` → `Sidecar 引导使用路径: ***/filemind-sidecar`
+  → `Sidecar 握手成功` → `Sidecar 引导完成（后台线程）`，0 error；运行中 sidecar 进程路径实测为
+  `<FileMind.app>/Contents/Resources/sidecar/filemind-sidecar`，`/health` 返回 ok。
+  ⚠️ 注意：若旧版 FileMind 仍驻留（托盘常驻），`tauri-plugin-single-instance` 会让新实例直接接管退出，
+  表现为「无 setup 日志」——验证前需先退出旧实例。
+- 已知代价：onedir 目录 6172 个文件，首次安装后首启需冷读 ~1.4GB；macOS 未来做签名/公证时
+  需对 `Resources/sidecar/` 内的可执行文件一并签名。
 
 ---
 

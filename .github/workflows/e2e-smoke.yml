@@ -49,6 +49,16 @@ jobs:
       - name: Generate IPC types
         run: npm run gen:ipc
 
+      # P2-2：tauri-build 的 build.rs 会按 bundle.resources 收集资源并校验存在性
+      # （不存在即编译失败）。E2E 不需要真实 onedir 产物（运行时由
+      # FILEMIND_SIDECAR_BINARY 指向 wrapper stub），故造一个最小占位目录即可，
+      # 保持本 job「不跑 PyInstaller（省 5-10min）」的既有取舍。
+      - name: Stub sidecar product dir (E2E)
+        run: |
+          mkdir -p filemind/binaries/filemind-sidecar
+          cp scripts/e2e-sidecar-wrapper.sh filemind/binaries/filemind-sidecar/filemind-sidecar
+          chmod +x filemind/binaries/filemind-sidecar/filemind-sidecar
+
       # E2E 用 debug 二进制：嵌入式 wdio driver 仅 debug_assertions 注册；
       # --no-bundle 跳过 deb/appimage，省时间也避免 bundle 工具缺失
       - name: Build Tauri (debug, no bundle)

@@ -23,13 +23,14 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import lancedb
-import numpy as np
-
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    # 惰性导入（P2-1）：lancedb 冷导入约 0.7s（连带 lance_namespace / pyarrow 扩展），
+    # 仅在真正建立连接时加载，避免拖慢 Sidecar 启动（/health 可服务时间）。
+    # 运行时导入见 ``LanceDBManager.connect``。
+    import lancedb
     from lancedb.table import Table as LanceTable
 
 # LanceDB 0.37.1 使用 pa.Table 创建 schema；这里通过 Pydantic 兼容层描述
@@ -71,7 +72,9 @@ class LanceDBManager:
     """LanceDB 生命周期管理器（FastAPI lifespan 里单例初始化）。"""
 
     db_path: Path
-    _db: lancedb.DBConnection | None = None  # noqa: F821 - lancedb 动态属性
+    # 惰性求值：``from __future__ import annotations`` 下此为字符串注解，
+    # 不在导入期解析 lancedb.DBConnection（该导入在 TYPE_CHECKING 分支）
+    _db: lancedb.DBConnection | None = None
     #: 表句柄缓存：open_table 命中后跳过列目录/读元数据（T10.2 检索首 token 优化）。
     #: 表被删除重建时须调 invalidate_table/invalidate_all 使旧句柄失效。
     _table_cache: dict[str, LanceTable] = field(default_factory=dict, init=False)
@@ -92,6 +95,9 @@ class LanceDBManager:
         Raises:
             RuntimeError: LanceDB 连接失败时，抛带路径上下文的异常
         """
+        # P2-1：惰性导入（模块级不导入 lancedb，见文件头 TYPE_CHECKING 说明）
+        import lancedb
+
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             # 父目录 0700：仅 owner 可进入/读/写
@@ -372,6 +378,9 @@ class LanceDBManager:
         Returns:
             按 ``_distance`` 升序的命中列表；表不存在时返回空列表。
         """
+        # P2-1：numpy 惰性导入（模块级不导入，避免启动期加载）
+        import numpy as np
+
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
         # 表不存在（尚未建索引）→ 返回空列表，混合检索退化为纯 FTS 排序。

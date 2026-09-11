@@ -533,6 +533,43 @@ code,
   border-radius: var(--radius-full);
 }
 
+/* P1-1 引擎状态胶囊（状态栏）：启动中（蓝，呼吸点）/ 失败（红，可重试） */
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-0-5) var(--sp-2);
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.engine-badge--starting {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent2);
+}
+
+.engine-badge--failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+}
+
+.engine-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+}
+
+.engine-dot--starting {
+  background: var(--accent2);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.engine-dot--failed {
+  background: var(--danger);
+}
+
 /* 兼容旧类名 status-bar*（过渡期保留，逐步迁移到 statusbar） */
 .status-bar {
   display: flex;
@@ -3233,6 +3270,16 @@ select.input:disabled {
   padding: var(--sp-3) var(--sp-6) var(--sp-4);
   border-top: 1px solid var(--rule);
   flex-shrink: 0;
+}
+
+/* P1-1 引擎未就绪提示（聊天输入区上方） */
+.chat-page__engine-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .chat-bubble {

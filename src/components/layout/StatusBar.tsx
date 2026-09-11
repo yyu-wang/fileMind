@@ -9,6 +9,7 @@
 
 import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useSidecarStore } from '../../stores/sidecarStore';
 import { MODE_COLORS, resolveDisplayModel } from '../../types/models';
 
 const MODE_BADGE_CLASS: Record<string, string> = {
@@ -25,6 +26,10 @@ export function StatusBar() {
   const stats = useFileStore((s) => s.stats);
   const selectedIds = useFileStore((s) => s.selectedIds);
   const clearSelection = useFileStore((s) => s.clearSelection);
+  // P1-1：Sidecar 引擎状态（启动中/失败 → 状态栏展示，失败可重试）
+  const sidecarStatus = useSidecarStore((s) => s.status);
+  const sidecarMessage = useSidecarStore((s) => s.message);
+  const retrySidecar = useSidecarStore((s) => s.retryStart);
 
   const modeColor = MODE_COLORS[inferenceMode];
   const badgeClass = MODE_BADGE_CLASS[inferenceMode] ?? 'local';
@@ -34,6 +39,8 @@ export function StatusBar() {
     cloudModel,
     cloudConsentProvider,
   );
+  const engineStarting = sidecarStatus === 'starting';
+  const engineFailed = sidecarStatus === 'failed' || sidecarStatus === 'crash_loop';
 
   return (
     <footer className="statusbar" aria-label="状态栏">
@@ -67,6 +74,36 @@ export function StatusBar() {
         </>
       )}
       <div className="status-right">
+        {engineStarting && (
+          <>
+            <span className="engine-badge engine-badge--starting" title="AI 引擎正在后台启动">
+              <span className="engine-dot engine-dot--starting" aria-hidden />
+              引擎启动中…
+            </span>
+            <span className="status-divider" aria-hidden />
+          </>
+        )}
+        {engineFailed && (
+          <>
+            <span
+              className="engine-badge engine-badge--failed"
+              title={sidecarMessage ?? 'AI 引擎启动失败'}
+            >
+              <span className="engine-dot engine-dot--failed" aria-hidden />
+              引擎不可用
+            </span>
+            <button
+              type="button"
+              className="status-bar__link"
+              onClick={() => void retrySidecar()}
+              title="重新启动 AI 引擎"
+              aria-label="重试启动 AI 引擎"
+            >
+              重试
+            </button>
+            <span className="status-divider" aria-hidden />
+          </>
+        )}
         <span className="status-item" title="版本号">
           v1.0.0
         </span>

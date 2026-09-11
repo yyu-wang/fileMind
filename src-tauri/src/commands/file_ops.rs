@@ -1814,6 +1814,7 @@ mod tests {
             sidecar_binary: Mutex::new("/dev/null/sidecar-nonexistent".into()),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
+            sidecar_status: Mutex::new(crate::SidecarStatus::Starting),
         }
     }
 

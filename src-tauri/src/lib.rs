@@ -58,6 +58,42 @@ impl From<db::models::FileRecord> for FileInfo {
     }
 }
 
+/// Sidecar 生命周期状态（P1-1：启动异步化后由后台引导线程维护）。
+///
+/// 值同步到前端两条通路：
+/// 1. `sidecar-status` 事件（变更即推，负载见 [`crate::events::types::SidecarStatusEvent`]）
+/// 2. `get_sidecar_status` 命令（前端启动时查询初始值）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SidecarStatus {
+    /// 后台线程正在启动（未就绪，AI 功能暂不可用）。
+    Starting,
+    /// 握手完成，AI 功能可用。
+    Ready,
+    /// 启动失败（附原因，可手动重试）。
+    Failed(String),
+}
+
+impl SidecarStatus {
+    /// 事件/命令使用的稳定字符串标识。
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    /// 附加说明（`Failed` 时返回原因，其余为 `None`）。
+    #[must_use]
+    pub fn message(&self) -> Option<String> {
+        match self {
+            Self::Failed(msg) => Some(msg.clone()),
+            Self::Starting | Self::Ready => None,
+        }
+    }
+}
+
 /// 全局应用状态：由 Tauri 管理并注入各命令。
 pub struct AppState {
     /// 数据库句柄（Arc 包一层 Mutex：让云端代理与 Tauri 命令层共享同一连接池对象，
@@ -80,4 +116,6 @@ pub struct AppState {
     /// 历史累计崩溃重启次数（用于状态面板 + 排障）。
     /// 与 `recent_restarts`（`CrashLoop` 窗口）是两个独立计数器。
     pub sidecar_restart_count: AtomicU64,
+    /// Sidecar 生命周期状态（P1-1：后台引导线程写入，前端经事件/命令读取）。
+    pub sidecar_status: Mutex<SidecarStatus>,
 }

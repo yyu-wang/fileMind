@@ -1,23 +1,34 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""T1.2 PyInstaller spec — FileMind Sidecar ``--onefile`` 可执行。
+"""T1.2 / P2-2 PyInstaller spec — FileMind Sidecar ``--onedir`` 可执行目录。
 
-体积门控（2026-09-04 修订）：≤400MB。历史：早期 E1 PoC 不含向量/重排依赖，
-onefile 仅约 24MB、门控 80MB；引入 lancedb（+pyarrow/lance）、numpy、jieba、
-ollama/openai、sentence-transformers（离线 embedding/rerank，拖入 torch）等
-**运行时硬依赖**后，真实 onefile 体积约 315MB（本机 aarch64 实测 2026-08-24），
-无法靠 excludes 压回 80MB。决策记录：docs/packaging-implementation-plan.md §1 D1。
+P2-2（2026-09-11）由 ``--onefile`` 改为 ``--onedir``：
+    产物 = ``dist/filemind-sidecar/`` 目录（主可执行 + ``_internal/``）。
+    动机：onefile 每次启动都要把 ~320MB 归档解压到临时目录，实测冷启动
+    21s / 热盘 16s 中约 14s 消耗在解压；onedir 原地读取，消除该开销。
+    代价：Tauri 集成由 ``externalBin`` 改为 ``bundle.resources`` 携带整个目录
+    （见 src-tauri/tauri.conf.json + sidecar/manager.rs 的目录探测）。
+
+体积门控：≤1600MB，按**目录逻辑大小**（`find -type f` 逐个 size 求和，不跟随 symlink）
+    统计。本机实测：**源产物 915MB / 6136 文件**；经 Tauri `copy_resources` 打包后约
+    1384MB / 6172 文件（该步骤会把 `Python.framework/Versions/Current` 等 36 个 symlink
+    **解引用**成真实文件副本）。两者共用 1600MB 门控，均 PASS。
+    口径沿革：早期 E1 PoC 不含向量/重排依赖时 onefile 仅约 24MB、门控 80MB；引入 lancedb
+    （+pyarrow/lance）、numpy、jieba、ollama/openai、sentence-transformers（离线
+    embedding/rerank，拖入 torch）等**运行时硬依赖**后，onefile 压缩态约 315MB、
+    门控上调至 400MB。P2-2 改为 onedir 后产物是解压落地态，按实测绝对值设 1600MB——
+    用户实际下载体积（tar.gz / dmg / msi 压缩后）实测 317MB，与原 onefile 持平。
+    ⚠️ 不用 `du` 统计：APFS 上 clone/硬链接共享块会让同一棵树的不同副本给出
+    不一致读数，无法作为跨副本可比的门控口径。
 
 体积优化策略（当前有效）：
 1. **``optimize=1``**：``-O`` 级别（仅删 assert，**保留 docstring**——transformers
    5.x 运行时解析 docstring，``optimize=2`` 会导致 rerank 模型加载失败，见下方
    ``Analysis(optimize=...)`` 处注释）。
-2. **``strip=True``**：剥离 native 扩展 / stdlib 符号。
+2. **``strip=True``**：剥离 native 扩展 / stdlib 符号（EXE 与 COLLECT 均设）。
 3. **``excludes`` 仅剔除确认用不到的冗余**：tkinter/venv/lib2to3 等 stdlib 与
    pytest/ruff/mypy 等 dev 依赖（运行依赖一律不排除）。
 4. **``upx=False``**：UPX 与 ``_lancedb.abi3.so``、``_pydantic_core`` 等 native
    扩展常见冲突，不启用。
-5. 后续优化候选（本轮不做）：改 ``--onedir`` 缩短冷启动（当前 onefile 冷启动约
-   39s），需同步调整 Tauri externalBin 集成方式。
 
 跨平台：target_arch 由 ``scripts/build-sidecar.sh`` 用 ``PYINSTALLER_TARGET_ARCH`` 传参，
 此处不硬编码；``name="filemind-sidecar"`` 统一（Windows 会自动加 .exe 后缀）。
@@ -70,6 +81,11 @@ _hidden: list[str] = [
     "app.api.routes_embedding",
     "app.middleware",
     "app.middleware.hmac_auth",
+    # P2-1：以下两个重依赖已改为「函数内惰性导入」（缩短启动期 import 耗时），
+    # 虽仍可被字节码扫描命中，但为杜绝打包态 ModuleNotFound（该风险仅在打包后
+    # 暴露、dev/单测无法发现），显式登记兜底。
+    "lancedb",
+    "openai",
     # pydantic v2 native 扩展
     "pydantic",
     "pydantic_core",
@@ -148,24 +164,32 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# P2-2 onedir：EXE 只含 bootloader + PYZ；二进制作业/数据交给 COLLECT 落到
+# 同级的 ``_internal/``，启动时原地读取（不再解压到临时目录）。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="filemind-sidecar",
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
     upx=False,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=_PYI_TARGET_ARCH,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=True,
+    upx=False,
+    upx_exclude=[],
+    name="filemind-sidecar",
 )

@@ -71,10 +71,9 @@ jobs:
 
       - run: npm ci
 
-      # Sidecar onefile（<400MB 门控见 scripts/build-sidecar.sh）。文件名
-      # filemind-sidecar-{triple}[.exe] 与 tauri.conf externalBin 期望一致。
+      # Sidecar onedir 产物（体积门控见 scripts/build-sidecar.sh）。
       # ⚠️ 必须在 gen:ipc 之前：cargo run 会触发 tauri-build 的 build.rs，
-      #    校验 externalBin 声明的 sidecar 产物存在，顺序颠倒则直接编译失败。
+      #    校验 bundle.resources 声明的 sidecar 产物目录存在，顺序颠倒则直接编译失败。
       - name: Build Sidecar (${{ matrix.label }})
         shell: bash
         run: bash scripts/build-sidecar.sh --target ${{ matrix.target }}
@@ -84,7 +83,8 @@ jobs:
       - name: Generate IPC types
         run: npm run gen:ipc
 
-      # 原生构建 + externalBin 自动打进安装包（主可执行同目录）
+      # 原生构建 + bundle.resources 把 sidecar onedir 目录打进安装包
+      # （tauri.conf.json: {"../filemind/binaries/filemind-sidecar/": "sidecar"}）
       # TAURI_SIGNING_PRIVATE_KEY：updater 签名私钥（bundle.createUpdaterArtifacts=true 时，
       # msi/nsis/app 目标构建后必须签名更新产物，缺密钥构建直接失败）
       - name: Build Tauri (${{ matrix.label }})
@@ -92,15 +92,23 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
-      # 打包态冒烟：安装包内必须真实包含 Sidecar 可执行文件（缺它 = 装完即崩），显式失败
+      # 打包态冒烟：安装包内必须真实包含 Sidecar onedir 产物（缺它 = 装完即崩），显式失败
+      # P2-2：落地位置由 externalBin（主可执行同目录）改为 resources（$RESOURCE/sidecar/）
       - name: Smoke check Sidecar bundled
         shell: bash
         run: |
           set -e
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            test -n "$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -path '*/Contents/MacOS/filemind-sidecar')"
+            APP="$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+            test -n "${APP}"
+            test -x "${APP}/Contents/Resources/sidecar/filemind-sidecar"
+            test -d "${APP}/Contents/Resources/sidecar/_internal"
+            echo "Sidecar bundled (macOS): ${APP}/Contents/Resources/sidecar"
           elif [[ "${{ runner.os }}" == "Windows" ]]; then
-            test -n "$(find src-tauri/target/${{ matrix.target }}/release -name 'filemind-sidecar*.exe' | head -1)"
+            # Windows 资源收集目录 = target/<triple>/release/sidecar（安装器据此打包）
+            test -f "src-tauri/target/${{ matrix.target }}/release/sidecar/filemind-sidecar.exe"
+            test -d "src-tauri/target/${{ matrix.target }}/release/sidecar/_internal"
+            echo "Sidecar resources collected (Windows)"
           fi
           echo "Sidecar bundled OK"
 

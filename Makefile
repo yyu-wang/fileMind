@@ -14,7 +14,7 @@ test:
 	cargo test --manifest-path src-tauri/Cargo.toml
 	cd python-sidecar && source ../.venv/bin/activate && pytest tests/
 
-# 生产打包：先构建 Sidecar（PyInstaller onefile，自动识别本机 triple），再 tauri build。
+# 生产打包：先构建 Sidecar（PyInstaller onedir 产物目录，自动识别本机 triple），再 tauri build。
 # 注意：产物 filemind/binaries/* 已被 gitignore，构建期现场生成；CI 按各自 job 独立调用
 # build-sidecar.sh（见 docs/packaging-implementation-plan.md T2/T3）。
 build: sidecar

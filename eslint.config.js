@@ -94,6 +94,9 @@ export default [
       'python-sidecar/',
       'src/types/ipc.ts',
       '.bench/',
+      // P2-2：Sidecar onedir 产物（gitignore 的构建输出）内含第三方 .js 资源
+      // （如 sklearn 的 _repr_html/*.js），非本项目源码，不应参与 lint
+      'filemind/binaries/',
     ],
   },
 ];
