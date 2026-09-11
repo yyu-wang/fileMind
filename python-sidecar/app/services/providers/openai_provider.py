@@ -20,10 +20,6 @@ import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from openai import AsyncOpenAI, Omit, OpenAIError
-from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
-from openai.types.shared_params import ResponseFormatJSONObject
-
 from app.core.cloud_mask import (
     CloudMasker,
     content_max,
@@ -38,6 +34,14 @@ from app.services.cloud_provider import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    # 惰性导入（P2-1）：openai SDK 冷导入约 0.3s，且仅「云端推理」路径使用
+    # （默认 local 模式启动期用不到）。运行时导入见各方法体内。
+    from openai import AsyncOpenAI
+    from openai.types.chat import (
+        ChatCompletionSystemMessageParam,
+        ChatCompletionUserMessageParam,
+    )
 
 #: 本地 cloud_proxy 监听地址（cloud_proxy.rs::CLOUD_PROXY_HOST/PORT）
 CLOUD_PROXY_BASE_URL = "http://127.0.0.1:8766"
@@ -59,6 +63,8 @@ def _get_cached_client(
     max_retries: int,
 ) -> AsyncOpenAI:
     """按配置缓存 AsyncOpenAI 实例（连接池复用）。lru_cache 按参数组合键。"""
+    from openai import AsyncOpenAI
+
     return AsyncOpenAI(
         base_url=base_url,
         api_key="filemind-proxy",  # 占位：真实 Key 由代理从 Keychain 注入
@@ -125,6 +131,9 @@ class OpenAIProvider(LLMProvider):
         Raises:
             CloudUnavailableError: 代理不可达 / HTTP 错误 / 鉴权失败 / 超时。
         """
+        from openai import Omit, OpenAIError
+        from openai.types.shared_params import ResponseFormatJSONObject
+
         messages = self._build_messages(system, user)
         response_format = ResponseFormatJSONObject(type="json_object") if json_mode else Omit()
         # 调用方未显式指定时回落 provider 级默认（DeepSeek 中文长回答防截断）
@@ -168,6 +177,8 @@ class OpenAIProvider(LLMProvider):
         Raises:
             CloudUnavailableError: 首个 delta 前代理不可达 / HTTP 错误 / 超时。
         """
+        from openai import OpenAIError
+
         messages = self._build_messages(system, user)
         effective_max_tokens = max_tokens if max_tokens is not None else self._default_max_tokens
         # SC-m12：云端调用审计——记录 Provider 与发送数据量（不含内容/文件名）
@@ -216,6 +227,11 @@ class OpenAIProvider(LLMProvider):
         system: str, user: str
     ) -> list[ChatCompletionSystemMessageParam | ChatCompletionUserMessageParam]:
         """构造 OpenAI 消息数组（system + user）。"""
+        from openai.types.chat import (
+            ChatCompletionSystemMessageParam,
+            ChatCompletionUserMessageParam,
+        )
+
         return [
             ChatCompletionSystemMessageParam(role="system", content=system),
             ChatCompletionUserMessageParam(role="user", content=user),

@@ -1,9 +1,8 @@
-// 步骤一：推理模式选择（03 设计稿 §3.1）。
+// 步骤一：推理模式选择（对齐交互原型 §Onboarding Step 1）。
 //
-// 三个选项：Local（推荐）/ Cloud / Hybrid（禁用，T11）
+// 两个选项：Local（推荐）/ Cloud。混合模式（Hybrid）P1 未开发，不渲染占位选项。
 // 选 Local → 直接进 directory；选 Cloud → 进 consent
-//
-// Ollama 检测占位 → 真实探测（T6.7）：挂载时 probeOllama，提示条反映真实状态。
+// Ollama 检测：挂载时 probeOllama，callout 反映真实状态。
 
 import { useEffect, useState } from 'react';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -13,17 +12,13 @@ interface StepModeSelectProps {
   onNext: (mode: InferenceMode) => void;
 }
 
-// 选项值用 string 表示（Hybrid 不在 InferenceMode 枚举中，仅作 UI 占位）
-type ModeOptionValue = InferenceMode | 'Hybrid';
-
 interface ModeOption {
-  value: ModeOptionValue;
+  value: InferenceMode;
   icon: string;
   label: string;
   desc: string;
   tag?: string;
-  tagColor?: string;
-  disabled?: boolean;
+  tagClass?: string;
 }
 
 const MODE_OPTIONS: ModeOption[] = [
@@ -33,7 +28,7 @@ const MODE_OPTIONS: ModeOption[] = [
     label: '本地模式',
     desc: '所有 AI 处理在你的设备本地完成，数据不离开设备。需要 Ollama 运行。',
     tag: '推荐',
-    tagColor: '#e9d8fd',
+    tagClass: 'tag-purple',
   },
   {
     value: 'Cloud',
@@ -41,19 +36,10 @@ const MODE_OPTIONS: ModeOption[] = [
     label: '云端模式',
     desc: '使用 OpenAI/DeepSeek 云端 API。效果更强但文件内容会上传到第三方服务器。',
   },
-  {
-    value: 'Hybrid',
-    icon: '🔀',
-    label: '混合模式',
-    desc: '按功能粒度配置：分类用本地、问答用云端等。适合高级用户。',
-    tag: '即将推出',
-    tagColor: '#fed7aa',
-    disabled: true,
-  },
 ];
 
 export function StepModeSelect({ onNext }: StepModeSelectProps) {
-  const [selected, setSelected] = useState<ModeOptionValue>('Local');
+  const [selected, setSelected] = useState<InferenceMode>('Local');
   const ollamaStatus = useSettingsStore((s) => s.ollamaStatus);
   const ollamaProbing = useSettingsStore((s) => s.ollamaProbing);
   const probeOllama = useSettingsStore((s) => s.probeOllama);
@@ -62,74 +48,85 @@ export function StepModeSelect({ onNext }: StepModeSelectProps) {
     void probeOllama();
   }, [probeOllama]);
 
-  const ollamaHint = ollamaProbing ? (
-    <div className="onboarding__hint">⏳ 正在检测本地 Ollama...</div>
+  const ollamaCallout = ollamaProbing ? (
+    <div className="callout info">
+      <span style={{ color: 'var(--accent2)', fontWeight: 500 }}>⏳ 正在检测本地 Ollama...</span>
+    </div>
   ) : ollamaStatus?.available ? (
-    <div className="onboarding__hint onboarding__hint--success">
-      ✓ 已检测到 Ollama · 推荐本地模式
+    <div className="callout success">
+      <span style={{ color: 'var(--success)', fontWeight: 500 }}>
+        ✓ 已检测到 Ollama · 推荐本地模式
+      </span>
     </div>
   ) : ollamaStatus ? (
-    <div className="onboarding__hint onboarding__hint--warn">
-      ⚠️ 未检测到本地 Ollama。本地模式需要先安装并启动 Ollama。
+    <div className="callout warn">
+      <span style={{ color: 'var(--warn)', fontWeight: 500 }}>
+        ⚠️ 未检测到本地 Ollama。本地模式需要先安装并启动 Ollama。
+      </span>
     </div>
   ) : (
-    <div className="onboarding__hint onboarding__hint--warn">
-      ⚠️ 暂时无法检测 Ollama，请稍后重试。
+    <div className="callout warn">
+      <span style={{ color: 'var(--warn)', fontWeight: 500 }}>
+        ⚠️ 暂时无法检测 Ollama，请稍后重试。
+      </span>
     </div>
   );
 
   return (
-    <div className="onboarding__step">
-      <h2 className="onboarding__title">选择你的 AI 推理模式</h2>
-      <p className="onboarding__subtitle">
-        这决定你的文件数据在哪里被 AI 处理。你可以随时在设置中更改。
-      </p>
+    <div>
+      <h3>选择你的 AI 推理模式</h3>
+      <p className="step-desc">这决定你的文件数据在哪里被 AI 处理。你可以随时在设置中更改。</p>
 
-      {ollamaHint}
+      {ollamaCallout}
 
-      <div className="onboarding__options" role="radiogroup" aria-label="推理模式选择">
-        {MODE_OPTIONS.map((opt) => (
-          <label
-            key={opt.value}
-            className={`onboarding__option ${selected === opt.value ? 'selected' : ''} ${opt.disabled ? 'disabled' : ''}`}
-          >
-            <input
-              type="radio"
-              name="inference-mode"
-              value={opt.value}
-              checked={selected === opt.value}
-              disabled={opt.disabled}
-              onChange={() => setSelected(opt.value)}
-              className="onboarding__radio-input"
-            />
-            <span className="onboarding__radio-dot" aria-hidden />
-            <div className="onboarding__option-content">
-              <div className="onboarding__option-label">
-                {opt.icon} {opt.label}
-                {opt.tag && (
-                  <span className="onboarding__tag" style={{ background: opt.tagColor }}>
-                    {opt.tag}
-                  </span>
-                )}
+      <div className="mode-selector" role="radiogroup" aria-label="推理模式选择">
+        {MODE_OPTIONS.map((opt) => {
+          const isSelected = selected === opt.value;
+          return (
+            <div
+              key={opt.value}
+              className={`mode-option ${opt.value.toLowerCase()}${isSelected ? ' selected' : ''}`}
+              role="radio"
+              aria-checked={isSelected}
+              aria-label={opt.label}
+              tabIndex={0}
+              onClick={() => setSelected(opt.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setSelected(opt.value);
+                }
+              }}
+            >
+              <div className="mode-icon" aria-hidden>
+                {opt.icon}
               </div>
-              <div className="onboarding__option-desc">{opt.desc}</div>
+              <div className="mode-info">
+                <div className="name">
+                  {opt.label}
+                  {opt.tag && (
+                    <span
+                      className={`tag ${opt.tagClass ?? ''}`}
+                      style={{ marginLeft: 4, fontSize: 10 }}
+                    >
+                      {opt.tag}
+                    </span>
+                  )}
+                </div>
+                <div className="desc">{opt.desc}</div>
+              </div>
+              <div className="radio-dot" aria-hidden />
             </div>
-          </label>
-        ))}
+          );
+        })}
       </div>
 
-      <div className="onboarding__actions">
+      <div className="step-actions step-actions--end">
         <button
           type="button"
           className="btn btn--primary"
           data-testid="onboarding-next"
-          onClick={() => {
-            // Hybrid 是禁用占位，不会进入此分支；narrowing 为 InferenceMode
-            if (selected === 'Local' || selected === 'Cloud') {
-              onNext(selected);
-            }
-          }}
-          disabled={selected === 'Hybrid'}
+          onClick={() => onNext(selected)}
         >
           下一步 →
         </button>

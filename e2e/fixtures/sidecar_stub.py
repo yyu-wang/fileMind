@@ -63,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _ok(self) -> None:
-        self._json(200, {"status": "ok", "version": "0.1.0", "uptime_seconds": 0.0})
+        self._json(200, {"status": "ok", "version": "1.0.0", "uptime_seconds": 0.0})
 
     # -- 路由 ------------------------------------------------------------
 

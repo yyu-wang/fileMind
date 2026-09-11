@@ -156,7 +156,8 @@ impl OperationRepo {
     /// - `op_type`：取批次内首条行的 `operation_type`（`MIN(created_at)` 对应行）
     /// - `status`：批次状态聚合规则——任一 undone → undone；否则全部 done → done；
     ///   任一 failed → failed；其余 pending
-    /// - `has_delete`：批次内是否含 `delete` 操作（含则不可撤销，T3.4 已确认 delete 不可恢复）
+    /// - `has_delete`：批次内是否含 `delete` 操作（删除已移入系统回收站，
+    ///   应用内无回收站还原路径，含则不可撤销，可从系统回收站手动恢复）
     /// - `can_undo`（DB 层）：`status='done' && !has_delete`；撤销窗口期由 IPC 命令层再注入
     ///
     /// # Errors

@@ -12,7 +12,9 @@ const SELECT_CONFIG_SQL: &str = "
     SELECT data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
            language, onboarding_completed,
            cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
-           cloud_consent_signed_at
+           cloud_consent_signed_at,
+           cloud_model,
+           active_cloud_provider
     FROM app_config WHERE id = 1
 ";
 
@@ -21,8 +23,10 @@ const UPSERT_CONFIG_SQL: &str = "
         id, data_directory, inference_mode, embedding_model, llm_model, max_file_size_mb,
         language, onboarding_completed,
         cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
-        cloud_consent_signed_at
-    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        cloud_consent_signed_at,
+        cloud_model,
+        active_cloud_provider
+    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     ON CONFLICT(id) DO UPDATE SET
         data_directory = excluded.data_directory,
         inference_mode = excluded.inference_mode,
@@ -34,7 +38,9 @@ const UPSERT_CONFIG_SQL: &str = "
         cloud_consent_signed = excluded.cloud_consent_signed,
         cloud_consent_version = excluded.cloud_consent_version,
         cloud_consent_provider = excluded.cloud_consent_provider,
-        cloud_consent_signed_at = excluded.cloud_consent_signed_at
+        cloud_consent_signed_at = excluded.cloud_consent_signed_at,
+        cloud_model = excluded.cloud_model,
+        active_cloud_provider = excluded.active_cloud_provider
 ";
 
 const SIGN_CONSENT_SQL: &str = "
@@ -43,7 +49,8 @@ const SIGN_CONSENT_SQL: &str = "
         cloud_consent_version = ?1,
         cloud_consent_provider = ?2,
         cloud_consent_signed_at = ?3,
-        inference_mode = 'cloud'
+        inference_mode = 'cloud',
+        active_cloud_provider = ?2
     WHERE id = 1
 ";
 
@@ -53,7 +60,8 @@ const REVOKE_CONSENT_SQL: &str = "
         cloud_consent_version = NULL,
         cloud_consent_provider = NULL,
         cloud_consent_signed_at = NULL,
-        inference_mode = 'local'
+        inference_mode = 'local',
+        active_cloud_provider = NULL
     WHERE id = 1
 ";
 
@@ -77,7 +85,10 @@ impl ConfigRepo {
     ///
     /// 写入失败时返回数据库错误。
     pub fn upsert(conn: &Connection, config: &AppConfig) -> AppResult<()> {
-        let provider_str = config.cloud_consent_provider.map(provider_to_str);
+        let provider_str = config
+            .cloud_consent_provider
+            .as_deref()
+            .map(str_to_provider);
         // u64 → i64：max_file_size_mb 实际值域远小于 i64 正数范围，不会 wrap
         #[allow(clippy::cast_possible_wrap)]
         let max_file_size = config.max_file_size_mb as i64;
@@ -95,6 +106,8 @@ impl ConfigRepo {
                 config.cloud_consent_version,
                 provider_str,
                 config.cloud_consent_signed_at,
+                config.cloud_model,
+                config.active_cloud_provider,
             ],
         )?;
         Ok(())
@@ -111,10 +124,7 @@ impl ConfigRepo {
         provider: CloudProvider,
     ) -> AppResult<()> {
         let now = now_iso8601();
-        conn.execute(
-            SIGN_CONSENT_SQL,
-            params![consent_version, provider_to_str(provider), now],
-        )?;
+        conn.execute(SIGN_CONSENT_SQL, params![consent_version, provider, now])?;
         Ok(())
     }
 
@@ -137,6 +147,7 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
     let onboarding_int: i64 = row.get(6)?;
     let consent_int: i64 = row.get(7)?;
     let provider_str: Option<String> = row.get(9)?;
+    let active_str: Option<String> = row.get(12)?;
     Ok(AppConfig {
         data_directory: row.get(0)?,
         inference_mode: row.get(1)?,
@@ -150,6 +161,8 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
         cloud_consent_provider: provider_str.as_deref().map(str_to_provider),
         // 旧版 epoch: 前缀兼容：读取时归一化为 RFC3339（BE-M2）
         cloud_consent_signed_at: row.get::<_, Option<String>>(10)?.map(normalize_signed_at),
+        cloud_model: row.get(11)?,
+        active_cloud_provider: active_str,
     })
 }
 
@@ -171,21 +184,10 @@ const fn bool_to_int(v: bool) -> i64 {
     }
 }
 
-/// `CloudProvider` → `SQLite` 字符串。
-const fn provider_to_str(p: CloudProvider) -> &'static str {
-    match p {
-        CloudProvider::Openai => "openai",
-        CloudProvider::Deepseek => "deepseek",
-    }
-}
-
-/// `SQLite` 字符串 → `CloudProvider`（未知值兜底为 `OpenAI`）。
-const fn str_to_provider(s: &str) -> CloudProvider {
-    if s.eq_ignore_ascii_case("deepseek") {
-        CloudProvider::Deepseek
-    } else {
-        CloudProvider::Openai
-    }
+/// `SQLite` 字符串 → `CloudProvider`（String 直读，空值 None 由上层处理；
+/// 保留独立函数以保持与写入路径的对称、方便后续加规范化）。
+fn str_to_provider(s: &str) -> CloudProvider {
+    s.to_string()
 }
 
 /// 当前时间（RFC3339 UTC，如 `2026-08-24T12:34:56Z`）。
@@ -236,6 +238,7 @@ mod tests {
         assert!(!config.onboarding_completed);
         assert!(!config.cloud_consent_signed);
         assert!(config.cloud_consent_version.is_none());
+        assert!(config.cloud_model.is_empty());
     }
 
     #[test]
@@ -245,6 +248,7 @@ mod tests {
         config.data_directory = "/tmp/test".to_string();
         config.inference_mode = "cloud".to_string();
         config.llm_model = "qwen3.8-14b".to_string();
+        config.cloud_model = "gpt-4o".to_string();
         config.onboarding_completed = true;
         config.max_file_size_mb = 200;
         ConfigRepo::upsert(db.conn(), &config).unwrap();
@@ -253,6 +257,7 @@ mod tests {
         assert_eq!(reloaded.data_directory, "/tmp/test");
         assert_eq!(reloaded.inference_mode, "cloud");
         assert_eq!(reloaded.llm_model, "qwen3.8-14b");
+        assert_eq!(reloaded.cloud_model, "gpt-4o");
         assert!(reloaded.onboarding_completed);
         assert_eq!(reloaded.max_file_size_mb, 200);
     }
@@ -260,7 +265,7 @@ mod tests {
     #[test]
     fn sign_consent_sets_fields_and_switches_mode() {
         let db = open_test_db();
-        ConfigRepo::sign_consent(db.conn(), "v1.0", CloudProvider::Openai).unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "openai".to_string()).unwrap();
         let config = ConfigRepo::get(db.conn()).unwrap();
         assert!(config.cloud_consent_signed);
         assert_eq!(config.cloud_consent_version.as_deref(), Some("v1.0"));
@@ -270,7 +275,7 @@ mod tests {
     #[test]
     fn revoke_consent_clears_fields_and_switches_back() {
         let db = open_test_db();
-        ConfigRepo::sign_consent(db.conn(), "v1.0", CloudProvider::Deepseek).unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "deepseek".to_string()).unwrap();
         ConfigRepo::revoke_consent(db.conn()).unwrap();
         let config = ConfigRepo::get(db.conn()).unwrap();
         assert!(!config.cloud_consent_signed);
@@ -281,11 +286,11 @@ mod tests {
     #[test]
     fn provider_roundtrip_preserves_value() {
         let db = open_test_db();
-        ConfigRepo::sign_consent(db.conn(), "v1.0", CloudProvider::Deepseek).unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "deepseek".to_string()).unwrap();
         let config = ConfigRepo::get(db.conn()).unwrap();
         match config.cloud_consent_provider {
-            Some(CloudProvider::Deepseek) => {}
-            other => panic!("期望 Deepseek，实际 {other:?}"),
+            Some(ref v) if v == "deepseek" => {}
+            other => panic!("期望 deepseek，实际 {other:?}"),
         }
     }
 
@@ -293,7 +298,7 @@ mod tests {
     #[test]
     fn sign_consent_writes_rfc3339_timestamp() {
         let db = open_test_db();
-        ConfigRepo::sign_consent(db.conn(), "v1.0", CloudProvider::Openai).unwrap();
+        ConfigRepo::sign_consent(db.conn(), "v1.0", "openai".to_string()).unwrap();
         let config = ConfigRepo::get(db.conn()).unwrap();
         let signed_at = config.cloud_consent_signed_at.expect("签署后必有时间");
         assert!(
@@ -301,6 +306,17 @@ mod tests {
             "signed_at 应为 RFC3339，实际: {signed_at}"
         );
         assert!(signed_at.ends_with('Z'), "应为 UTC（Z 结尾）: {signed_at}");
+    }
+
+    #[test]
+    fn active_cloud_provider_roundtrips_through_upsert() {
+        let db = open_test_db();
+        let mut config = ConfigRepo::get(db.conn()).unwrap();
+        assert!(config.active_cloud_provider.is_none());
+        config.active_cloud_provider = Some("my-custom".to_string());
+        ConfigRepo::upsert(db.conn(), &config).unwrap();
+        let reloaded = ConfigRepo::get(db.conn()).unwrap();
+        assert_eq!(reloaded.active_cloud_provider.as_deref(), Some("my-custom"));
     }
 
     /// BE-M2 兼容：旧版 `epoch:` 前缀值读取时归一化为 RFC3339，语义不变。

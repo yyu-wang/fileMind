@@ -1,27 +1,20 @@
 // 检索状态栏：改写查询、候选/重排数、生成阶段、重试与低置信度提示。
+//
+// 数据自行从 chatStore 订阅（含 currentStream.length > 0 的 hasTokens 派生），
+// 让页面组件不必接触 token 级高频 state——hasTokens 返回 boolean，
+// zustand Object.is 比较下仅在「无 token ↔ 有 token」边界触发重渲。
 
-import type { ChatSearchInfo, ChatStatus } from '@/stores/chatStore';
+import { useChatStore } from '@/stores/chatStore';
 
-interface SearchStatusBarProps {
-  status: ChatStatus;
-  rewrittenQuery: string | null;
-  searchInfo: ChatSearchInfo | null;
-  retries: number;
-  retryReason: string | null;
-  lowConfidence: boolean;
-  /** 是否已有流式 token（区分检索中 / 生成中） */
-  hasTokens: boolean;
-}
+export function SearchStatusBar() {
+  const status = useChatStore((s) => s.status);
+  const rewrittenQuery = useChatStore((s) => s.rewrittenQuery);
+  const searchInfo = useChatStore((s) => s.searchInfo);
+  const retries = useChatStore((s) => s.retries);
+  const retryReason = useChatStore((s) => s.retryReason);
+  const lowConfidence = useChatStore((s) => s.lowConfidence);
+  const hasTokens = useChatStore((s) => s.currentStream.length > 0);
 
-export function SearchStatusBar({
-  status,
-  rewrittenQuery,
-  searchInfo,
-  retries,
-  retryReason,
-  lowConfidence,
-  hasTokens,
-}: SearchStatusBarProps) {
   if (status === 'idle') {
     return null;
   }

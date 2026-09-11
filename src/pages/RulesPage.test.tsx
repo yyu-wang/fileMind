@@ -1,7 +1,8 @@
-// RulesPage 单元测试：加载态、列表渲染、空态、新建表单、删除二次确认与错误提示。
+// RulesPage 单元测试（对齐交互原型 §规则编辑）：master-detail 布局、
+// 加载态、空态、新建表单、规则选中切换、删除二次确认、错误提示。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Category, Rule } from '@/types/ipc';
 import { RuleType } from '@/types/models';
@@ -59,7 +60,7 @@ beforeEach(() => {
   mocks.listCategories.mockResolvedValue({ status: 'ok', data: [category] });
   mocks.upsertRule.mockResolvedValue({ status: 'ok', data: rule });
   mocks.deleteRule.mockResolvedValue({ status: 'ok', data: null });
-  mocks.reorderRules.mockResolvedValue({ status: 'ok', data: null });
+  mocks.reorderRules.mockResolvedValue({ status: 'ok', data: [rule] });
   useRuleStore.setState({
     rules: [],
     categories: [],
@@ -103,51 +104,101 @@ describe('RulesPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('opens new rule form on 新建规则', async () => {
-    const user = userEvent.setup();
+  it('renders header with 新建规则 button (master-detail layout)', async () => {
     renderPage();
     await screen.findByText('PDF 归档');
-    await user.click(screen.getByRole('button', { name: '+ 新建规则' }));
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('规则编辑');
-    expect(screen.getByRole('dialog')).toHaveTextContent('新建规则');
+    expect(screen.getByRole('button', { name: /新建规则/ })).toBeInTheDocument();
+    expect(screen.getByText('分类规则与分类体系管理')).toBeInTheDocument();
+    // 列表 + 详情布局
+    expect(screen.getByText('📋 规则列表')).toBeInTheDocument();
   });
 
-  it('saves a new rule and closes the form', async () => {
+  it('opens new rule form on 新建规则 click', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('PDF 归档');
-    await user.click(screen.getByRole('button', { name: '+ 新建规则' }));
-    await user.type(screen.getByLabelText('规则名'), '新规则');
+    await user.click(screen.getByRole('button', { name: /新建规则/ }));
+    // 新建态：右侧详情显示空表单（h3 标题 = "新建规则"）
+    const form = await screen.findByTestId('rule-form');
+    expect(form).toBeInTheDocument();
+    expect(form.querySelector('h3')).toHaveTextContent('新建规则');
+  });
+
+  it('shows rule detail when rule-item clicked', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('PDF 归档');
+    // 列表中点击规则
+    await user.click(screen.getAllByTestId('rule-item')[0]);
+    // 右侧详情显示该规则的表单（标题为规则名）
+    const form = await screen.findByTestId('rule-form');
+    expect(form).toHaveTextContent('PDF 归档');
+  });
+
+  it('refreshes form values when switching to another rule', async () => {
+    const user = userEvent.setup();
+    // 两条规则：PDF(pattern=pdf) + 文本(pattern=txt,md)
+    const textRule = { ...rule, id: 'r2', name: '文本文件归档', pattern: 'txt,md' };
+    mocks.listRules.mockResolvedValue({ status: 'ok', data: [rule, textRule] });
+    renderPage();
+    await screen.findByText('PDF 归档');
+    await screen.findByText('文本文件归档');
+
+    // 先打开 PDF 规则：匹配模式为 pdf
+    await user.click(screen.getAllByTestId('rule-item')[0]);
+    expect(screen.getByLabelText('匹配模式')).toHaveValue('pdf');
+
+    // 切换到文本规则：表单应重挂载并显示 txt,md（回归：曾沿用上一条规则的 pdf）
+    await user.click(screen.getAllByTestId('rule-item')[1]);
+    const form = await screen.findByTestId('rule-form');
+    expect(form.querySelector('h3')).toHaveTextContent('文本文件归档');
+    expect(screen.getByLabelText('匹配模式')).toHaveValue('txt,md');
+  });
+
+  it('saves a new rule and switches form to edit mode with saved rule', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('PDF 归档');
+    await user.click(screen.getByRole('button', { name: /新建规则/ }));
+    await user.type(screen.getByLabelText('规则名称'), '新规则');
     await user.type(screen.getByLabelText('匹配模式'), 'doc');
     await user.click(screen.getByRole('button', { name: '保存' }));
     expect(mocks.upsertRule).toHaveBeenCalledWith(
       expect.objectContaining({ name: '新规则', pattern: 'doc' }),
     );
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // 保存后表单切换为编辑态：h3 显示保存的规则名，删除按钮出现
+    const form = await screen.findByTestId('rule-form');
+    expect(form.querySelector('h3')).toHaveTextContent('PDF 归档');
+    expect(screen.getByRole('button', { name: '删除规则' })).toBeInTheDocument();
   });
 
-  it('deletes rule only after confirm', async () => {
+  it('deletes rule only after confirm from detail panel', async () => {
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderPage();
     await screen.findByText('PDF 归档');
-    await user.click(screen.getByRole('button', { name: '删除' }));
+    // 选中规则 → 详情面板出现删除按钮
+    await user.click(screen.getAllByTestId('rule-item')[0]);
+    await user.click(screen.getByRole('button', { name: '删除规则' }));
+    // 弹出 ConfirmDialog，未确认前不删除
+    const dialog = screen.getByRole('dialog', { name: '删除规则' });
+    expect(dialog).toBeInTheDocument();
     expect(mocks.deleteRule).not.toHaveBeenCalled();
 
-    confirmSpy.mockReturnValue(true);
-    await user.click(screen.getByRole('button', { name: '删除' }));
-    expect(confirmSpy).toHaveBeenCalledWith('确定删除规则「PDF 归档」？此操作不可撤销。');
+    // 点击对话框内「取消」：对话框关闭，仍不删除
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog', { name: '删除规则' })).not.toBeInTheDocument();
+
+    // 再次点删除并确认：执行删除
+    await user.click(screen.getByRole('button', { name: '删除规则' }));
+    const dialog2 = screen.getByRole('dialog', { name: '删除规则' });
+    await user.click(within(dialog2).getByRole('button', { name: '删除' }));
     expect(mocks.deleteRule).toHaveBeenCalledWith('r1');
-    confirmSpy.mockRestore();
   });
 
-  it('toggles rule via checkbox and persists', async () => {
-    const user = userEvent.setup();
+  it('renders rules-empty state when no rule selected', async () => {
     renderPage();
     await screen.findByText('PDF 归档');
-    await user.click(screen.getByLabelText('禁用规则 PDF 归档'));
-    expect(mocks.upsertRule).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'r1', is_enabled: false }),
-    );
+    // 未选中时右侧显示空态
+    expect(screen.getByText('选择左侧规则查看详情')).toBeInTheDocument();
   });
 });

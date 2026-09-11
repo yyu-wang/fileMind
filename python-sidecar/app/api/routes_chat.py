@@ -69,6 +69,28 @@ def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
     return [ConversationTurn(user=turn.user, assistant=turn.assistant) for turn in history]
 
 
+def _resolve_chat_provider(request: ChatStreamRequest) -> LLMProvider | None:
+    """按请求的推理模式解析生成 Provider。
+
+    推理模式（``inference_mode``）是用户当前生效选择的权威来源：仅显式
+    ``cloud`` 才解析云端 Provider，其余（``local``/``hybrid``/未知值）一律
+    回落本地 Ollama（返回 ``None``）。若不先过滤 ``local``，Rust 启动
+    Sidecar 时注入的 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在
+    撤回云端同意 / 切回本地后仍然生效（Sidecar 进程不随模式切换重启，
+    env 冻结），导致本地模型名也被 :func:`resolve_cloud_provider` 判定为
+    云端并打到云端代理，最终因缺 Key 报 401。
+
+    Args:
+        request: 流式请求（含 ``inference_mode`` 与 ``llm_model``）。
+
+    Returns:
+        云端 Provider 实例；非云端模式返回 ``None``（调用方走 Ollama 路径）。
+    """
+    if request.inference_mode.strip().lower() != "cloud":
+        return None
+    return resolve_cloud_provider(request.llm_model)
+
+
 def _cache_key(request: ChatStreamRequest) -> tuple[object, ...]:
     """检索缓存 key：覆盖影响检索结果的输入。
 
@@ -90,6 +112,7 @@ async def _retrieve(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
     provider: LLMProvider | None,
+    skip_vector: bool = False,
 ) -> tuple[str, int, list[dict[str, object]], list[SourceChunk]]:
     """改写 → 混合检索 → 重排序，返回 (rewritten_query, candidates, sources, chunks)。
 
@@ -97,6 +120,7 @@ async def _retrieve(
         request: 流式请求（含 FTS 命中与对话历史）。
         mgr: LanceDB 管理器（向量检索）。
         provider: 推理 Provider（T8.5）；``None`` 走本地 Ollama（默认）。
+        skip_vector: 跳过向量检索（Embedding 不可用时云端模式降级用）。
 
     Returns:
         - ``rewritten_query``：改写后的查询（向量检索 + 生成上下文用）。
@@ -109,12 +133,14 @@ async def _retrieve(
             推理（改写 / 向量化 / 重排）不可用。
     """
     # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
+    # 降级模式（skip_vector=True）不缓存，以便 embedding 恢复后能重试全向量检索。
     cache = get_query_cache()
     cache_key = _cache_key(request)
-    cached = await cache.get(cache_key)
-    if cached is not None:
-        logger.info("chat.retrieve.cache_hit")
-        return cached
+    if not skip_vector:
+        cached = await cache.get(cache_key)
+        if cached is not None:
+            logger.info("chat.retrieve.cache_hit")
+            return cached
 
     t_stage = time.monotonic()
     rewritten = await rewrite_query(
@@ -131,13 +157,23 @@ async def _retrieve(
         request.table_name,
         model=request.embedding_model,
         top_k=request.top_k,
+        skip_vector=skip_vector,
     )
     logger.info("chat.retrieve.hybrid_search", ms=_elapsed_ms(t_stage))
 
-    # FTS-only 命中的原文在 Rust 侧（SQLite），用请求 fts_chunks 补全
-    text_by_id = {c.chunk_id: c.text for c in request.fts_chunks}
+    # FTS-only 命中的原文在 Rust 侧（SQLite），用请求 fts_chunks 补全。
+    # 注意：LanceDB chunk_id 格式为 {file_id}-{seq}，FTS 返回的是纯 file_id；
+    # 回填时需要去掉向量 chunk 的 seq 后缀，用文件 ID 前缀匹配 FTS 文本。
+    text_by_file_id = {c.chunk_id: c.text for c in request.fts_chunks}
     enriched = [
-        dataclasses.replace(hit, chunk_text=hit.chunk_text or text_by_id.get(hit.chunk_id, ""))
+        dataclasses.replace(
+            hit,
+            chunk_text=hit.chunk_text
+            or text_by_file_id.get(
+                hit.chunk_id.rsplit("-", 1)[0] if "-" in hit.chunk_id else hit.chunk_id,
+                "",
+            ),
+        )
         for hit in fused
     ]
 
@@ -174,7 +210,8 @@ async def _retrieve(
             )
         )
     retrieved = (rewritten_query, len(candidates), sources, chunks)
-    await cache.set(cache_key, retrieved)
+    if not skip_vector:
+        await cache.set(cache_key, retrieved)
     return retrieved
 
 
@@ -204,25 +241,52 @@ async def _rag_event_stream(
     """
     session_id = request.session_id or uuid.uuid4().hex
     started = time.monotonic()
-    provider = resolve_cloud_provider(request.llm_model)
+    # 按请求的推理模式选 Provider：local（含撤回云端同意后的状态）一律本地，
+    # 避免 Sidecar 启动期冻结的 FILEMIND_ACTIVE_CLOUD_PROVIDER env 把本地
+    # 模型也误判为云端（回归：切回本地仍报 401 的内部错误）。
+    provider = _resolve_chat_provider(request)
     version = provider.version if provider is not None else "local"
 
     retrieve_started = time.monotonic()
+    degraded_warning = False
     try:
         rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
     except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
-        logger.warning("chat.retrieve_failed", error=str(exc))
-        # SC-m10：区分错误码——LLM/Embedding/Rerank 不可用不应统一报 OLLAMA_UNAVAILABLE
-        if isinstance(exc, EmbeddingUnavailableError):
-            code = "EMBEDDING_UNAVAILABLE"
-        elif isinstance(exc, RerankUnavailableError):
-            code = "RERANK_UNAVAILABLE"
+        # 云端模式：Embedding 不可用时降级到纯 FTS5 检索
+        if isinstance(exc, EmbeddingUnavailableError) and request.inference_mode.lower() == "cloud":
+            logger.warning("chat.embedding_unavailable_cloud_fallback", error=str(exc))
+            try:
+                rewritten_query, candidates, sources, chunks = await _retrieve(
+                    request, mgr, provider, skip_vector=True
+                )
+                degraded_warning = True
+            except (LLMUnavailableError, RerankUnavailableError) as fallback_exc:
+                logger.warning("chat.retrieve_fallback_failed", error=str(fallback_exc))
+                if isinstance(fallback_exc, RerankUnavailableError):
+                    code = "RERANK_UNAVAILABLE"
+                else:
+                    code = "LLM_UNAVAILABLE"
+                yield ("error", {"code": code, "message": str(fallback_exc)})
+                return
         else:
-            code = "LLM_UNAVAILABLE"
-        yield ("error", {"code": code, "message": str(exc)})
-        return
+            logger.warning("chat.retrieve_failed", error=str(exc))
+            # SC-m10：区分错误码——LLM/Embedding/Rerank 不可用不应统一报 OLLAMA_UNAVAILABLE
+            if isinstance(exc, EmbeddingUnavailableError):
+                code = "EMBEDDING_UNAVAILABLE"
+            elif isinstance(exc, RerankUnavailableError):
+                code = "RERANK_UNAVAILABLE"
+            else:
+                code = "LLM_UNAVAILABLE"
+            yield ("error", {"code": code, "message": str(exc)})
+            return
     retrieve_ms = _elapsed_ms(retrieve_started)
     logger.info("chat.retrieve.done", ms=retrieve_ms)
+
+    if degraded_warning:
+        yield (
+            "search_warning",
+            {"code": "EMBEDDING_DEGRADED", "message": "Embedding 不可用，已降级为纯关键词检索"},
+        )
 
     yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
     yield (
@@ -325,6 +389,16 @@ async def _rag_event_stream(
     if result is not None and not result.is_correct:
         low_confidence = True
 
+    # 去重：LLM 可能在回答里反复标注同一来源（云端模型尤其明显，
+    # 会生成 [1][2][1][2]... 这种），导致前端 citations 标签重复渲染。
+    # 保留首次出现的顺序，过滤不在 valid_ids 里的脏标注。
+    seen: set[int] = set()
+    unique_cited: list[int] = []
+    for cid in cited:
+        if cid in valid_ids and cid not in seen:
+            seen.add(cid)
+            unique_cited.append(cid)
+
     citation_map = {c.citation_id: c for c in chunks}
     citations = [
         {
@@ -333,7 +407,7 @@ async def _rag_event_stream(
             "page": citation_map[citation_id].page,
             "text": citation_map[citation_id].text,
         }
-        for citation_id in cited
+        for citation_id in unique_cited
     ]
     if citations:
         yield ("citation", {"citations": citations})

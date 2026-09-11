@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 # 握手后的 PSK：生产模式由 stdin 注入，dev 模式为 None（跳过验签）
 _psk: bytes | None = None
 # 上一个请求的序号（防重放：新请求 seq 必须 > last_seq）
-_last_seq: int = 0
+# 初始 -1：Rust 侧 request_seq 从 0 开始（fetch_add 返回旧值），
+# 首个请求 seq=0 需满足 0 > -1 才能通过验签，否则首个请求永远 401。
+_last_seq: int = -1
 # 已使用的握手 nonce 集合（防握手重放）
 # SC-m5：加上限防长期运行无界增长；超限时清空（旧 nonce 已过 TTL 无意义）
 _used_nonces: set[str] = set()
@@ -103,7 +105,7 @@ def reset_state() -> None:
     """重置全部状态（仅测试用，生产代码禁止调用）。"""
     global _psk, _last_seq, _used_nonces, _lancedb, _current_model, _current_embedding_version
     _psk = None
-    _last_seq = 0
+    _last_seq = -1
     _used_nonces = set()
     _lancedb = None
     _current_model = None

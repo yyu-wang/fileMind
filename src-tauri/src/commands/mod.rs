@@ -6,6 +6,8 @@ pub mod api_key;
 pub mod chat;
 /// 智能分类预览命令（规则引擎 + 启发式）。
 pub mod classify;
+/// 用户自定义云提供商管理（CRUD + base_url 查询，对应 cloud_providers 表）。
+pub mod cloud_providers;
 /// 应用配置读写命令。
 pub mod config;
 /// (T9.5) E2E 测试专用命令（函数常编译；注册在 main.rs 仅 debug，release 不可调用）。
@@ -24,3 +26,5 @@ pub mod inference;
 pub mod ollama;
 /// 规则编辑命令（规则 CRUD + 优先级拖拽排序）。
 pub mod rules;
+/// Sidecar 生命周期查询与手动重试命令（P1-1）。
+pub mod sidecar;

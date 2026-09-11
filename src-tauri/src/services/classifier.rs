@@ -6,9 +6,10 @@
 //!   2. 启发式：内置「扩展名 → 内置分类名」映射，目标分类须真实存在于 `categories`。
 //!   3. 都未命中 → 待确认（`category_name=None`，不生成移动目标）。
 //!
-//! 安全：目标子目录 `categories.target_dir` 经 `security::validate_relative_subpath`
-//! 校验后才与扫描根拼接；目标路径冲突用 `ConflictStrategy::Skip` 提前标记，
-//! 冲突项由执行层跳过（不覆盖、不改名）。
+//! 安全：分类输出到扫描根**同级**的收纳目录 `<扫描根名>_已分类`（见 `sibling_output_root`），
+//! 避免在扫描目录内新建分类子目录、保持源目录只留待整理文件。目标子目录
+//! `categories.target_dir` 经 `security::validate_relative_subpath` 校验后才与收纳根拼接；
+//! 目标路径冲突用 `ConflictStrategy::Skip` 提前标记，冲突项由执行层跳过（不覆盖、不改名）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::db::models::{Category, FileRecord, Rule};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
 
@@ -31,6 +32,8 @@ pub(crate) const PENDING_SOURCE: &str = "pending";
 pub(crate) const LLM_SOURCE: &str = "llm";
 /// 待人工确认来源标签（T6.11：LLM 兜底命中但置信度低于阈值）。
 pub(crate) const NEEDS_REVIEW_SOURCE: &str = "needs_review";
+/// 收纳目录命名后缀：扫描根同级目录名为 `<扫描根名>_已分类`。
+pub(crate) const SIBLING_SUFFIX: &str = "_已分类";
 
 /// 内置启发式映射：扩展名分组 → 内置分类名。
 ///
@@ -78,7 +81,7 @@ pub struct ClassifyPlanItem {
     pub file_name: String,
     /// 源文件绝对路径。
     pub original_path: String,
-    /// 目标绝对路径（`scan_root/target_dir/file_name`；待确认时等于 `original_path`）。
+    /// 目标绝对路径（`收纳根/target_dir/file_name`；待确认时等于 `original_path`）。
     pub target_path: String,
     /// 落入的分类名（`None`=待确认）。
     pub category_name: Option<String>,
@@ -115,6 +118,8 @@ pub struct ClassifyStats {
 pub struct ClassifyPreview {
     /// 批次 ID（供执行阶段 `execute_operations` 接力，共享链式撤销）。
     pub batch_id: String,
+    /// 收纳根绝对路径（扫描根同级的 `<扫描根名>_已分类`，前端「目标结构」展示与手动分类拼接用）。
+    pub output_root: String,
     /// 逐项计划。
     pub items: Vec<ClassifyPlanItem>,
     /// 汇总统计。
@@ -134,10 +139,29 @@ enum CategoryDecision {
     Pending,
 }
 
+/// 计算扫描根同级收纳目录路径：`<扫描根父目录>/<扫描根名>_已分类`。
+///
+/// 分类输出统一落到收纳目录（而非扫描目录内部），保持源目录只留待整理文件。
+/// 仅在扫描根名无法确定（如文件系统根 `/`）时返回错误。
+///
+/// # Errors
+///
+/// 扫描根为文件系统根、无法取父级目录名时返回 `InvalidInput`。
+pub fn sibling_output_root(scan_root: &Path) -> AppResult<PathBuf> {
+    let name = scan_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| AppError::InvalidInput("无法为扫描根生成同级收纳目录名".to_string()))?;
+    let parent = scan_root.parent().unwrap_or_else(|| Path::new("/"));
+    Ok(parent.join(format!("{name}{SIBLING_SUFFIX}")))
+}
+
 /// 为一批文件生成分类计划（纯计算，不落盘、不动 DB）。
 ///
 /// `rules` 需已按优先级降序排列（调用方用 `RuleRepo::list_enabled`）；`scan_root`
-/// 须为已校验的规范绝对路径；`files` 为待分类的文件记录。
+/// 须为已校验的规范绝对路径。目标目录基于扫描根**同级**收纳根（`sibling_output_root`）
+/// 拼接，由 `classify_preview` 命令层的 `output_root` 保持一致；`files` 为待分类文件记录。
 ///
 /// # Errors
 ///
@@ -148,6 +172,7 @@ pub fn generate_plan(
     rules: &[Rule],
     categories: &[Category],
 ) -> AppResult<Vec<ClassifyPlanItem>> {
+    let output_root = sibling_output_root(scan_root)?;
     let mut items = Vec::with_capacity(files.len());
     for file in files {
         let decision = decide(&file.file_name, rules, categories);
@@ -156,7 +181,7 @@ pub fn generate_plan(
                 category,
                 rule_name,
             } => {
-                let target = build_target_path(scan_root, category, &file.file_name)?;
+                let target = build_target_path(scan_root, &output_root, category, &file.file_name)?;
                 (
                     Some(category.name.clone()),
                     format!("{RULE_SOURCE_PREFIX}{rule_name}"),
@@ -164,7 +189,7 @@ pub fn generate_plan(
                 )
             }
             CategoryDecision::Heuristic { category } => {
-                let target = build_target_path(scan_root, category, &file.file_name)?;
+                let target = build_target_path(scan_root, &output_root, category, &file.file_name)?;
                 (
                     Some(category.name.clone()),
                     HEURISTIC_SOURCE.to_string(),
@@ -269,7 +294,7 @@ fn category_by_id<'a>(categories: &'a [Category], id: &str) -> Option<&'a Catego
     categories.iter().find(|c| c.id == id)
 }
 
-/// 拼接目标绝对路径：`scan_root/target_dir/file_name`。
+/// 拼接目标绝对路径：`收纳根/target_dir/file_name`。
 ///
 /// `target_dir` 为空的分类 → 目标就是 `scan_root/file_name`（不移动，执行时因目标
 /// 与源相同被 `Skip` 跳过，仅用于语义占位）。
@@ -277,12 +302,17 @@ fn category_by_id<'a>(categories: &'a [Category], id: &str) -> Option<&'a Catego
 /// # Errors
 ///
 /// `target_dir` 未通过 `validate_relative_subpath` 时返回 `UnsafePath`。
-fn build_target_path(scan_root: &Path, category: &Category, file_name: &str) -> AppResult<PathBuf> {
+fn build_target_path(
+    scan_root: &Path,
+    output_root: &Path,
+    category: &Category,
+    file_name: &str,
+) -> AppResult<PathBuf> {
     if category.target_dir.trim().is_empty() {
         return Ok(scan_root.join(file_name));
     }
     let sub = security::validate_relative_subpath(&category.target_dir)?;
-    Ok(scan_root.join(sub).join(file_name))
+    Ok(output_root.join(sub).join(file_name))
 }
 
 /// 用 `Skip` 策略解析目标冲突：目标已存在 → `Conflict/SameName`（执行时跳过）。
@@ -342,6 +372,7 @@ pub(crate) fn apply_llm_fallback(
     scan_root: &Path,
     categories: &[Category],
 ) -> AppResult<()> {
+    let output_root = sibling_output_root(scan_root)?;
     for item in items.iter_mut() {
         // 只对「规则 + 启发式均未命中」的项做 LLM 兜底合并
         if item.rule_source != PENDING_SOURCE {
@@ -354,7 +385,7 @@ pub(crate) fn apply_llm_fallback(
             "classified" => {
                 // LLM 返回的分类必须真实存在于 categories，否则不移动（防幻影分类）
                 if let Some(cat) = categories.iter().find(|c| c.name == *category) {
-                    let target = build_target_path(scan_root, cat, &item.file_name)?;
+                    let target = build_target_path(scan_root, &output_root, cat, &item.file_name)?;
                     let (_, plan_status, conflict_type) =
                         resolve_conflict(&target, &item.file_name, Path::new(&item.original_path));
                     item.category_name = Some(cat.name.clone());

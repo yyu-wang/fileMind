@@ -64,12 +64,12 @@ function groupPreviewItems(items: ClassifyPlanItem[]): PreviewGroup[] {
   return groups;
 }
 
-/** 从 target_path 提取相对扫描根的目标子目录（`/财务/`），供树子节点展示。 */
-export function targetSubdir(targetPath: string, scanPath: string | null): string {
-  if (!scanPath) return '';
+/** 从 target_path 提取相对收纳根的目标子目录（`/财务/`），供树子节点展示。 */
+export function targetSubdir(targetPath: string, root: string | null): string {
+  if (!root) return '';
   // FE-m2：加路径边界检查——startsWith 无边界时 /a/dir 误匹配 /a/dir2
-  if (targetPath !== scanPath && !targetPath.startsWith(scanPath + '/')) return '';
-  const rest = targetPath === scanPath ? '' : targetPath.slice(scanPath.length + 1);
+  if (targetPath !== root && !targetPath.startsWith(root + '/')) return '';
+  const rest = targetPath === root ? '' : targetPath.slice(root.length + 1);
   const dir = rest.includes('/') ? rest.slice(0, rest.lastIndexOf('/')) : '';
   return dir ? ` → /${dir}/` : '';
 }
@@ -232,7 +232,7 @@ export function ClassifyPreviewTree({ preview, onOpenPreview }: ClassifyPreviewT
                       )}
                       {!isPendingGroup && !isConflictGroup && (
                         <span className="tree-node__dir">
-                          {targetSubdir(item.target_path, scanPath)}
+                          {targetSubdir(item.target_path, preview.output_root || scanPath)}
                         </span>
                       )}
                       {/* 待确认文件单个指定分类（对齐原型「确认/改分类」） */}

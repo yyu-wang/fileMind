@@ -6,15 +6,18 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 use crate::security;
+use crate::sidecar::proxy;
+use crate::AppState;
 
 /// 文本预览上限（字节）。超出时截断并标记 `truncated=true`。
-const MAX_TEXT_BYTES: u64 = 512 * 1024;
+const MAX_TEXT_BYTES: u64 = 50 * 1024 * 1024;
 /// 图片预览上限（字节）。超出返回 `FILE-E-004`，不降级截断（图片截断无法显示）。
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// PDF 预览上限（字节）。超出返回 `FILE-E-004`。
@@ -118,9 +121,89 @@ fn read_file_preview_inner(path: &str) -> AppResult<FilePreview> {
     Ok(preview)
 }
 
+/// 文件名扩展名是否为 Office 文档（docx / xlsx / pptx）。
+///
+/// 这些格式预览需经 Sidecar `doc_extract` 抽取为纯文本（PDF 走原生 data URL）。
+fn is_office_document(file_name: &str) -> bool {
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("docx" | "xlsx" | "pptx"))
+}
+
+/// 读取 Office 文档预览：经 Sidecar `/extract/document` 抽取为纯文本后返回。
+///
+/// 与文本预览同构（`kind=Text`），前端复用 `<pre>` 渲染；原始排版（表格/分页）
+/// 会失真，属预期降级。路径先经 `security::validate` 校验，再转发给本机
+/// Sidecar（HMAC 验签），文件内容不直接暴露给任意调用方。
+///
+/// # Errors
+///
+/// 路径不安全返回 `UnsafePath`；文件不存在返回 `FILE-E-002`；扩展名不受支持
+/// 返回 `FILE-E-005`；Sidecar 未就绪或抽取失败返回对应错误。
+#[tauri::command]
+#[specta::specta]
+pub async fn read_document_preview(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<FilePreview, String> {
+    read_document_preview_async(&path, &state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Office 文档预览逻辑入口（async：需向 Sidecar 转发抽取请求）。
+async fn read_document_preview_async(path: &str, state: &AppState) -> AppResult<FilePreview> {
+    let safe_path = security::validate(path)?;
+    if !safe_path.is_file() {
+        return Err(AppError::InvalidInput(format!(
+            "FILE-E-002:预览对象不存在或不是文件: {}",
+            safe_path.display()
+        )));
+    }
+    let meta = std::fs::metadata(&safe_path).map_err(read_error)?;
+    let file_name = safe_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if !is_office_document(&file_name) {
+        return Err(AppError::InvalidInput(
+            "FILE-E-005:暂不支持该文档类型".into(),
+        ));
+    }
+
+    // Sidecar 握手成功后 PSK 必然存在；缺失视为未就绪
+    let psk = state
+        .sidecar_psk
+        .lock()
+        .map_err(|e| AppError::Internal(format!("PSK 锁中毒: {e}")))?
+        .clone()
+        .ok_or_else(|| AppError::SidecarUnavailable("Sidecar 未就绪，无法抽取文档文本".into()))?;
+    let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
+    let payload = serde_json::json!({ "path": safe_path.to_string_lossy() }).to_string();
+    let resp = proxy::forward_post("/extract/document", &payload, &psk, seq).await?;
+    let parsed: serde_json::Value = serde_json::from_str(&resp).map_err(AppError::Serialize)?;
+    let text = parsed
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(FilePreview {
+        kind: PreviewKind::Text,
+        file_name,
+        file_size: meta.len(),
+        text: Some(text),
+        data_url: None,
+        truncated: false,
+    })
+}
+
 /// 文本上限的 `usize` 视图。
 ///
-/// 常量 `MAX_TEXT_BYTES` 声明为 `u64` 以对齐 `metadata.len()`；512KB 必然在 `usize`
+/// 常量 `MAX_TEXT_BYTES` 声明为 `u64` 以对齐 `metadata.len()`；50MB 必然在 `usize`
 /// 范围内，`unwrap_or(usize::MAX)` 仅满足类型约束、实际永不触发。
 fn text_cap_usize() -> usize {
     usize::try_from(MAX_TEXT_BYTES).unwrap_or(usize::MAX)
@@ -312,5 +395,15 @@ mod tests {
         assert_eq!(preview.kind, PreviewKind::Unsupported);
         assert_eq!(preview.file_name, "README");
         Ok(())
+    }
+
+    #[test]
+    fn test_is_office_document_recognizes_doc_exts() {
+        assert!(is_office_document("report.docx"));
+        assert!(is_office_document("sheet.XLSX"));
+        assert!(is_office_document("deck.pptx"));
+        assert!(!is_office_document("notes.md"));
+        assert!(!is_office_document("doc.pdf"));
+        assert!(!is_office_document("README"));
     }
 }

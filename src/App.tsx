@@ -1,12 +1,30 @@
+import { Suspense, lazy } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { OnboardingWizard } from './components/onboarding/OnboardingWizard';
-import { FilesPage } from './pages/FilesPage';
-import { ClassifyPage } from './pages/ClassifyPage';
-import { ChatPage } from './pages/ChatPage';
-import { RulesPage } from './pages/RulesPage';
-import { SettingsPage } from './pages/SettingsPage';
+import { ToastContainer } from './components/ui/Toast';
 import { useSettingsStore } from './stores/settingsStore';
+
+// 路由级代码分割：每个页面独立异步 chunk，首屏只加载当前页。
+// 项目规则禁止默认导出，故用 then 包装把具名导出映射为 default。
+const FilesPage = lazy(() => import('./pages/FilesPage').then((m) => ({ default: m.FilesPage })));
+const ClassifyPage = lazy(() =>
+  import('./pages/ClassifyPage').then((m) => ({ default: m.ClassifyPage })),
+);
+const ChatPage = lazy(() => import('./pages/ChatPage').then((m) => ({ default: m.ChatPage })));
+const RulesPage = lazy(() => import('./pages/RulesPage').then((m) => ({ default: m.RulesPage })));
+const SettingsPage = lazy(() =>
+  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
+);
+
+/** 页面 chunk 加载占位：与 app-loading 同款 spinner（本地毫秒级，通常不可见）。 */
+function PageFallback() {
+  return (
+    <div className="app-loading" role="status" aria-label="页面加载中">
+      <div className="app-loading__spinner" />
+    </div>
+  );
+}
 
 export function App() {
   const isLoading = useSettingsStore((s) => s.isLoading);
@@ -46,7 +64,12 @@ export function App() {
 
   // 首次启动未完成引导：显示引导向导（设计稿 §3：引导不可跳过）
   if (!onboardingCompleted) {
-    return <OnboardingWizard />;
+    return (
+      <>
+        <OnboardingWizard />
+        <ToastContainer />
+      </>
+    );
   }
 
   // 已完成引导：显示主界面
@@ -54,14 +77,17 @@ export function App() {
   return (
     <HashRouter>
       <AppLayout>
-        <Routes>
-          <Route path="/" element={<FilesPage />} />
-          <Route path="/classify" element={<ClassifyPage />} />
-          <Route path="/chat" element={<ChatPage />} />
-          <Route path="/rules" element={<RulesPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<FilesPage />} />
+            <Route path="/classify" element={<ClassifyPage />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/rules" element={<RulesPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </Suspense>
       </AppLayout>
+      <ToastContainer />
     </HashRouter>
   );
 }

@@ -17,15 +17,20 @@ Provider 仅持连接参数、不持缓存；请求级选择由调用点（路�
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 from app.rules.llm_classify import LLM_MODEL
 from app.services.providers.deepseek_provider import DeepSeekProvider
+from app.services.providers.generic_cloud_provider import GenericCloudProvider
 from app.services.providers.ollama_provider import OllamaProvider
 from app.services.providers.openai_provider import OpenAIProvider
 
 if TYPE_CHECKING:
     from app.services.cloud_provider import LLMProvider, PromptVersion
+
+#: Rust 启动 Sidecar 时注入的激活云提供商 slug（对应 DB active_cloud_provider）
+_ACTIVE_CLOUD_PROVIDER_ENV = "FILEMIND_ACTIVE_CLOUD_PROVIDER"
 
 #: 生成模型名 → 上下文窗口（token）；未收录模型回落保守本地值
 #: （08-§6 模型差异矩阵：本地 32K / gpt-4o 128K / deepseek-chat 64K）
@@ -47,6 +52,17 @@ _CLOUD_ROUTES: tuple[tuple[str, type[OllamaProvider] | type[OpenAIProvider]], ..
     ("gpt-", OpenAIProvider),
     ("deepseek-", DeepSeekProvider),
 )
+
+
+def active_cloud_provider_slug() -> str | None:
+    """返回 Rust 注入的激活云提供商 slug（去首尾空白，空串回落 ``None``）。
+
+    Returns:
+        激活 slug；env 未设置/空串返回 ``None``。
+    """
+    value = os.environ.get(_ACTIVE_CLOUD_PROVIDER_ENV, "")
+    stripped = value.strip()
+    return stripped if stripped else None
 
 
 def get_max_context(model: str) -> int:
@@ -81,7 +97,13 @@ def truncate_context(context: str, model: str) -> str:
 
 
 def resolve_provider(model: str = LLM_MODEL) -> LLMProvider:
-    """按模型名解析 Provider 实例（云端前缀走云端类，其余回落本地 Ollama）。
+    """按模型名解析 Provider 实例。
+
+    判定顺序（P-07 改造后）：
+    1. 命中内置前缀 ``gpt-`` / ``deepseek-`` → 分别用 OpenAIProvider / DeepSeekProvider
+    2. 存在激活云提供商 slug（env ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 非空）
+       → 使用 :class:`GenericCloudProvider`，按 slug 代理路由
+    3. 其余情况回落本地 OllamaProvider
 
     Args:
         model: 生成模型名（默认 ``LLM_MODEL``）。
@@ -92,6 +114,8 @@ def resolve_provider(model: str = LLM_MODEL) -> LLMProvider:
     for prefix, provider_cls in _CLOUD_ROUTES:
         if model.startswith(prefix):
             return provider_cls(model=model)
+    if active_cloud_provider_slug() is not None:
+        return GenericCloudProvider(model=model)
     return OllamaProvider(model=model)
 
 
@@ -118,6 +142,10 @@ def resolve_cloud_provider(model: str) -> LLMProvider | None:
 def prompt_version_for(model: str) -> PromptVersion:
     """按模型名判定 Prompt 版本（local / cloud）。
 
+    P-07 改造后：当 env ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 存在时，任何模型名
+    （内置前缀除外，已经判定为云端）也按云端处理，保证 GenericCloudProvider
+    选到正确的 prompt 变体。
+
     Args:
         model: 生成模型名。
 
@@ -128,4 +156,6 @@ def prompt_version_for(model: str) -> PromptVersion:
     for prefix, _ in _CLOUD_ROUTES:
         if model.startswith(prefix):
             return "cloud"
+    if active_cloud_provider_slug() is not None:
+        return "cloud"
     return "local"

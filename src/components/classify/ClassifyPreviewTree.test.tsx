@@ -26,6 +26,7 @@ function makePreview(items: ClassifyPlanItem[]): ClassifyPreview {
   const categorized = items.filter((i) => i.category_name != null).length;
   return {
     batch_id: 'b1',
+    output_root: '/tmp_已分类',
     items,
     stats: {
       total: items.length,

@@ -11,10 +11,17 @@
 // 流式状态（status/currentStream 等）为瞬态不持久化。
 
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
 import { chatStream, listenChatEvent, type ChatEvent } from '../lib/ipc/chatIpc';
+import { flushThrottledStorage, throttledLocalStorage } from '../lib/throttledStorage';
 import { useSettingsStore } from './settingsStore';
-import { ChatRole, type ChatCitation, type ChatMessage } from '../types/models';
+import {
+  ChatRole,
+  resolveDisplayModel,
+  stripCitationLiterals,
+  type ChatCitation,
+  type ChatMessage,
+} from '../types/models';
 import type { ChatStreamRequest, ChatTurn } from '../types/ipc';
 
 /** 向量检索候选数。 */
@@ -120,13 +127,23 @@ function buildRequest(query: string, messages: ChatMessage[]): ChatStreamRequest
   // FE-m11：版本号从 embeddingModelOptions 查找，fallback 1（与 Rust 当前硬编码一致）
   const version =
     settings.embeddingModelOptions.find((m) => m.name === embeddingModel)?.version ?? 1;
+  // 云端模式：若用户配置了 cloudModel，用它作为生成模型；否则按 provider 回落默认
+  const effectiveLlmModel = resolveDisplayModel(
+    settings.inferenceMode,
+    settings.llmModel,
+    settings.cloudModel,
+    settings.cloudConsentProvider,
+  );
   return {
     query,
     history: buildHistory(messages.slice(0, -1), HISTORY_TURNS),
     table_name: `documents_${embeddingModel}_v${version}`,
     embedding_model: embeddingModel,
     inference_mode: settings.inferenceMode.toLowerCase(),
-    llm_model: settings.llmModel || 'qwen3.8-27b',
+    llm_model: effectiveLlmModel,
+    // 云端模型通过 llm_model 传递（Rust chat_stream_inner 会合并 cloud_model → llm_model）
+    // 此处直接传 effectiveLlmModel，云端 Provider 按前缀路由
+    cloud_model: settings.inferenceMode === 'Cloud' ? settings.cloudModel : '',
     top_k: TOP_K,
     rerank_top_k: RERANK_TOP_K,
     max_retries: MAX_RETRIES,
@@ -140,7 +157,7 @@ let chatUnlisten: (() => void) | null = null;
 // FE-C2/FE-C3 模块级流控制状态（瞬态，不进 store 持久化）：
 // - activeSeq：当前流的 seq（null = 无流 / 新流 invoke 未返回）
 // - lastSeq：最近一次 invoke 返回的 seq（收编「首帧先于 invoke 返回」的事件）
-// - 看门狗 timer：空闲 90s / 总量 600s 超时兜底复位 isStreaming
+// - 看门狗 timer：空闲 300s / 总量 1200s 超时兜底复位 isStreaming
 let activeSeq: number | null = null;
 let lastSeq = 0;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -287,6 +304,12 @@ export const useChatStore = create<ChatState>()(
               },
             });
             break;
+          case 'search_warning':
+            set({
+              error: event.data.message,
+              status: 'searching',
+            });
+            break;
           case 'token':
             get().appendStreamChunk(event.data.content);
             break;
@@ -299,16 +322,20 @@ export const useChatStore = create<ChatState>()(
               status: 'streaming',
             });
             break;
-          case 'citation':
-            set({
-              pendingCitations: event.data.citations.map((c) => ({
-                id: c.id,
-                fileName: c.file_name,
-                page: c.page,
-                text: c.text,
-              })),
-            });
+          case 'citation': {
+            // FE-m12：后端已去重，这里再兜底一次（防御 LLM 在 retry 时
+            // 产生重复来源 / 未来其他路径引入重复）。按 (id, fileName, page) 三元组去重。
+            const seen = new Set<string>();
+            const deduped: ChatCitation[] = [];
+            for (const c of event.data.citations) {
+              const key = `${c.id}|${c.file_name}|${c.page}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              deduped.push({ id: c.id, fileName: c.file_name, page: c.page, text: c.text });
+            }
+            set({ pendingCitations: deduped });
             break;
+          }
           case 'done':
             get().finishStream({ lowConfidence: event.data.low_confidence ?? false });
             break;
@@ -360,7 +387,7 @@ export const useChatStore = create<ChatState>()(
         const assistantMessage: ChatMessage = {
           id: genMessageId(),
           role: ChatRole.Assistant,
-          content: currentStream,
+          content: stripCitationLiterals(currentStream),
           ...(pendingCitations.length > 0 ? { citations: pendingCitations } : {}),
           ...(meta.lowConfidence ? { lowConfidence: true } : {}),
           ...(retries > 0 ? { retries } : {}),
@@ -378,6 +405,8 @@ export const useChatStore = create<ChatState>()(
           searchInfo: null,
           lowConfidence: false,
         }));
+        // 终态消息立即落盘，不等节流窗口
+        flushThrottledStorage();
       },
 
       clearHistory: () => {
@@ -396,13 +425,18 @@ export const useChatStore = create<ChatState>()(
           searchInfo: null,
           lowConfidence: false,
         });
+        // 清空也立即落盘，避免节流窗口内的旧历史被延迟恢复
+        flushThrottledStorage();
       },
 
       clearError: () => set({ error: null }),
     }),
     {
       name: 'filemind-chat',
-      // 仅持久化 messages（流式状态不持久化）
+      // 仅持久化 messages（流式状态不持久化）；
+      // 写盘经 throttledLocalStorage 节流——流式期间每 token 一次 set，
+      // 直写 localStorage 会放大为 token 级全量 stringify，终态在此处 flush 兜底
+      storage: createJSONStorage(() => throttledLocalStorage),
       partialize: (state) => ({ messages: state.messages }),
     },
   ),

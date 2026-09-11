@@ -16,31 +16,32 @@ jobs:
       fail-fast: false      # 单平台失败不取消其余平台，便于并排查错
       matrix:
         include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            label: macos-arm64
-            bundles: dmg
-            artifacts: |
-              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            label: macos-x64
-            bundles: dmg
-            artifacts: |
-              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          # Windows x64：原生 runner 先 PyInstaller 产 sidecar（.exe），再 tauri build 出 msi + nsis
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x64
-            bundles: msi
+            bundles: msi nsis
             artifacts: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            label: linux-x64
-            bundles: deb,appimage
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          # macOS Apple Silicon（arm64 runner 原生构建）
+          # app,dmg：app 目标产出 updater 用的 .tar.gz + .sig（对齐 docs/auto-update-setup.md 发布命令），
+          # 同时避免 dmg-only 打包后 .app 被清理导致冒烟检查扑空
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macos-arm64
+            bundles: app,dmg
             artifacts: |
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          # macOS Intel：x64 runner 原生构建（PyInstaller 无法跨 mac 架构，必须 x64 机器）
+          - os: macos-13
+            target: x86_64-apple-darwin
+            label: macos-x64
+            bundles: app,dmg
+            artifacts: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          # 说明：Linux(deb/AppImage) job 暂移除——打包态 Sidecar 解析当前仅支持
+          # macOS/Windows（main.rs defer_to_bundle 仅这两平台），Linux 分发改后续版本。
     steps:
       - uses: actions/checkout@v7
 
@@ -49,31 +50,67 @@ jobs:
           node-version: 24
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}   # 装对应 target，交叉编译才可用
+      - uses: dtolnay/rust-toolchain@stable   # 原生 runner，目标 triple 即 host，无需额外 targets
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Install Linux deps
-        if: runner.os == 'Linux'
+      # Sidecar 需要 Python 3.12 环境：建 venv 并装运行/打包依赖（PyInstaller 在 requirements-dev）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Python venv + deps
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
+          python -m venv .venv
+          if [[ "$RUNNER_OS" == "Windows" ]]; then PY=".venv/Scripts/python.exe"; else PY=".venv/bin/python"; fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -r python-sidecar/requirements.txt -r python-sidecar/requirements-dev.txt
 
       - run: npm ci
+
+      # Sidecar onedir 产物（体积门控见 scripts/build-sidecar.sh）。
+      # ⚠️ 必须在 gen:ipc 之前：cargo run 会触发 tauri-build 的 build.rs，
+      #    校验 bundle.resources 声明的 sidecar 产物目录存在，顺序颠倒则直接编译失败。
+      - name: Build Sidecar (${{ matrix.label }})
+        shell: bash
+        run: bash scripts/build-sidecar.sh --target ${{ matrix.target }}
 
       # src/types/ipc.ts 是 specta 生成的类型文件（gitignored），CI 全新检出没有它；
       # 必须先生成，否则 tsc 报 Cannot find module '@/types/ipc' 全崩。
       - name: Generate IPC types
         run: npm run gen:ipc
 
-      # 真实交叉编译：--target 决定产物 triple，--bundles 限定安装包格式
-      # （Linux 排除 rpm 防缺 rpmbuild 红；macOS x64 由 arm64 runner 交叉产出）
+      # 原生构建 + bundle.resources 把 sidecar onedir 目录打进安装包
+      # （tauri.conf.json: {"../filemind/binaries/filemind-sidecar/": "sidecar"}）
+      # TAURI_SIGNING_PRIVATE_KEY：updater 签名私钥（bundle.createUpdaterArtifacts=true 时，
+      # msi/nsis/app 目标构建后必须签名更新产物，缺密钥构建直接失败）
       - name: Build Tauri (${{ matrix.label }})
         run: npm run build:tauri -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      # 打包态冒烟：安装包内必须真实包含 Sidecar onedir 产物（缺它 = 装完即崩），显式失败
+      # P2-2：落地位置由 externalBin（主可执行同目录）改为 resources（$RESOURCE/sidecar/）
+      - name: Smoke check Sidecar bundled
+        shell: bash
+        run: |
+          set -e
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            APP="$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+            test -n "${APP}"
+            test -x "${APP}/Contents/Resources/sidecar/filemind-sidecar"
+            test -d "${APP}/Contents/Resources/sidecar/_internal"
+            echo "Sidecar bundled (macOS): ${APP}/Contents/Resources/sidecar"
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            # Windows 资源收集目录 = target/<triple>/release/sidecar（安装器据此打包）
+            test -f "src-tauri/target/${{ matrix.target }}/release/sidecar/filemind-sidecar.exe"
+            test -d "src-tauri/target/${{ matrix.target }}/release/sidecar/_internal"
+            echo "Sidecar resources collected (Windows)"
+          fi
+          echo "Sidecar bundled OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

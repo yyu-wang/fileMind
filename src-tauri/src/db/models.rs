@@ -76,7 +76,8 @@ pub struct OperationBatchSummary {
     pub status: String,
     /// 首条记录时间（批次创建时间近似）。
     pub created_at: String,
-    /// 批次内是否含 delete 操作（含则不可撤销，T3.4 已确认 delete 不可恢复）。
+    /// 批次内是否含 delete 操作（删除移入系统回收站，应用内不可撤销，
+    /// 可从系统回收站手动恢复）。
     pub has_delete: bool,
     /// 是否可撤销（DB 层）：`status='done' && !has_delete`。
     /// IPC 命令层（`get_operation_history`）会再注入撤销窗口判断。
@@ -119,6 +120,22 @@ pub struct CategoryNode {
     pub category: Category,
     /// 子节点列表。
     pub children: Vec<CategoryNode>,
+}
+
+/// `scanned_directories` 表记录：已扫描的根目录（支撑目录级移除）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct ScannedDirectory {
+    /// 主键（UUID）。
+    pub id: String,
+    /// 目录绝对路径（UNIQUE）。
+    pub path: String,
+    /// 该目录下未软删除的文件数（实时统计，不存表）。
+    #[specta(type = specta_typescript::Number)]
+    pub file_count: i64,
+    /// 入库时间。
+    pub created_at: String,
+    /// 最后更新时间。
+    pub updated_at: String,
 }
 
 /// `rules` 表记录：分类规则。

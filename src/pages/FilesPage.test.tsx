@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   readFilePreview: vi.fn(),
   scanDirectory: vi.fn(),
   listAllFiles: vi.fn(),
+  listScannedDirectories: vi.fn(),
+  removeDirectory: vi.fn(),
   getFileStats: vi.fn(),
   e2eGetTestDir: vi.fn(),
   open: vi.fn(),
@@ -25,6 +27,8 @@ vi.mock('@/lib/ipc', () => ({
     readFilePreview: mocks.readFilePreview,
     scanDirectory: mocks.scanDirectory,
     listAllFiles: mocks.listAllFiles,
+    listScannedDirectories: mocks.listScannedDirectories,
+    removeDirectory: mocks.removeDirectory,
     getFileStats: mocks.getFileStats,
     e2eGetTestDir: mocks.e2eGetTestDir,
   },
@@ -66,6 +70,7 @@ function seed(overrides: Partial<Parameters<typeof useFileStore.setState>[0]> = 
   });
   mocks.e2eGetTestDir.mockResolvedValue(null);
   mocks.getFileStats.mockResolvedValue({ status: 'ok', data: { total_files: 0 } });
+  mocks.listScannedDirectories.mockResolvedValue({ status: 'ok', data: [] });
 }
 
 function renderPage(): void {
@@ -154,5 +159,22 @@ describe('FilesPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('扫描失败');
     await user.click(screen.getByLabelText('关闭错误提示'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('hides 清除选中 button when nothing is selected', () => {
+    seed({ files: [file()], scanPath: '/tmp', selectedIds: [] });
+    renderPage();
+    expect(screen.queryByTestId('files-clear-selection')).not.toBeInTheDocument();
+  });
+
+  it('shows 清除选中 with count and clears selection on click', async () => {
+    const user = userEvent.setup();
+    seed({ files: [file()], scanPath: '/tmp', selectedIds: ['f1'] });
+    renderPage();
+    const btn = screen.getByTestId('files-clear-selection');
+    expect(btn).toHaveTextContent('清除选中');
+    await user.click(btn);
+    expect(useFileStore.getState().selectedIds).toEqual([]);
+    expect(screen.queryByTestId('files-clear-selection')).not.toBeInTheDocument();
   });
 });

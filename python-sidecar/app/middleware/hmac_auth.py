@@ -34,8 +34,9 @@ EXEMPT_PATHS: set[str] = {"/handshake", "/health"}
 if os.environ.get("FILEMIND_DEV", "0") == "1":
     EXEMPT_PATHS |= {"/docs", "/openapi.json", "/redoc"}
 
-# SC-m3：请求体大小上限（1MB；正常 JSON 请求体远小于此）
-MAX_BODY_SIZE = 1024 * 1024
+# SC-m3：请求体大小上限（64MB；正常 JSON 请求体远小于此，
+# 放宽以容纳 RAG 问答注入的 FTS 命中大文件正文，见 chat.rs MAX_CHAT_FTS_BYTES）
+MAX_BODY_SIZE = 64 * 1024 * 1024
 
 
 def _sign(psk: bytes, message: str) -> str:

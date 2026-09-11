@@ -23,6 +23,7 @@ function item(overrides: Partial<ClassifyPlanItem> = {}): ClassifyPlanItem {
 
 const preview: ClassifyPreview = {
   batch_id: 'b1',
+  output_root: '/Users/test/我的文档_已分类',
   stats: { total: 10, categorized: 8, pending: 3, by_rule: 5, by_heuristic: 2 },
   items: [
     item({ category_name: '文档', rule_source: 'rule:PDF' }),
@@ -54,15 +55,20 @@ describe('ClassifyStatsPanel', () => {
     expect(screen.getAllByText('1 (20%)')).toHaveLength(3);
   });
 
-  it('shows fallback root name when scanPath is empty', () => {
+  it('derives root name from output_root (收纳根优先)', () => {
     render(<ClassifyStatsPanel preview={preview} />);
-    expect(screen.getByText(/文件库\/$/)).toBeInTheDocument();
+    expect(screen.getByText(/我的文档_已分类\/$/)).toBeInTheDocument();
   });
 
-  it('derives root name from scanPath', () => {
+  it('falls back to scanPath root name when output_root absent', () => {
     useFileStore.setState({ scanPath: '/Users/test/我的文档' });
-    render(<ClassifyStatsPanel preview={preview} />);
+    render(<ClassifyStatsPanel preview={{ ...preview, output_root: '' }} />);
     expect(screen.getByText(/我的文档\/$/)).toBeInTheDocument();
+  });
+
+  it('falls back to 文件库 when both roots empty', () => {
+    render(<ClassifyStatsPanel preview={{ ...preview, output_root: '' }} />);
+    expect(screen.getByText(/文件库\/$/)).toBeInTheDocument();
   });
 
   it('renders deduplicated target tree excluding conflicts and uncategorized', () => {

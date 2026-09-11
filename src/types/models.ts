@@ -24,6 +24,78 @@ export const MODE_COLORS: Record<
 };
 
 /**
+ * 云端提供商默认推理模型（按 provider_key 取值）。
+ *
+ * 当 `cloudModel` 为空串时回落到此表；键为 P-07 提供商 slug。
+ * 内置两条（openai / deepseek）历史默认保留；用户自定义提供商为空走回落逻辑。
+ */
+export const CLOUD_PROVIDER_DEFAULT_MODEL: Record<string, string> = {
+  openai: 'gpt-4o-mini',
+  deepseek: 'deepseek-chat',
+};
+
+/**
+ * 解析状态栏/会话实际使用的 LLM 模型显示名。
+ *
+ * 逻辑（与 chatStore buildRequest L125-127 对齐）：
+ * - Local：`llmModel`（本地 Ollama 模型名，空值回落 qwen3.8-27b）
+ * - Cloud：优先 `cloudModel`，空则按 `cloudProvider` 查默认，均无回落 llmModel
+ *
+ * @param mode 推理模式
+ * @param llmModel 本地 LLM 模型名（store.llmModel）
+ * @param cloudModel 云端推理模型名（store.cloudModel，空串=未指定）
+ * @param cloudProvider 云端提供商（仅 Cloud 模式有值）
+ */
+export function resolveDisplayModel(
+  mode: InferenceMode,
+  llmModel: string | undefined | null,
+  cloudModel: string | undefined | null,
+  cloudProvider: string | null,
+): string {
+  const isCloud = mode === 'Cloud';
+  if (isCloud) {
+    if (cloudModel && cloudModel.trim() !== '') {
+      return cloudModel;
+    }
+    if (cloudProvider) {
+      return CLOUD_PROVIDER_DEFAULT_MODEL[cloudProvider];
+    }
+  }
+  return llmModel && llmModel.trim() !== '' ? llmModel : 'qwen3.8-27b';
+}
+
+/**
+ * 与 Python 端 ``CITATION_PATTERN`` 语义一致的引用字面量正则。
+ *
+ * 用于前端 finishStream 中剥离正文中残留的引用标记（当 LLM 输出格式
+ * 与解析器匹配失败时，作为最终视觉兜底）。
+ * 兼容形式：``[1]`` / ``[引用1]`` / ``[引1]`` / ``[cite 2]`` / ``[来源3]`` 等。
+ */
+const CITATION_LITERAL_RE = /\[(?:引用|引|cite|citation|来源)?\s*(\d+)\s*\]/gi;
+
+/**
+ * 剥离正文中残留的引用字面量（[N]/[引用N] 等）。
+ *
+ * 引用已结构化存放在 ``ChatMessage.citations``，底部 chip 会渲染，
+ * 正文中残留的 ``[引用1][引用2]`` 会是纯视觉噪音。stripCitationLiterals
+ * 用于 ``finishStream`` 终态兜底：防止 Python 端漏解析（如 LLM 产生未知
+ * 变体）时残留脏文本。
+ *
+ * @param content 原始回答正文（可能包含残留引用标记）
+ * @returns 清理后的正文
+ */
+export function stripCitationLiterals(content: string): string {
+  return (
+    content
+      .replace(CITATION_LITERAL_RE, '')
+      // 去除引文标记后常见的残余间距：句号/问号/感叹号/逗号/分号/冒号前的空格
+      .replace(/\s+([。？！，、；：,.!?;:])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  );
+}
+
+/**
  * 分类流程状态机（设计稿 5.x 分类页）。
  *
  * 状态转移：

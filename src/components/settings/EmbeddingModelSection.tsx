@@ -1,68 +1,106 @@
 // Embedding 模型区块（设置页）：展示当前模型与可选模型可用性。
 //
-// 仅展示 + 预检查，不落库切换：向量索引表名按
-// `documents_{embedding_model}_v{version}` 命名，切换需同步重建索引，
-// 属后续建索引任务。RAG 表名一致性由该约束保证。
+// 支持手动安装未安装的 Embedding 模型（从 Ollama 拉取）。
+// 切换模型需重建全部索引，P1 未支持，不渲染切换占位按钮。
+// 原型 05_交互原型 §设置页 Embedding 管理：.panel 展示当前模型 + .model-item 列表。
 
+import { useEffect } from 'react';
+import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 
 export function EmbeddingModelSection() {
   const embeddingModel = useSettingsStore((s) => s.embeddingModel);
   const embeddingModelOptions = useSettingsStore((s) => s.embeddingModelOptions);
-  const ollamaProbing = useSettingsStore((s) => s.ollamaProbing);
+  const installingModel = useSettingsStore((s) => s.installingModel);
+  const installError = useSettingsStore((s) => s.installError);
+  const installModel = useSettingsStore((s) => s.installModel);
+  const ollamaAvailable = useSettingsStore((s) => s.ollamaStatus?.available ?? false);
+  const stats = useFileStore((s) => s.stats);
+  const loadStats = useFileStore((s) => s.loadStats);
+
+  useEffect(() => {
+    if (!stats) void loadStats();
+  }, [stats, loadStats]);
 
   const current = embeddingModelOptions.find((m) => m.name === embeddingModel);
+  const indexedCount = stats?.categorized_files ?? 0;
 
   return (
     <section className="settings-section" aria-labelledby="settings-embedding-title">
       <h3 id="settings-embedding-title" className="settings-section__title">
-        Embedding 模型
+        📐 Embedding 模型管理
       </h3>
-      <p className="settings-section__desc">
-        用于文件向量化的模型。切换模型需同步重建索引，将在后续版本提供。
-      </p>
+      <p className="section-desc">管理本机 Embedding 模型；当前版本不支持切换模型</p>
 
-      <div className="settings-row">
-        <span
-          className="settings-mode-badge"
-          title="当前 Embedding 模型"
-          data-testid="embedding-current"
-        >
-          {embeddingModel}
-          {current ? ` · dim ${current.dim} · v${current.version}` : ''}
-        </span>
-        <span
-          className={`settings-embedding-badge ${current?.available ? 'settings-embedding-badge--ok' : 'settings-embedding-badge--missing'}`}
-        >
-          {ollamaProbing ? '检测中' : current ? (current.available ? '已安装' : '未安装') : '未知'}
-        </span>
+      <div className="panel" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div
+              style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}
+              data-testid="embedding-current"
+            >
+              当前模型: {embeddingModel}
+              {current ? ` · dim ${current.dim} · v${current.version}` : ''}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+              已索引 {indexedCount.toLocaleString()} 文件 · 向量块数未知
+            </div>
+          </div>
+          <span className="tag tag-green" title="当前模型已锁定，切换需重建索引">
+            已锁定
+          </span>
+        </div>
       </div>
 
-      <ul className="settings-embedding-list">
-        {embeddingModelOptions.length === 0 ? (
-          <li className="settings-embedding-item">
-            <span className="settings-embedding-name">暂无模型列表</span>
-            <span className="settings-embedding-meta">请先检测 Ollama 环境</span>
-          </li>
-        ) : (
-          embeddingModelOptions.map((m) => (
-            <li
-              key={m.name}
-              className={`settings-embedding-item ${m.name === embeddingModel ? 'settings-embedding-item--current' : ''}`}
-            >
-              <span className="settings-embedding-name">{m.name}</span>
-              <span className="settings-embedding-meta">
-                dim {m.dim} · v{m.version}
-              </span>
-              <span
-                className={`settings-embedding-badge ${m.available ? 'settings-embedding-badge--ok' : 'settings-embedding-badge--missing'}`}
-              >
-                {m.available ? '已安装' : '未安装'}
-              </span>
-            </li>
-          ))
-        )}
-      </ul>
+      {installError && (
+        <p className="section-desc" role="alert" style={{ color: 'var(--danger, #d33)' }}>
+          安装失败: {installError}
+        </p>
+      )}
+
+      <div className="section-desc" style={{ marginBottom: 8 }}>
+        可用 Embedding 模型：
+      </div>
+      {embeddingModelOptions.length === 0 ? (
+        <div className="model-item">
+          <div className="model-info">
+            <div className="name">暂无模型列表</div>
+            <div className="meta">请先检测 Ollama 环境</div>
+          </div>
+        </div>
+      ) : (
+        embeddingModelOptions.map((m) => {
+          const isCurrent = m.name === embeddingModel;
+          const isInstalling = installingModel === m.name;
+          return (
+            <div key={m.name} className={`model-item${isCurrent ? ' model-item--current' : ''}`}>
+              <div className="model-info">
+                <div className="name">{m.name}</div>
+                <div className="meta">
+                  dim {m.dim} · v{m.version}
+                  {m.available ? '' : ' · 未安装'}
+                </div>
+              </div>
+              {m.available ? (
+                <span className="tag tag-green">已安装</span>
+              ) : (
+                <span className="tag tag-gray">未安装</span>
+              )}
+              {!m.available && (
+                <button
+                  type="button"
+                  className="btn btn--primary btn--sm"
+                  disabled={isInstalling || !ollamaAvailable}
+                  onClick={() => void installModel(m.name)}
+                  title={ollamaAvailable ? '点击安装此模型' : 'Ollama 不可用，请先启动 Ollama'}
+                >
+                  {isInstalling ? '安装中...' : '安装'}
+                </button>
+              )}
+            </div>
+          );
+        })
+      )}
     </section>
   );
 }

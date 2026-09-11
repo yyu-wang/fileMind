@@ -4,15 +4,16 @@
     "scale": "small",
     "date": "3.12.14",
     "platform": "macOS-26.4.1-arm64-arm-64bit",
-    "commit": "9fa2499"
+    "commit": "1f5a085"
   },
   "scan_count": 10000,
-  "scan_full_10k_ms": 850.4,
-  "scan_incremental_unchanged_ms": 138.7,
-  "sidecar_rss_mb": 162.0,
+  "scan_full_10k_ms": 846.9,
+  "scan_incremental_unchanged_ms": 144.2,
+  "sidecar_rss_mb": 161.23,
   "threshold_mb": 500,
-  "rag_ttft_ms": null,
-  "rag_retrieve_ms": null,
-  "rag_index_ms": 3048,
-  "rag_skipped": "/index/build 503: {\"detail\":\"建立索引失败: Embedding 调用失败:  (status code: 502)\"}"
+  "rag_llm_model": "qwen2.5:7b",
+  "rag_ttft_ms": 41707,
+  "rag_retrieve_ms": 7764,
+  "rag_index_ms": 9,
+  "rag_skipped": null
 }

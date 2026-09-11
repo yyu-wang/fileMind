@@ -45,6 +45,14 @@ jobs:
 
       - run: npm ci
 
+      # P2-2：tauri-build 的 build.rs 会按 bundle.resources 收集资源并校验存在性
+      # （不存在即编译失败）。E2E 不需要真实 onedir 产物（运行时由
+      # FILEMIND_SIDECAR_BINARY 指向 wrapper stub），故造一个最小占位目录即可，
+      # 保持本 job「不跑 PyInstaller（省 5-10min）」的既有取舍。
+      # ⚠️ 必须在 gen:ipc 之前：`npm run gen:ipc` 是 cargo run，同样触发 build.rs。
+      - name: Stub sidecar product dir
+        run: bash scripts/stub-sidecar-product.sh
+
       # ipc.ts 是 specta 生成的类型文件（gitignored），tsc/vite 都依赖它，先生成
       - name: Generate IPC types
         run: npm run gen:ipc
