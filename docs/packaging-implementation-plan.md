@@ -221,6 +221,11 @@
      要读 stdout/stderr 管道到 EOF，而 `nc` 继承了这两个 fd 且长期持有不关闭，等待永不返回
      （本机 macOS 的 nc 行为不同才没暴露）。改为三个 stdio 全部丢弃 + `.status()`；
      并给 `rust-check` 加 `timeout-minutes: 30` 保险阀（下次挂死 30min 失败而非 6h）
+  5. 解卡后暴露出**真实的 Linux 产品缺陷**：`cleanup_orphan_sidecar` 按 `ps -o comm=`
+     匹配 `filemind-sidecar`，而 Linux 内核把 `/proc/<pid>/comm` 截断到 15 字符
+     （`filemind-sideca`）——恰好 16 字符的名字在 Linux 上**永远匹配不到**，孤儿
+     sidecar 清不掉、残留进程占住端口导致下次启动握手 401（即历史 401 顽疾的成因之一）。
+     抽出 `matches_sidecar_comm()` 容忍截断形态（等值比较，不放宽误杀面）
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按

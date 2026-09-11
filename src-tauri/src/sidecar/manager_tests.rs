@@ -742,6 +742,35 @@ fn spawn_orphan_listener(port: u16, name: &str) -> Option<u32> {
     pid
 }
 
+/// 取 pid 的 `pid/ppid/comm` 快照，供断言失败时定位（Linux 的 comm 会被截断）。
+#[cfg(unix)]
+fn ps_snapshot(pid: u32) -> String {
+    match std::process::Command::new("ps")
+        .args(["-o", "pid=,ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Err(e) => format!("ps 执行失败: {e}"),
+    }
+}
+
+/// Linux `/proc/<pid>/comm` 限长 15 字符：`filemind-sidecar`（16 字符）实际读到的是
+/// `filemind-sideca`，身份匹配必须容忍该截断，否则 Linux 上孤儿清理永远匹配不到。
+#[cfg(unix)]
+#[test]
+fn test_matches_sidecar_comm_tolerates_linux_truncation() {
+    // 完整名（macOS `ps -o comm=` 返回可执行路径，同样命中）
+    assert!(matches_sidecar_comm("filemind-sidecar"));
+    assert!(matches_sidecar_comm(
+        "/applications/filemind.app/contents/macos/filemind-sidecar"
+    ));
+    // Linux 截断形态
+    assert!(matches_sidecar_comm("filemind-sideca"));
+    // 不相关进程名不得命中（防误杀）
+    assert!(!matches_sidecar_comm("innocent-listener"));
+    assert!(!matches_sidecar_comm("python3"));
+}
+
 /// BE-M3 核心场景：名为 filemind-sidecar 的孤儿（ppid=1）占住端口 → 被清理。
 #[cfg(unix)]
 #[test]
@@ -756,7 +785,11 @@ fn test_cleanup_orphan_sidecar_kills_named_orphan() {
 
     // SIGTERM 后端口应释放（轮询最多 3s）
     let gone = wait_listener(PORT, std::time::Duration::from_secs(3)).is_none();
-    assert!(gone, "孤儿 Sidecar pid={pid} 应被清理，端口 {PORT} 应释放");
+    assert!(
+        gone,
+        "孤儿 Sidecar pid={pid} 应被清理，端口 {PORT} 应释放；ps: {}",
+        ps_snapshot(pid)
+    );
     force_kill_listeners(PORT);
 }
 

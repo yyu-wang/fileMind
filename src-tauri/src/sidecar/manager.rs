@@ -928,6 +928,31 @@ impl Drop for SidecarManager {
 
 // ---------- 孤儿 Sidecar 清理（BE-M3） ----------
 
+/// Sidecar 主可执行的进程名（打包 / onedir 形态）。
+const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
+
+/// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
+const LINUX_COMM_MAX_LEN: usize = 15;
+
+/// `ps -o comm=` 取到的进程名是否就是 Sidecar 主可执行。
+///
+/// ⚠️ Linux 的 `comm` 由内核按 `TASK_COMM_LEN - 1 = 15` 字符截断，而
+/// `filemind-sidecar` 恰好 16 字符，实际取到的是 `filemind-sideca`——只做
+/// `contains("filemind-sidecar")` 会**永远匹配不到**，导致 Linux 上孤儿清理
+/// 形同虚设（残留进程占住端口 → 下次启动握手 401）。故额外容忍该截断形态，
+/// 且用等值比较（`comm == 截断名`）而非前缀比较，避免放宽误杀范围。
+#[cfg(unix)]
+#[must_use]
+pub(crate) fn matches_sidecar_comm(comm: &str) -> bool {
+    if comm.contains(SIDECAR_COMM_NAME) {
+        return true;
+    }
+    let truncated = SIDECAR_COMM_NAME
+        .get(..LINUX_COMM_MAX_LEN)
+        .unwrap_or(SIDECAR_COMM_NAME);
+    comm == truncated
+}
+
 /// 启动新 Sidecar 前清理上次异常退出残留的孤儿进程。
 ///
 /// 场景：上次运行握手失败 / 崩溃路径 `std::process::exit(1)` 跳过 Drop，
@@ -937,7 +962,7 @@ impl Drop for SidecarManager {
 /// 三重防误杀：
 /// 1. 端口匹配：仅处理监听 `port`（默认 8765）的进程（`lsof -ti tcp:{port}` 前置过滤）；
 /// 2. 进程身份匹配（满足任一即可）：
-///    a. 打包模式：`ps -o comm=` 进程名包含 `filemind-sidecar`；或
+///    a. 打包模式：`ps -o comm=` 进程名包含 `filemind-sidecar`（并容忍 Linux 15 字符截断形态 `filemind-sideca`，见 [`matches_sidecar_comm`]）；或
 ///    b. dev 模式：进程名包含 `python` 且完整命令行 `ps -o args=` 包含 `-m app`（Sidecar 启动入口特征）；
 /// 3. 孤儿判定：自身 `ppid==1`（父进程已死被 init 收养），**或**父进程同为
 ///    Sidecar（PyInstaller onefile 是 bootloader(父)+服务(子) 两进程，端口监听者
@@ -990,7 +1015,7 @@ pub fn cleanup_orphan_sidecar(port: u16) {
                 continue;
             };
             let comm = parts.next().unwrap_or("").to_lowercase();
-            let is_sidecar = if comm.contains("filemind-sidecar") {
+            let is_sidecar = if matches_sidecar_comm(&comm) {
                 true
             } else if comm.contains("python") {
                 read_ps(pid, "args=")
