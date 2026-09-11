@@ -226,10 +226,15 @@
      （`filemind-sideca`）——恰好 16 字符的名字在 Linux 上**永远匹配不到**，孤儿
      sidecar 清不掉、残留进程占住端口导致下次启动握手 401（即历史 401 顽疾的成因之一）。
      抽出 `matches_sidecar_comm()` 容忍截断形态（等值比较，不放宽误杀面）
-  6. `build-check` 首次真正跑起来：三平台编译/打包本身成功（macOS 实测 app+dmg+updater
-     包 1m42s 全出），但最后一步 updater 签名报「找到一个公钥但没有私钥」而 exit 1
-     （`bundle.createUpdaterArtifacts=true`）。按 merge-build.yml 的既有取法补
-     `TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}`
+  6. `build-check` 首次真正跑起来：编译/打包本身成功（macOS 5min、Windows 11min），
+     但两端各有一个坑——(a) 最后一步 updater 签名报「找到一个公钥但没有私钥」而 exit 1
+     （`bundle.createUpdaterArtifacts=true`），按 merge-build.yml 的既有取法补
+     `TAURI_SIGNING_PRIVATE_KEY`；(b) `ubuntu-latest` 的 Linux 全量打包（deb/rpm/AppImage）
+     卡住 1 小时以上——Linux job 在 [merge-build.yml](.github/workflows/merge-build.yml) 里
+     本就被刻意移除（打包态 Sidecar 解析仅支持 macOS/Windows，Linux 分发延后），
+     pr-check 却仍在跑；故矩阵收敛为 macos + windows，Linux 覆盖交由 `rust-check`
+     （ubuntu 跑 clippy + cargo test）与 `e2e-smoke`（ubuntu 上 `--no-bundle` 构建）。
+     另给 `build-check` 补 `timeout-minutes: 30` 保险阀（实测 5/11min）
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按

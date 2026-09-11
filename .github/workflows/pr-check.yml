@@ -94,9 +94,16 @@ jobs:
   build-check:
     needs: [frontend-check, rust-check]
     runs-on: ${{ matrix.os }}
+    # 保险阀：实测 macOS 5min / Windows 11min。默认 6h 会让偶发卡死拖垮整轮
+    # （2026-09-11 Linux 打包就卡了一小时以上）。
+    timeout-minutes: 30
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # 只验「实际分发」的两平台，与 merge-build.yml 一致：Linux job 在那边是被
+        # 刻意移除的（打包态 Sidecar 解析仅支持 macOS/Windows，Linux 分发延后）。
+        # Linux 的编译/测试覆盖仍在 rust-check（ubuntu 跑 clippy+cargo test）与
+        # e2e-smoke（ubuntu 上 `tauri build --debug --no-bundle`）。
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -108,11 +115,6 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
-      - name: Install Linux deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       # 下面两步与 merge-build.yml 同理，缺一不可：
       #   1) 占位 sidecar 目录 —— tauri-build 的 build.rs 资源存在性校验
       #   2) gen:ipc —— beforeBuildCommand `npm run build` 里 tsc 依赖 src/types/ipc.ts
