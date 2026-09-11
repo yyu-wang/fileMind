@@ -769,9 +769,9 @@ fn probe_onedir(
     })
 }
 
-/// 小 helper：`fs::metadata(p).ok()?.is_file()` 走短路，不用再写多处。
+/// 小 helper：`fs::metadata(p).is_ok_and(|m| m.is_file())`，不用再写多处。
 fn is_existing_file(p: &std::path::Path) -> bool {
-    std::fs::metadata(p).ok().is_some_and(|m| m.is_file())
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
 }
 
 // ---------- onedir 产物匹配（P2-2） ----------

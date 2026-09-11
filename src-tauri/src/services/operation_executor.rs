@@ -157,6 +157,6 @@ fn try_clear_provenance(path: &std::path::Path) -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn try_clear_provenance(_path: &std::path::Path) -> bool {
+const fn try_clear_provenance(_path: &std::path::Path) -> bool {
     false
 }
