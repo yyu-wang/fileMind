@@ -10,7 +10,7 @@
 //   代码(1)：script-001.ts
 
 import { expect } from '@wdio/globals';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, type Dirent } from 'node:fs';
 import { join } from 'node:path';
 
 import { sel } from '../utils/selectors';
@@ -24,6 +24,27 @@ const FIXTURE_FILES = [
   'report-002.pdf',
   'script-001.ts',
 ] as const;
+
+/** 递归列出目录树（最多 2 层），用于失败取证。 */
+function snapshotTree(root: string): string {
+  const lines: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 2) return;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err: unknown) {
+      lines.push(`${'  '.repeat(depth)}<读取失败: ${String(err)}>`);
+      return;
+    }
+    for (const entry of entries) {
+      lines.push(`${'  '.repeat(depth)}${entry.name}${entry.isDirectory() ? '/' : ''}`);
+      if (entry.isDirectory()) walk(join(dir, entry.name), depth + 1);
+    }
+  };
+  walk(root, 0);
+  return lines.join('\n');
+}
 
 describe('E2E-002 扫描→分类→执行→撤销', () => {
   it('扫描后列表显示 6 个文件 + 状态栏 6 文件', async () => {
@@ -68,24 +89,34 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
     await $(sel.classifyDoneTitle).waitForExist({ timeout: 60000 });
     await expect($(sel.classifyDoneTitle)).toHaveText('分类完成');
 
-    // 文件已移入分类子目录（移动模式：图片/文档/代码）
-    await browser.waitUntil(
-      () =>
-        fileInDir('图片', 'photo-001.png') &&
-        fileInDir('图片', 'photo-002.jpg') &&
-        fileInDir('图片', 'photo-003.gif') &&
-        fileInDir('文档', 'report-001.pdf') &&
-        fileInDir('文档', 'report-002.pdf') &&
-        fileInDir('代码', 'script-001.ts'),
-      { timeout: 30000, timeoutMsg: '移动分类后文件应落入 图片/文档/代码 子目录' },
-    );
+    // 文件已移入分类子目录（移动模式：图片/文档/代码），随后撤销回原位。
+    // 包 try/catch 取证：WDIO 对失败的 it 会整块重跑一次，而重跑时预览已被消费
+    // （classify-execute 消失），最终报出的错误指向重跑，掩盖首轮真实失败点。
+    try {
+      await browser.waitUntil(
+        () =>
+          fileInDir('图片', 'photo-001.png') &&
+          fileInDir('图片', 'photo-002.jpg') &&
+          fileInDir('图片', 'photo-003.gif') &&
+          fileInDir('文档', 'report-001.pdf') &&
+          fileInDir('文档', 'report-002.pdf') &&
+          fileInDir('代码', 'script-001.ts'),
+        { timeout: 30000, timeoutMsg: '移动分类后文件应落入 图片/文档/代码 子目录' },
+      );
 
-    // 撤销本批 → 原位置全部恢复
-    await $(sel.classifyUndo).click();
-    await browser.waitUntil(allRestored, {
-      timeout: 30000,
-      timeoutMsg: '撤销后 6 个文件应全部回到扫描根目录',
-    });
+      // 撤销本批 → 原位置全部恢复
+      await $(sel.classifyUndo).click();
+      await browser.waitUntil(allRestored, {
+        timeout: 30000,
+        timeoutMsg: '撤销后 6 个文件应全部回到扫描根目录',
+      });
+    } catch (err: unknown) {
+      const pageText = String(await browser.execute(() => document.body.innerText));
+      console.error(`[E2E-002 取证] 扫描根 ${dataDir} 实际树:\n${snapshotTree(dataDir)}`);
+      console.error(`[E2E-002 取证] 页面文本:\n${pageText}`);
+      throw err;
+    }
+
     for (const f of FIXTURE_FILES) {
       await expect(existsSync(join(dataDir, f))).toBe(true);
     }
