@@ -216,9 +216,10 @@
      78% 作为防退化线（未覆盖的 156 个函数散落在 20 个既有文件，属既有技术债，不并入本 PR）
   3. `e2e-smoke` 的 `--ci` 闸门缺失：文档（[e2e-run.sh](scripts/e2e-run.sh) 用法、workflow 文件头、
      步骤名「E2E-001/002」）三处均声明 CI 只跑 001/002，但脚本实际把 004/005 也跑了；补上闸门
-- ⚠️ 仍未解决：`002-classify-undo.e2e.ts` 第 3 个用例在 Linux WebKitGTK 上找不到
-  `[data-testid="classify-execute"]`（前两个用例通过，说明应用与 stub sidecar 链路正常）。
-  E2E Smoke 此前从未有过成功 run，本地仅在 macOS 验证过，属**既有且仅 Linux 暴露**的问题。
+- E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
+  落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
+  只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按
+  收纳根断言；`e2e-run.sh` 同时清理遗留的 `*_已分类` 临时目录。E2E Smoke 此前从未有过成功 run。
 - 验证：`verify-packaged-app.sh` 对真实 `.app` **4 PASS / 0 FAIL**；`.app` 内 bundled sidecar
   直接运行稳态 1.1~1.3s 且 LanceDB 可用（`/index/delete_by_file_ids` HTTP 200）；
   新增「真实 `.app` 布局命中 bundle 侧车」单测作为长期契约回归。

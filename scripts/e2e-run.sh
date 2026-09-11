@@ -138,7 +138,8 @@ for spec in e2e/specs/*.e2e.ts; do
   fi
   ran_any=1
 
-  rm -rf "$APP_DIR" "$SCAN_DIR"
+  # 分类产物落在扫描根同级的收纳根 `<扫描根名>_已分类`，一并清理
+  rm -rf "$APP_DIR" "$SCAN_DIR" "${SCAN_DIR}_已分类"
 done
 
 echo ""

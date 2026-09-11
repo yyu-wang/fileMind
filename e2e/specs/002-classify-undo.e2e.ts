@@ -11,7 +11,7 @@
 
 import { expect } from '@wdio/globals';
 import { existsSync, readdirSync, type Dirent } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { sel } from '../utils/selectors';
 import { e2eDataDir } from '../utils/reset';
@@ -77,7 +77,10 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
 
   it('确认执行（移动）→ 分类完成 → 撤销本批还原原位', async () => {
     const dataDir = e2eDataDir();
-    const fileInDir = (dir: string, name: string) => existsSync(join(dataDir, dir, name));
+    // 分类输出统一落到与扫描根**同级**的收纳根 `<扫描根名>_已分类`（Rust
+    // classifier::sibling_output_root），不在扫描目录内部——扫描目录只留待整理文件。
+    const outputDir = `${dataDir}_已分类`;
+    const fileInOutput = (dir: string, name: string) => existsSync(join(outputDir, dir, name));
     const allRestored = () => FIXTURE_FILES.every((f) => existsSync(join(dataDir, f)));
 
     // 确认执行全部 → 弹「选择分类方式」→ 移动分类
@@ -95,13 +98,13 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
     try {
       await browser.waitUntil(
         () =>
-          fileInDir('图片', 'photo-001.png') &&
-          fileInDir('图片', 'photo-002.jpg') &&
-          fileInDir('图片', 'photo-003.gif') &&
-          fileInDir('文档', 'report-001.pdf') &&
-          fileInDir('文档', 'report-002.pdf') &&
-          fileInDir('代码', 'script-001.ts'),
-        { timeout: 30000, timeoutMsg: '移动分类后文件应落入 图片/文档/代码 子目录' },
+          fileInOutput('图片', 'photo-001.png') &&
+          fileInOutput('图片', 'photo-002.jpg') &&
+          fileInOutput('图片', 'photo-003.gif') &&
+          fileInOutput('文档', 'report-001.pdf') &&
+          fileInOutput('文档', 'report-002.pdf') &&
+          fileInOutput('代码', 'script-001.ts'),
+        { timeout: 30000, timeoutMsg: `移动分类后文件应落入 ${outputDir}/图片|文档|代码` },
       );
 
       // 撤销本批 → 原位置全部恢复
@@ -112,7 +115,9 @@ describe('E2E-002 扫描→分类→执行→撤销', () => {
       });
     } catch (err: unknown) {
       const pageText = String(await browser.execute(() => document.body.innerText));
-      console.error(`[E2E-002 取证] 扫描根 ${dataDir} 实际树:\n${snapshotTree(dataDir)}`);
+      // 扫描根的**父目录**：一眼看清源目录与同级收纳根各自的内容
+      const parentDir = dirname(dataDir);
+      console.error(`[E2E-002 取证] ${parentDir} 实际树:\n${snapshotTree(parentDir)}`);
       console.error(`[E2E-002 取证] 页面文本:\n${pageText}`);
       throw err;
     }
