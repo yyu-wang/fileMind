@@ -36,16 +36,15 @@ jobs:
             bundles: app,dmg
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          # macOS Intel：x64 runner 原生构建（PyInstaller 无法跨 mac 架构，必须 x64 机器）
-          # ⚠️ 原用 macos-13，该镜像已于 2025-12-04 退役——job 会永远排队不被调度
-          # （2026-09-13 实测：macos-14 / windows 都跑完了，x64 一直是 queued）。
-          # 标准 runner 的 Intel 标签现为 macos-15-intel。
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            label: macos-x64
-            bundles: app,dmg
-            artifacts: |
-              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          # macOS Intel（x64）job 已移除（2026-09-13）：
+          #   1. 原先用的 macos-13 镜像已于 2025-12-04 退役，job 永远排队不被调度；
+          #      换成 macos-15-intel 后能调度了，但暴露第 2 点——
+          #   2. 上游依赖在 macOS x86_64 上已无 wheel：`lancedb==0.37.1`
+          #      （pip: No matching distribution，该平台最高 0.25.3），torch 同样早已停发
+          #      macOS x86_64 wheel。故 x64 sidecar 无法用当前依赖集构建。
+          #   结合 Apple 已停 Intel 支持、GitHub 将于 macOS 15 之后（2027 秋）退役 Intel
+          #   runner，本轮起只分发 macOS arm64 + Windows。若将来仍需 Intel 包，路径是
+          #   为该平台单独降级 lancedb/torch（运行时行为会与其它平台分叉，需实测）。
           # 说明：Linux(deb/AppImage) job 暂移除——打包态 Sidecar 解析当前仅支持
           # macOS/Windows（main.rs defer_to_bundle 仅这两平台），Linux 分发改后续版本。
     steps:

@@ -130,7 +130,9 @@
   - Windows job 需 `actions/setup-python@python-3.12` + Git Bash（脚本依赖 bash + venv）；mac/linux 预装即可
   - 新增打包态冒烟步骤：解包校验 `filemind-sidecar-{triple}` 存在（`if-no-files-found: error` 语义同现有 artifacts）
   - 若 D3 增加 nsis，同步调整 `--bundles`
-- DoD：PR 级手动触发 merge-build 四矩阵全绿，4 个 artifact 均含 Sidecar 二进制
+- DoD：各分发平台 job 全绿，artifact 均含 Sidecar 二进制
+  （⚠️ 范围变化：原为「四矩阵」→ 2026-09-11 移除 Linux、2026-09-13 移除 mac x64，
+  当前**只分发 macOS arm64 + Windows**，理由见文末 P2-2 连带修复第 7/8 条）
 - 验证：下载 artifact 解包 grep sidecar 文件；体积断言日志可见
 
 > **T3 执行记录（2026-09-04 完成代码改动，待真实 runner 验证）**
@@ -242,10 +244,14 @@
      资源校验让 `Generate IPC types`（整条链路里第一次 cargo 调用）直接失败（macOS arm64
      同轮已成功）。改为三平台都提供默认名：macOS/Linux 软链接，Windows 用目录副本
      （软链接需管理员/开发者模式，副本无特权坑）
-  8. **mac x64 runner 标签退役**（同轮排查发现）：merge-build 的 mac x64 job 用 `macos-13`，
-     而该镜像已于 **2025-12-04 退役**，job 永远排队不被调度（实测 macos-14 与 windows 都跑完了，
-     x64 一直 `queued`）。标准 runner 的 Intel 标签现为 `macos-15-intel`，已替换
-     （PR Check 的 `macos-latest` 是 arm64，不受影响）
+  8. **mac x64 job 移除**（同轮排查）：先是 runner 标签退役——merge-build 的 mac x64 用
+     `macos-13`，该镜像已于 **2025-12-04 退役**，job 永远排队不被调度（实测 macos-14 与
+     windows 都跑完了，x64 一直 `queued`）；换成标准 Intel 标签 `macos-15-intel` 后能调度了，
+     却暴露第二层：**上游依赖在 macOS x86_64 上已无 wheel**——`lancedb==0.37.1`
+     （pip: No matching distribution，该平台最高 0.25.3），torch（经 sentence-transformers
+     引入）同样早已停发 macOS x86_64 wheel。结合 Apple 已停 Intel 支持、GitHub 将于 macOS 15
+     之后（2027 秋）退役 Intel runner，本轮起**只分发 macOS arm64 + Windows**；
+     将来若仍需 Intel 包，路径是为该平台单独降级 lancedb/torch（运行时行为分叉，需实测）
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按
@@ -266,13 +272,13 @@
 
 ## 3. 验收门控汇总
 
-| 门控                                    | 判定                                                   | 位置        |
-| --------------------------------------- | ------------------------------------------------------ | ----------- |
-| T2 本地 dmg 可运行且命中 bundle Sidecar | setup 日志 + RAG 冒烟                                  | 本机        |
-| T3 CI 四矩阵全绿且 artifact 含 Sidecar  | workflow 状态 + 解包校验                               | GitHub      |
-| T4 打包态自动项 PASS                    | go-no-go 输出                                          | CI artifact |
-| 三语言自检不回归                        | `make lint` / `make test`（改动多为配置/脚本，仍全跑） | 本机+CI     |
-| 发布前人工项（签名/公证/实机冒烟）      | T6 清单勾选                                            | 人工        |
+| 门控                                    | 判定                                                    | 位置        |
+| --------------------------------------- | ------------------------------------------------------- | ----------- |
+| T2 本地 dmg 可运行且命中 bundle Sidecar | setup 日志 + RAG 冒烟                                   | 本机        |
+| T3 CI job 全绿且 artifact 含 Sidecar    | workflow 状态 + 解包校验（现有 mac arm64 / win 两平台） | GitHub      |
+| T4 打包态自动项 PASS                    | go-no-go 输出                                           | CI artifact |
+| 三语言自检不回归                        | `make lint` / `make test`（改动多为配置/脚本，仍全跑）  | 本机+CI     |
+| 发布前人工项（签名/公证/实机冒烟）      | T6 清单勾选                                             | 人工        |
 
 ## 4. 风险与回退
 
