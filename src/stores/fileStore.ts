@@ -16,6 +16,17 @@ import { useClassifyStore } from './classifyStore';
 // 防止「A 目录晚回覆盖 B 目录」导致 files 与 scanPath 不一致。
 let listReqId = 0;
 
+/**
+ * 把 invoke 层抛出的任意值归一化成可展示的消息。
+ *
+ * specta 的 typedError 会把命令失败包成 `{status:'error'}`，所以异常路径理论上不可达；
+ * 但一旦真的抛出（IPC 通道断开、序列化失败等），若不兜住就会让 `isScanning` 永久为
+ * true——按钮全部禁用，用户只能重启应用。
+ */
+function ipcErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 interface FileState {
   /** 当前文件列表 */
   files: FileInfo[];
@@ -80,21 +91,27 @@ export const useFileStore = create<FileState>()((set) => ({
   scanFiles: async (path) => {
     const req = ++listReqId;
     set({ isScanning: true, error: null });
-    const result = await fileIpc.scanDirectory(path);
-    // FE-C4：期间有更新的列表请求发起，本次响应已过期，丢弃
-    if (req !== listReqId) return;
-    if (result.status === 'ok') {
-      set({
-        files: result.data,
-        scanPath: path,
-        isScanning: false,
-        selectedIds: [],
-      });
-      // 扫描完成后刷新统计 + 目录列表
-      await useFileStore.getState().loadStats();
-      await useFileStore.getState().loadScannedDirectories();
-    } else {
-      set({ isScanning: false, error: result.error });
+    try {
+      const result = await fileIpc.scanDirectory(path);
+      // FE-C4：期间有更新的列表请求发起，本次响应已过期，丢弃
+      if (req !== listReqId) return;
+      if (result.status === 'ok') {
+        set({
+          files: result.data,
+          scanPath: path,
+          isScanning: false,
+          selectedIds: [],
+        });
+        // 扫描完成后刷新统计 + 目录列表
+        await useFileStore.getState().loadStats();
+        await useFileStore.getState().loadScannedDirectories();
+      } else {
+        set({ isScanning: false, error: result.error });
+      }
+    } catch (err) {
+      // 不 rethrow：调用方（按钮回调 / 引导流程）要么没包 try，要么把两种失败一视同仁，
+      // 错误经由 store.error 横幅呈现
+      if (req === listReqId) set({ isScanning: false, error: ipcErrorMessage(err) });
     }
   },
 
@@ -102,44 +119,64 @@ export const useFileStore = create<FileState>()((set) => ({
     const req = ++listReqId;
     // FE-C4：刷新也是列表变更，进 isScanning 态（FilesPage 刷新按钮防狂点）
     set({ isScanning: true, isLoadingList: true, error: null });
-    const result = await fileIpc.listAllFiles(null);
-    if (req !== listReqId) return;
-    if (result.status === 'ok') {
-      set({
-        files: result.data,
-        selectedIds: [],
-        isScanning: false,
-        isLoadingList: false,
-        // FE-C4：全量列表覆盖了扫描态列表，旧 scanPath 已不代表 files 来源，
-        // 必须清空——否则后续手动分类 joinPath(scanPath,...) 拼错目标根
-        scanPath: null,
-      });
-      await useFileStore.getState().loadStats();
-    } else {
-      set({ isScanning: false, isLoadingList: false, error: result.error });
+    try {
+      const result = await fileIpc.listAllFiles(null);
+      if (req !== listReqId) return;
+      if (result.status === 'ok') {
+        set({
+          files: result.data,
+          selectedIds: [],
+          isScanning: false,
+          isLoadingList: false,
+          // FE-C4：全量列表覆盖了扫描态列表，旧 scanPath 已不代表 files 来源，
+          // 必须清空——否则后续手动分类 joinPath(scanPath,...) 拼错目标根
+          scanPath: null,
+        });
+        await useFileStore.getState().loadStats();
+      } else {
+        set({ isScanning: false, isLoadingList: false, error: result.error });
+      }
+    } catch (err) {
+      if (req === listReqId) {
+        set({ isScanning: false, isLoadingList: false, error: ipcErrorMessage(err) });
+      }
     }
   },
 
   loadStats: async () => {
-    const result = await fileIpc.getFileStats();
-    if (result.status === 'ok') {
-      set({ stats: result.data, total: result.data.total_files });
-    } else {
-      set({ error: result.error });
+    try {
+      const result = await fileIpc.getFileStats();
+      if (result.status === 'ok') {
+        set({ stats: result.data, total: result.data.total_files });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (err) {
+      // 调用方多为 `void loadStats()`，抛出去会变成 unhandled rejection
+      set({ error: ipcErrorMessage(err) });
     }
   },
 
   loadScannedDirectories: async () => {
-    const result = await fileIpc.listScannedDirectories();
-    if (result.status === 'ok') {
-      set({ scannedDirectories: result.data });
-    } else {
-      set({ error: result.error });
+    try {
+      const result = await fileIpc.listScannedDirectories();
+      if (result.status === 'ok') {
+        set({ scannedDirectories: result.data });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (err) {
+      set({ error: ipcErrorMessage(err) });
     }
   },
 
   removeDirectory: async (path) => {
-    const result = await fileIpc.removeDirectory(path);
+    const result = await fileIpc.removeDirectory(path).catch((err: unknown) => {
+      // 保留「失败即 throw」契约（面板据此复位 removing 态），但同样写 error 横幅
+      const message = ipcErrorMessage(err);
+      set({ error: message });
+      throw new Error(message);
+    });
     if (result.status !== 'ok') {
       set({ error: result.error });
       throw new Error(result.error);
@@ -160,7 +197,11 @@ export const useFileStore = create<FileState>()((set) => ({
 
   deleteFiles: async (ids) => {
     if (ids.length === 0) return { deleted: 0, failed: 0 };
-    const result = await fileIpc.deleteFiles(ids);
+    const result = await fileIpc.deleteFiles(ids).catch((err: unknown) => {
+      const message = ipcErrorMessage(err);
+      set({ error: message });
+      throw new Error(message);
+    });
     if (result.status !== 'ok') {
       set({ error: result.error });
       throw new Error(result.error);

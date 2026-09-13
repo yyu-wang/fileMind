@@ -159,6 +159,17 @@ describe('fileStore', () => {
     expect(s.files).toEqual([]);
   });
 
+  it('scanFiles 异常（invoke 抛出）：复位扫描态、写 error 且不 reject', async () => {
+    (fileIpc.scanDirectory as Mock).mockRejectedValue(new Error('IPC channel closed'));
+
+    // 不 reject：调用方是按钮回调（未包 try），抛出只会变成 unhandled rejection
+    await expect(useFileStore.getState().scanFiles('/tmp')).resolves.toBeUndefined();
+
+    const s = useFileStore.getState();
+    expect(s.isScanning).toBe(false); // 否则扫描/刷新按钮永久禁用，只能重启应用
+    expect(s.error).toBe('IPC channel closed');
+  });
+
   it('loadAllFiles 成功：覆盖列表、清空选中并刷新统计', async () => {
     const files = [fileInfo('1', 'a.pdf')];
     (fileIpc.listAllFiles as Mock).mockResolvedValue({ status: 'ok', data: files });
@@ -179,6 +190,34 @@ describe('fileStore', () => {
     await useFileStore.getState().loadAllFiles();
 
     expect(useFileStore.getState().error).toBe('DB-U-001');
+  });
+
+  it('loadStats 异常：置错且不 reject（调用方多为 void loadStats()）', async () => {
+    (fileIpc.getFileStats as Mock).mockRejectedValue(new Error('runtime down'));
+
+    await expect(useFileStore.getState().loadStats()).resolves.toBeUndefined();
+
+    expect(useFileStore.getState().error).toBe('runtime down');
+  });
+
+  it('loadScannedDirectories 异常：置错且不 reject', async () => {
+    (fileIpc.listScannedDirectories as Mock).mockRejectedValue(new Error('runtime down'));
+
+    await expect(useFileStore.getState().loadScannedDirectories()).resolves.toBeUndefined();
+
+    expect(useFileStore.getState().error).toBe('runtime down');
+  });
+
+  it('loadAllFiles 异常：同时复位 isScanning 与 isLoadingList、不 reject', async () => {
+    (fileIpc.listAllFiles as Mock).mockRejectedValue(new Error('IPC channel closed'));
+
+    await expect(useFileStore.getState().loadAllFiles()).resolves.toBeUndefined();
+
+    const s = useFileStore.getState();
+    // 少了任一个：刷新按钮永久禁用 / 空态永远停在「正在加载文件列表…」
+    expect(s.isScanning).toBe(false);
+    expect(s.isLoadingList).toBe(false);
+    expect(s.error).toBe('IPC channel closed');
   });
 
   it('loadStats 成功：写入 stats 与 total', async () => {
@@ -282,5 +321,23 @@ describe('fileStore', () => {
     await expect(useFileStore.getState().deleteFiles(['1'])).rejects.toThrow('TR-001');
 
     expect(useFileStore.getState().error).toBe('TR-001');
+  });
+
+  it('deleteFiles 异常：置 error 且仍抛（保留调用方 try/catch 契约）', async () => {
+    (fileIpc.deleteFiles as Mock).mockRejectedValue(new Error('IPC channel closed'));
+
+    await expect(useFileStore.getState().deleteFiles(['1'])).rejects.toThrow('IPC channel closed');
+
+    expect(useFileStore.getState().error).toBe('IPC channel closed');
+  });
+
+  it('removeDirectory 异常：置 error 且仍抛（面板据此复位 removing 态）', async () => {
+    (fileIpc.removeDirectory as Mock).mockRejectedValue(new Error('IPC channel closed'));
+
+    await expect(useFileStore.getState().removeDirectory('/tmp/x')).rejects.toThrow(
+      'IPC channel closed',
+    );
+
+    expect(useFileStore.getState().error).toBe('IPC channel closed');
   });
 });

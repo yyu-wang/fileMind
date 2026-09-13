@@ -96,7 +96,8 @@ export function FilesPage() {
     if (totalFiles === 0) return;
     bootstrappedRef.current = true;
     void loadAllFiles().catch(() => {
-      // 失败解除门闩：错误已由 store 写入顶部横幅，用户仍可点「刷新」重试
+      // 兜底：loadAllFiles 内部已吞掉 IPC 失败（写 store.error 横幅）并通过「刷新」
+      // 提供重试入口；这里只防意外抛出把门闩锁死
       bootstrappedRef.current = false;
     });
   }, [totalFiles, isScanning, files.length, loadAllFiles]);
