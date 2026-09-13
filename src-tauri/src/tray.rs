@@ -9,8 +9,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Manager, Runtime};
 
-/// 真退出标志：托盘「退出」菜单置位后，主窗口 `CloseRequested` 走优雅关停而非最小化。
+/// 真退出标志：托盘「退出」菜单或应用级退出请求（Cmd+Q / 系统注销）置位后，
+/// 主窗口 `CloseRequested` 走优雅关停而非最小化到托盘。
 pub static IS_QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// 置「真退出」标志。
+///
+/// 两个置位入口共用，缺一不可：
+/// - 托盘「退出」菜单（[`handle_tray_menu_event`]）
+/// - `RunEvent::ExitRequested`（macOS Cmd+Q 等，见 `main.rs`）
+///
+/// 为什么 Cmd+Q 也要置位：`ExitRequested` 之后 Tauri 仍会逐个关闭窗口，
+/// 若此时标志位仍为 `false`，`CloseRequested` 会走「最小化到托盘」分支
+/// `prevent_close()` + `hide()`，反而把退出请求挡下来。
+pub fn mark_quitting() {
+    IS_QUITTING.store(true, Ordering::SeqCst);
+}
 
 /// 托盘菜单项对应的动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +71,7 @@ pub fn handle_tray_menu_event<R: Runtime>(app: &AppHandle<R>, menu_id: &str) {
     match tray_menu_action(menu_id) {
         TrayAction::Show => reveal_main_window(app),
         TrayAction::Quit => {
-            IS_QUITTING.store(true, Ordering::SeqCst);
+            mark_quitting();
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.close();
             } else {

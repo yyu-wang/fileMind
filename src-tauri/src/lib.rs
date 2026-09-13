@@ -5,8 +5,10 @@
 //! `events`（前端事件负载）。
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::sidecar::SidecarManager;
 
@@ -118,4 +120,45 @@ pub struct AppState {
     pub sidecar_restart_count: AtomicU64,
     /// Sidecar 生命周期状态（P1-1：后台引导线程写入，前端经事件/命令读取）。
     pub sidecar_status: Mutex<SidecarStatus>,
+}
+
+/// 阻塞式优雅关停 Sidecar——所有应用退出入口的唯一收口点。
+///
+/// 退出入口有三条，任一漏接都会留下孤儿 Sidecar（`ppid=1`）继续占住 8765 端口，
+/// 下次启动只能靠 `cleanup_orphan_sidecar` 兜底：
+/// 1. 托盘「退出」菜单 → 置 `IS_QUITTING` → 主窗口 `CloseRequested`
+/// 2. 窗口可见时点红钮后退出（同上分支）
+/// 3. `RunEvent::ExitRequested`（macOS Cmd+Q / 系统注销 / `app.exit()`）——
+///    ⚠️ 走 `AppKit` terminate，**不触发** `CloseRequested`，故必须单独接线
+///
+/// 调用时机必须在 Tauri 事件循环仍能取到 managed state 时：`run()` 返回后
+/// `AppState` 已析构，届时只剩 [`SidecarManager::drop`] 的硬杀兜底。
+///
+/// 幂等：`stop_graceful` 内部用 `stopped` 标志位做 `compare_exchange`，
+/// 因此上面多条路径先后触发（例如 `ExitRequested` 之后 Tauri 再逐个关窗口）
+/// 不会重复 kill。
+///
+/// 副作用：递增 `request_seq`（防重放序号），并可能阻塞事件循环至
+/// `GRACEFUL_TOTAL_TIMEOUT_SECS`（应用已处于退出流程，阻塞可接受）。
+pub fn stop_sidecar_blocking<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>();
+    let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
+    let Ok(mut manager) = state.sidecar_manager.lock() else {
+        log::error!("sidecar_manager Mutex 中毒，无法优雅关停 Sidecar");
+        return;
+    };
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Sidecar 优雅关停 tokio runtime 初始化失败: {e}");
+            let _ = manager.stop_hard();
+            return;
+        }
+    };
+    if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
+        log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
+    }
 }

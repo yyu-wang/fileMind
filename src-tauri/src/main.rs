@@ -7,10 +7,13 @@
 //!    `tokio` runtime），每秒 tick：连续健康失败或 `Child::try_wait` 已退出 → 指数退避后
 //!    `restart()`，并同步更新 `AppState` 里的 PSK + `reset` seq；1 分钟内 10 次重启 →
 //!    `CrashLoop` 暂停，打 `error` 日志后 watchdog 自动退为「仅告警，不再自动恢复」
-//! 3. 窗口关闭：`CloseRequested` 时检查 `IS_QUITTING` 标志：
-//!    - false（默认）→ 阻止关闭 + `hide()` 最小化到托盘
-//!    - true（托盘「退出」菜单置位）→ 走 `stop_graceful` sidecar 流程，再退出
-//! 4. `Drop` 兜底：若 run 内部 panic 导致正常退出路径跳过，`Drop` 会用 `stopped` 标志位
+//! 3. 退出：三条入口统一收口到 `stop_sidecar_blocking`（`lib.rs`）
+//!    - 窗口 `CloseRequested` 且 `IS_QUITTING=false` → 阻止关闭 + `hide()` 最小化到托盘
+//!    - 窗口 `CloseRequested` 且 `IS_QUITTING=true`（托盘「退出」菜单置位）→ 优雅关停后退出
+//!    - `RunEvent::ExitRequested`（macOS Cmd+Q / 系统注销）→ 先置 `IS_QUITTING` 再关停；
+//!      该路径走 `AppKit` terminate、**不经过** `CloseRequested`，漏接会留下孤儿 Sidecar
+//!      继续占住 8765 端口
+//! 4. `Drop` 兜底：若正常退出路径全被跳过（仅 run 内部 panic），`Drop` 用 `stopped` 标志位
 //!    保证仅一次 hard kill，不重复杀进程
 //!
 //! 单实例：`tauri-plugin-single-instance` 防止二次启动产生孤儿 sidecar，第二次启动
@@ -31,8 +34,8 @@ use filemind_lib::sidecar::{
     cleanup_orphan_sidecar, resolve_dev_binary_path, spawn_sidecar_bootstrap,
     update_sidecar_status, CloudSidecarEnv, SidecarManager, WatchdogAction, SIDECAR_PORT,
 };
-use filemind_lib::tray::{handle_tray_menu_event, reveal_main_window};
-use filemind_lib::{AppState, SidecarStatus};
+use filemind_lib::tray::{handle_tray_menu_event, mark_quitting, reveal_main_window};
+use filemind_lib::{stop_sidecar_blocking, AppState, SidecarStatus};
 use tauri::{
     menu::{Menu, MenuItem},
     Emitter, Manager,
@@ -631,28 +634,7 @@ fn main() {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             // T6.1：根据 IS_QUITTING 区分「最小化到托盘」与「真退出」
             if filemind_lib::tray::IS_QUITTING.load(Ordering::SeqCst) {
-                // 真退出路径：原 stop_graceful sidecar 流程
-                let app = window.app_handle();
-                let state = app.state::<AppState>();
-                let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
-                let Ok(mut manager) = state.sidecar_manager.lock() else {
-                    log::error!("sidecar_manager Mutex 中毒，无法优雅关 Sidecar");
-                    return;
-                };
-                let rt = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        log::error!("CloseRequested tokio runtime 初始化失败: {e}");
-                        let _ = manager.stop_hard();
-                        return;
-                    }
-                };
-                if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
-                    log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
-                }
+                stop_sidecar_blocking(window.app_handle());
             } else {
                 // 最小化到托盘：阻止默认关闭，仅隐藏窗口
                 api.prevent_close();
@@ -673,6 +655,19 @@ fn main() {
     };
 
     app.run(|app_handle, event| {
+        // 应用级退出请求：macOS Cmd+Q、系统注销、`app.exit()` 均走 AppKit terminate，
+        // **不触发** 窗口 `CloseRequested`——若不在此收口，Sidecar 会变孤儿
+        // （`ppid=1`）继续占住 8765（macOS 真机 Cmd+Q 实测复现）。
+        //
+        // 先置 IS_QUITTING：`ExitRequested` 之后 Tauri 仍会逐个关闭窗口，标志位
+        // 为 false 时 `CloseRequested` 会 `prevent_close()` + `hide()` 把退出挡下来。
+        // 关停本身幂等（`stop_graceful` 的 `stopped` 标志位），两条路径交叉无副作用。
+        if let tauri::RunEvent::ExitRequested { .. } = event {
+            log::info!("收到应用退出请求：置真退出标志并优雅关停 Sidecar");
+            mark_quitting();
+            stop_sidecar_blocking(app_handle);
+        }
+
         // macOS Dock/Finder 图标激活已运行实例：若窗口被「关闭到托盘」（hide）后
         // 无可见窗口，标准 macOS 行为是唤回主窗口（tauri RunEvent::Reopen 仅 macOS 发射）。
         //
@@ -695,7 +690,7 @@ fn main() {
         let _ = (app_handle, event);
     });
 
-    // 后备：若主窗口关闭事件路径未触发（极少，仅 headless/菜单退出等非 CloseRequested），
-    // SidecarManager 此时由 Tauri managed state 析构 → Drop → stop_hard() 兜底杀一次。
-    // 由于 stopped 标志位在 CloseRequested 主路径已经 set，Drop 不会重复 kill。
+    // 兜底：若上述退出入口全未触发（仅 run 内部 panic 等异常路径），SidecarManager
+    // 此时随 Tauri managed state 析构 → Drop → stop_hard() 硬杀一次。
+    // stopped 标志位已在任一正常路径置位，Drop 不会重复 kill。
 }
