@@ -122,14 +122,18 @@ pub struct AppState {
     pub sidecar_status: Mutex<SidecarStatus>,
 }
 
-/// 阻塞式优雅关停 Sidecar——所有应用退出入口的唯一收口点。
+/// 阻塞式优雅关停 Sidecar——Rust 侧退出入口的唯一收口点。
 ///
-/// 退出入口有三条，任一漏接都会留下孤儿 Sidecar（`ppid=1`）继续占住 8765 端口，
-/// 下次启动只能靠 `cleanup_orphan_sidecar` 兜底：
+/// 覆盖的退出入口：
 /// 1. 托盘「退出」菜单 → 置 `IS_QUITTING` → 主窗口 `CloseRequested`
 /// 2. 窗口可见时点红钮后退出（同上分支）
-/// 3. `RunEvent::ExitRequested`（macOS Cmd+Q / 系统注销 / `app.exit()`）——
-///    ⚠️ 走 `AppKit` terminate，**不触发** `CloseRequested`，故必须单独接线
+/// 3. `RunEvent::ExitRequested`（`AppHandle::exit()`、最后一个窗口被销毁）
+///
+/// ⚠️ **不覆盖** macOS ⌘Q：AppKit 的 `-[NSApplication terminate:]` 直接 `exit()`，
+/// 且 tao 的 macOS 后端不实现 `applicationShouldTerminate`，Rust 侧（事件循环、
+/// `Drop`、本函数）**全程没有机会执行**，Sidecar 会被 launchd 收养（`ppid=1`）继续
+/// 占用 8765。该路径改由 Sidecar 自身的父进程死亡看门狗退出，见
+/// `python-sidecar/app/core/parent_watchdog.py`。
 ///
 /// 调用时机必须在 Tauri 事件循环仍能取到 managed state 时：`run()` 返回后
 /// `AppState` 已析构，届时只剩 [`SidecarManager::drop`] 的硬杀兜底。

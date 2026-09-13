@@ -7,12 +7,14 @@
 //!    `tokio` runtime），每秒 tick：连续健康失败或 `Child::try_wait` 已退出 → 指数退避后
 //!    `restart()`，并同步更新 `AppState` 里的 PSK + `reset` seq；1 分钟内 10 次重启 →
 //!    `CrashLoop` 暂停，打 `error` 日志后 watchdog 自动退为「仅告警，不再自动恢复」
-//! 3. 退出：三条入口统一收口到 `stop_sidecar_blocking`（`lib.rs`）
+//! 3. 退出：Rust 侧三条入口统一收口到 `stop_sidecar_blocking`（`lib.rs`）
 //!    - 窗口 `CloseRequested` 且 `IS_QUITTING=false` → 阻止关闭 + `hide()` 最小化到托盘
 //!    - 窗口 `CloseRequested` 且 `IS_QUITTING=true`（托盘「退出」菜单置位）→ 优雅关停后退出
-//!    - `RunEvent::ExitRequested`（macOS Cmd+Q / 系统注销）→ 先置 `IS_QUITTING` 再关停；
-//!      该路径走 `AppKit` terminate、**不经过** `CloseRequested`，漏接会留下孤儿 Sidecar
-//!      继续占住 8765 端口
+//!    - `RunEvent::ExitRequested`（`AppHandle::exit()` / 最后一个窗口被销毁）→
+//!      先置 `IS_QUITTING` 再关停（置位是为了让随后的 `CloseRequested` 不再走托盘分支）
+//!      ⚠️ 注意 **macOS ⌘Q 不在此列**：`AppKit` terminate 直接 `exit()`，Rust 侧收不到
+//!      任何回调；该路径由 Sidecar 自身的父进程死亡看门狗退出
+//!      （`python-sidecar/app/core/parent_watchdog.py`）
 //! 4. `Drop` 兜底：若正常退出路径全被跳过（仅 run 内部 panic），`Drop` 用 `stopped` 标志位
 //!    保证仅一次 hard kill，不重复杀进程
 //!
@@ -655,9 +657,13 @@ fn main() {
     };
 
     app.run(|app_handle, event| {
-        // 应用级退出请求：macOS Cmd+Q、系统注销、`app.exit()` 均走 AppKit terminate，
-        // **不触发** 窗口 `CloseRequested`——若不在此收口，Sidecar 会变孤儿
-        // （`ppid=1`）继续占住 8765（macOS 真机 Cmd+Q 实测复现）。
+        // 应用级退出请求：`AppHandle::exit()` / 最后一个窗口被销毁时触发（tauri 仅在
+        // 这两种情形发出本事件）。
+        //
+        // ⚠️ 不要指望这里能兜住 macOS ⌘Q——AppKit 的 `-[NSApplication terminate:]`
+        // 直接 `exit()`，且 tao 的 macOS 后端不实现 `applicationShouldTerminate`，
+        // 事件循环根本收不到通知（真机实测确认）；该路径由 Sidecar 自身的父进程死亡
+        // 看门狗负责（python-sidecar/app/core/parent_watchdog.py）。
         //
         // 先置 IS_QUITTING：`ExitRequested` 之后 Tauri 仍会逐个关闭窗口，标志位
         // 为 false 时 `CloseRequested` 会 `prevent_close()` + `hide()` 把退出挡下来。

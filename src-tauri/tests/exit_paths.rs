@@ -1,12 +1,18 @@
-//! 应用退出路径集成测试：`stop_sidecar_blocking`（托盘退出 / Cmd+Q 共用的唯一收口）。
+//! 应用退出路径集成测试：`stop_sidecar_blocking`（Rust 侧退出入口的唯一收口）。
 //!
-//! 背景（macOS 真机复现的 T6.1 遗留缺陷）：`Cmd+Q` 走 AppKit terminate，只发
-//! `RunEvent::ExitRequested` 而**不发**窗口 `CloseRequested`；修复前优雅关停只挂在
-//! `CloseRequested` 分支上，导致 Cmd+Q 后 Sidecar 变孤儿（`ppid=1`）继续占住 8765。
+//! 背景：Rust 侧有多条退出路径（托盘「退出」菜单 / 窗口 `CloseRequested` /
+//! `RunEvent::ExitRequested`），原先各自复制一份关停逻辑、随路径增加容易漏接；
+//! 现统一收敛到本函数。此文件固化该收口函数自身的契约：关停标志位、防重放
+//! 序号递增、可重入。
+//!
+//! ⚠️ 本函数**不覆盖** macOS ⌘Q：AppKit 的 `-[NSApplication terminate:]` 直接
+//! `exit()`，且 tao 的 macOS 后端不实现 `applicationShouldTerminate`，Rust 侧收不到
+//! 任何回调。该路径由 Sidecar 自身的父进程死亡看门狗退出
+//! （`python-sidecar/app/core/parent_watchdog.py`），与这里的断言无关。
 //!
 //! `main.rs` 的事件回调需要真实事件循环才能驱动，无法单测；因此把「取 state →
 //! 关停 Sidecar」抽成 lib 函数，用 `tauri::test::mock_app`（`MockRuntime`）注入
-//! managed `AppState` 后在此固化契约：关停标志位 + 防重放序号递增 + 可重入。
+//! managed `AppState` 后在此固化契约。
 //!
 //! 注意：`SidecarManager` 未启动进程时，`stop_graceful` 的第 2 阶段会等满
 //! `GRACEFUL_SELF_EXIT_SECS`（3s）才落 `stop_hard`，故单个用例耗时约 3s。
