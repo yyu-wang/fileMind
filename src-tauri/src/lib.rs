@@ -5,8 +5,10 @@
 //! `events`（前端事件负载）。
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+use tauri::{AppHandle, Manager, Runtime};
 
 use crate::sidecar::SidecarManager;
 
@@ -118,4 +120,49 @@ pub struct AppState {
     pub sidecar_restart_count: AtomicU64,
     /// Sidecar 生命周期状态（P1-1：后台引导线程写入，前端经事件/命令读取）。
     pub sidecar_status: Mutex<SidecarStatus>,
+}
+
+/// 阻塞式优雅关停 Sidecar——Rust 侧退出入口的唯一收口点。
+///
+/// 覆盖的退出入口：
+/// 1. 托盘「退出」菜单 → 置 `IS_QUITTING` → 主窗口 `CloseRequested`
+/// 2. 窗口可见时点红钮后退出（同上分支）
+/// 3. `RunEvent::ExitRequested`（`AppHandle::exit()`、最后一个窗口被销毁）
+///
+/// ⚠️ **不覆盖** macOS ⌘Q：AppKit 的 `-[NSApplication terminate:]` 直接 `exit()`，
+/// 且 tao 的 macOS 后端不实现 `applicationShouldTerminate`，Rust 侧（事件循环、
+/// `Drop`、本函数）**全程没有机会执行**，Sidecar 会被 launchd 收养（`ppid=1`）继续
+/// 占用 8765。该路径改由 Sidecar 自身的父进程死亡看门狗退出，见
+/// `python-sidecar/app/core/parent_watchdog.py`。
+///
+/// 调用时机必须在 Tauri 事件循环仍能取到 managed state 时：`run()` 返回后
+/// `AppState` 已析构，届时只剩 [`SidecarManager::drop`] 的硬杀兜底。
+///
+/// 幂等：`stop_graceful` 内部用 `stopped` 标志位做 `compare_exchange`，
+/// 因此上面多条路径先后触发（例如 `ExitRequested` 之后 Tauri 再逐个关窗口）
+/// 不会重复 kill。
+///
+/// 副作用：递增 `request_seq`（防重放序号），并可能阻塞事件循环至
+/// `GRACEFUL_TOTAL_TIMEOUT_SECS`（应用已处于退出流程，阻塞可接受）。
+pub fn stop_sidecar_blocking<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>();
+    let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
+    let Ok(mut manager) = state.sidecar_manager.lock() else {
+        log::error!("sidecar_manager Mutex 中毒，无法优雅关停 Sidecar");
+        return;
+    };
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            log::error!("Sidecar 优雅关停 tokio runtime 初始化失败: {e}");
+            let _ = manager.stop_hard();
+            return;
+        }
+    };
+    if let Err(e) = rt.block_on(manager.stop_graceful(seq)) {
+        log::error!("Sidecar 优雅关闭失败（已 fallback hard kill 兜底）: {e}");
+    }
 }
