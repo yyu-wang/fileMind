@@ -25,6 +25,14 @@ interface FileState {
   scanPath: string | null;
   /** 是否正在扫描 */
   isScanning: boolean;
+  /**
+   * 是否正在全量拉取文件列表（刷新 / 页面挂载补拉）。
+   *
+   * 与 `isScanning` 分开：两者都会翻转 `isScanning` 以复用按钮防抖，但空态文案
+   * 需要区分「正在扫描目录」与「正在加载列表」——只靠 `isScanning` 无法分辨，
+   * 会出现「扫描目录」按钮明明没被点却提示「正在扫描…」。
+   */
+  isLoadingList: boolean;
   /** 文件库统计 */
   stats: FileStats | null;
   /** 已选中文件的 id 列表 */
@@ -63,6 +71,7 @@ export const useFileStore = create<FileState>()((set) => ({
   total: 0,
   scanPath: null,
   isScanning: false,
+  isLoadingList: false,
   stats: null,
   selectedIds: [],
   scannedDirectories: [],
@@ -92,7 +101,7 @@ export const useFileStore = create<FileState>()((set) => ({
   loadAllFiles: async () => {
     const req = ++listReqId;
     // FE-C4：刷新也是列表变更，进 isScanning 态（FilesPage 刷新按钮防狂点）
-    set({ isScanning: true, error: null });
+    set({ isScanning: true, isLoadingList: true, error: null });
     const result = await fileIpc.listAllFiles(null);
     if (req !== listReqId) return;
     if (result.status === 'ok') {
@@ -100,13 +109,14 @@ export const useFileStore = create<FileState>()((set) => ({
         files: result.data,
         selectedIds: [],
         isScanning: false,
+        isLoadingList: false,
         // FE-C4：全量列表覆盖了扫描态列表，旧 scanPath 已不代表 files 来源，
         // 必须清空——否则后续手动分类 joinPath(scanPath,...) 拼错目标根
         scanPath: null,
       });
       await useFileStore.getState().loadStats();
     } else {
-      set({ isScanning: false, error: result.error });
+      set({ isScanning: false, isLoadingList: false, error: result.error });
     }
   },
 

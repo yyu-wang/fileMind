@@ -44,6 +44,7 @@ function freshState(): void {
     total: 0,
     scanPath: null,
     isScanning: false,
+    isLoadingList: false,
     stats: null,
     selectedIds: [],
     scannedDirectories: [],
@@ -111,9 +112,23 @@ describe('fileStore', () => {
     );
     const p = useFileStore.getState().loadAllFiles();
     expect(useFileStore.getState().isScanning).toBe(true);
+    // isLoadingList 同步置位：FilesPage 空态据此区分「加载列表」与「扫描目录」
+    expect(useFileStore.getState().isLoadingList).toBe(true);
     resolve({ status: 'ok', data: [] });
     await p;
     expect(useFileStore.getState().isScanning).toBe(false);
+    expect(useFileStore.getState().isLoadingList).toBe(false);
+  });
+
+  it('loadAllFiles 失败路径也清掉 isLoadingList（空态不会卡在「正在加载」）', async () => {
+    (fileIpc.listAllFiles as Mock).mockResolvedValue({ status: 'error', error: 'boom' });
+
+    await useFileStore.getState().loadAllFiles();
+
+    const s = useFileStore.getState();
+    expect(s.isLoadingList).toBe(false);
+    expect(s.isScanning).toBe(false);
+    expect(s.error).toBe('boom');
   });
 
   it('scanFiles 成功：更新列表/路径/统计并清空选中', async () => {
