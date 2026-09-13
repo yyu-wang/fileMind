@@ -6,14 +6,13 @@ use tauri::State;
 use crate::db::ConfigRepo;
 use crate::AppState;
 
-/// 云端推理服务提供商。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
-pub enum CloudProvider {
-    /// `OpenAI`（gpt-4o 等）。
-    Openai,
-    /// `DeepSeek`。
-    Deepseek,
-}
+/// 云端推理服务提供商标识（用户自定义字符串 slug）。
+///
+/// 由枚举演进而来：原 `Openai` / `Deepseek` 编译期列表已替换为运行期字符串，
+/// 用户可在设置页自由添加任何兼容 `OpenAI` `Chat Completions` 协议的供应商。
+/// 格式要求：小写字母、数字、下划线、连字符（`^[a-z0-9_-]{1,64}$`），
+/// 作为 Keychain 键名 + 云端代理路由键 + `cloud_providers.provider_key` 唯一索引。
+pub type CloudProvider = String;
 
 /// 应用全局配置（持久化于 `SQLite` `app_config` 表）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -42,6 +41,13 @@ pub struct AppConfig {
     pub cloud_consent_provider: Option<CloudProvider>,
     /// 签署时间（ISO 8601 字符串，未签为 `None`）。
     pub cloud_consent_signed_at: Option<String>,
+    /// 云端推理模型名（如 `gpt-4o` / `deepseek-chat`；空串表示未指定，回落到 Provider 默认值）。
+    #[serde(default)]
+    pub cloud_model: String,
+    /// 当前激活的自定义云提供商（对应 `cloud_providers.provider_key`）。
+    /// 升级前用户为空，默认选择 `deepseek` 或列表首个非删除项。
+    #[serde(default)]
+    pub active_cloud_provider: Option<CloudProvider>,
 }
 
 impl Default for AppConfig {
@@ -61,6 +67,8 @@ impl Default for AppConfig {
             cloud_consent_version: None,
             cloud_consent_provider: None,
             cloud_consent_signed_at: None,
+            cloud_model: String::new(),
+            active_cloud_provider: None,
         }
     }
 }
@@ -113,13 +121,30 @@ pub fn update_config(state: State<'_, AppState>, config: AppConfig) -> Result<Ap
     Ok(config)
 }
 
+/// 校验云提供商标识（Keychain 键 + 路由键）：`^[a-z0-9_-]{1,64}$`。
+///
+/// 拒绝含空格、斜杠、点、路径穿越片段的字符串（Keychain 条目与代理路由共用此值，
+/// 脏值可能导致匹配失败或日志注入）。
+pub(crate) fn validate_provider_key(provider: &str) -> Result<(), String> {
+    if provider.is_empty() || provider.len() > 64 {
+        return Err("PROV-100:提供商标识长度应为 1-64 字符".to_string());
+    }
+    let valid = provider
+        .chars()
+        .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'));
+    if !valid {
+        return Err("PROV-101:提供商标识仅允许小写字母、数字、下划线与连字符".to_string());
+    }
+    Ok(())
+}
+
 /// 签署云端知情同意书。
 ///
 /// 写入 `app_config` 表的 consent 字段并记录签署时间。
 ///
 /// # Errors
 ///
-/// 数据库写入失败时返回错误。
+/// 数据库写入失败或提供商标识不合法时返回错误。
 #[tauri::command(async)]
 #[specta::specta]
 pub fn sign_cloud_consent(
@@ -127,7 +152,8 @@ pub fn sign_cloud_consent(
     consent_version: String,
     provider: CloudProvider,
 ) -> Result<ConsentResult, String> {
-    log::info!("签署云端知情同意书: version={consent_version}, provider={provider:?}");
+    validate_provider_key(&provider)?;
+    log::info!("签署云端知情同意书: version={consent_version}, provider={provider}");
     let db = lock_db(&state.db)?;
     ConfigRepo::sign_consent(db.conn(), &consent_version, provider)
         .map_err(|e| format!("DB-C-003:同意书签署失败 ({e})"))?;
@@ -165,3 +191,5 @@ fn lock_db(
         "DB-U-001:数据读取失败，请重启应用".to_string()
     })
 }
+
+// lint fix notes: doc_markdown (OpenAI / Chat Completions 反引号)

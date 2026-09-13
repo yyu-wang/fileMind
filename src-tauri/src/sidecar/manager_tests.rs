@@ -12,9 +12,24 @@ use super::*;
 
 // ---------- 工具：RAII 环境变量守卫，避免 set_var 串扰 ----------
 
+/// 串行化「改进程级环境变量 / cwd」的用例。
+///
+/// libtest **默认多线程并行**跑用例，而 `CARGO_MANIFEST_DIR` 与 cwd 是进程级共享状态：
+/// 不加锁时 A 用例设的值会被并行的 B 用例读到（实测表现为解析到别人临时目录、
+/// assertion 里出现两个不同的 `.tmpXXXX`）。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取环境变量用例互斥锁；忽略中毒（某个用例 panic 不该连带挂掉后续用例）。
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// `env::set_var` 的 RAII 包装：测试结束时恢复（或跳过删除）原值。
 ///
 /// 为什么不用 crate：项目 dev-deps 未引入 `temp_env`，用 10 行自写满足需求。
+/// 使用方必须先取 [`lock_env`] 串行化（见其说明）。
 struct EnvGuard {
     key: &'static str,
     old: Option<String>,
@@ -22,8 +37,7 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn set(key: &'static str, value: impl Into<String>) -> Self {
-        // 注：cargo test 默认串行执行测试，多线程场景下 env 变更未做同步
-        // 仅用于本模块的 resolve 单测，避免污染其它运行中的进程。
+        // 调用方须先取 lock_env()：env 是进程级状态，并行用例会互相污染。
         let old = std::env::var(key).ok();
         std::env::set_var(key, value.into());
         Self { key, old }
@@ -40,25 +54,42 @@ impl Drop for EnvGuard {
     }
 }
 
-/// 在临时目录里创建 ``repo_root/filemind/binaries/{files...}`` 结构，返回 `TempDir`。
-fn build_binaries_structure(files: &[&str]) -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().expect("建临时目录失败");
-    let dir = tmp.path().join("filemind").join("binaries");
-    std::fs::create_dir_all(&dir).expect("mkdir binaries 失败");
-    for name in files {
-        let p = dir.join(name);
-        std::fs::write(&p, b"dummy-binary-content").expect("写 dummy binary 失败");
-        // 给执行位：仅 Unix 有效；_is_existing_file 判的是 is_file()，其实不需要；
-        // 保留用于贴近真实侧车二进制场景。
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let meta = p.metadata().expect("读刚写完的文件 metadata 不应失败");
-            let mut perms = meta.permissions();
-            perms.set_mode(perms.mode() | 0o755);
-            std::fs::set_permissions(&p, perms).expect("设置执行位失败");
-        }
+/// onedir 主可执行的基础文件名（按平台，与 manager.rs `resolve_main_exe_names` 末项一致）。
+fn main_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "filemind-sidecar.exe"
+    } else {
+        "filemind-sidecar"
     }
+}
+
+/// 写一个带执行位的占位「可执行文件」。
+fn write_executable(path: &Path) {
+    std::fs::write(path, b"dummy-binary-content").expect("写 dummy binary 失败");
+    // 给执行位：贴近真实侧车二进制场景（仅 Unix 有效）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = path.metadata().expect("读刚写完的文件 metadata 不应失败");
+        let mut perms = meta.permissions();
+        perms.set_mode(perms.mode() | 0o755);
+        std::fs::set_permissions(path, perms).expect("设置执行位失败");
+    }
+}
+
+/// 在 `<repo_root>/filemind/binaries/<dir_name>/` 下写 onedir 主可执行文件。
+///
+/// P2-2：产物是目录（主可执行 + `_internal/`），解析一律按目录处理。
+fn write_onedir(repo_root: &Path, dir_name: &str, exe_name: &str) {
+    let dir = repo_root.join("filemind").join("binaries").join(dir_name);
+    std::fs::create_dir_all(&dir).expect("mkdir onedir 目录失败");
+    write_executable(&dir.join(exe_name));
+}
+
+/// 建临时目录并在其中放置 `filemind/binaries/<dir_name>/` onedir 结构，返回 `TempDir`。
+fn build_onedir_dir(dir_name: &str, exe_name: &str) -> tempfile::TempDir {
+    let tmp = tempfile::tempdir().expect("建临时目录失败");
+    write_onedir(tmp.path(), dir_name, exe_name);
     tmp
 }
 
@@ -190,6 +221,23 @@ fn test_watchdog_stopped_flag_returns_idle() {
 }
 
 #[test]
+fn test_watchdog_unstarted_returns_idle_without_probing() {
+    // P1-1：process=None 且 psk=None（后台引导中 / 启动失败等待重试）时，
+    // watchdog 必须直接 Idle，不能触发 health 探测 → NeedRestart 双开进程。
+    // 本机无 Sidecar 监听 8765，若守卫缺失会走 health 失败计数，此处验证不依赖网络。
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("建 tokio runtime 失败");
+    let mut manager = SidecarManager::new(stub_binary());
+    rt.block_on(async {
+        let action = manager.watchdog_tick().await.expect("未启动时应 ok");
+        assert_eq!(action, WatchdogAction::Idle);
+    });
+    assert_eq!(manager.recent_health_fails, 0, "未启动不应累计 health 失败");
+}
+
+#[test]
 fn test_default_equals_new() {
     // Default/New 目前不派生 PartialEq（Child 不实现），退化为逐字段等价校验：
     // 都能 stop_hard 无副作用、都是 stopped=false、recent_restarts 空。
@@ -233,42 +281,77 @@ fn test_current_target_triple_matches_rustc_triple() {
 }
 
 #[test]
-fn test_resolve_env_override_absolute() {
-    let tmp = build_binaries_structure(&[]);
-    let fake = tmp.path().join("fake-sidecar");
-    std::fs::write(&fake, b"x").expect("写 fake 不应失败");
-    let got = resolve_dev_binary_path(Some(fake.to_str().expect("临时路径应为合法 UTF-8")))
-        .expect("override 指向存在文件应解析成功");
+fn test_resolve_env_override_dir_uses_main_exe_inside() {
+    // P2-2：env 覆盖指向 onedir 产物**目录**时，解析到目录内的主可执行
+    let tmp = build_onedir_dir("override-dir", main_exe_name());
+    let override_dir = tmp
+        .path()
+        .join("filemind")
+        .join("binaries")
+        .join("override-dir");
+    let got = resolve_dev_binary_path(Some(override_dir.to_str().expect("临时路径应为合法 UTF-8")))
+        .expect("override 指向存在的 onedir 目录应解析成功");
     assert_eq!(
         got,
-        fake.canonicalize().expect("canonicalize fake 不应失败")
+        override_dir
+            .join(main_exe_name())
+            .canonicalize()
+            .expect("canonicalize 主可执行不应失败")
     );
+}
+
+#[test]
+fn test_resolve_env_override_accepts_executable_file() {
+    // P2-2：env 覆盖语义是「直接指定要执行的 sidecar 可执行文件」，故也接受**文件**
+    // （CI E2E / 本地 dev 用 wrapper 脚本注入 `python -m app`，见
+    // scripts/e2e-sidecar-wrapper.sh）。若这条退化，E2E smoke 会直接起不来。
+    let tmp = tempfile::tempdir().expect("tempdir 不应失败");
+    let wrapper = tmp.path().join("e2e-sidecar-wrapper.sh");
+    std::fs::write(&wrapper, b"#!/bin/sh\nexec python -m app\n").expect("写 wrapper 不应失败");
+    let got = resolve_dev_binary_path(Some(wrapper.to_str().expect("临时路径应为合法 UTF-8")))
+        .expect("override 指向可执行文件应直接采用");
+    assert_eq!(got, wrapper.canonicalize().unwrap());
 }
 
 #[test]
 fn test_resolve_env_override_takes_highest_priority() {
     // override + CARGO 路径同时存在时，override 必须优先返回
-    let tmp =
-        build_binaries_structure(&["filemind-sidecar-aarch64-apple-darwin", "filemind-sidecar"]);
+    let _env = lock_env();
+    let tmp = build_onedir_dir("cargo-triple-dir", main_exe_name());
+    // 另放一个 triple 具体名目录（CARGO 回退会命中它），验证 override 仍优先
+    write_onedir(
+        tmp.path(),
+        &format!("filemind-sidecar-{}", current_target_triple()),
+        main_exe_name(),
+    );
     write_src_tauri(tmp.path());
     let src_tauri = tmp.path().join("src-tauri");
     let _g = EnvGuard::set(
         "CARGO_MANIFEST_DIR",
         src_tauri.to_string_lossy().to_string(),
     );
-    let other = tmp.path().join("another-file");
-    std::fs::write(&other, b"x").expect("写 another 不应失败");
-    let got = resolve_dev_binary_path(Some(other.to_str().expect("临时路径 UTF-8")))
+    let override_dir = tmp
+        .path()
+        .join("filemind")
+        .join("binaries")
+        .join("cargo-triple-dir");
+    let got = resolve_dev_binary_path(Some(override_dir.to_str().expect("临时路径 UTF-8")))
         .expect("解析 override 不应失败");
     assert_eq!(
         got,
-        other.canonicalize().expect("canonicalize other 不应失败")
+        override_dir
+            .join(main_exe_name())
+            .canonicalize()
+            .expect("canonicalize 主可执行不应失败")
     );
 }
 
 #[test]
-fn test_resolve_fallback_cargo_manifest_triple_file() {
-    let tmp = build_binaries_structure(&["filemind-sidecar-aarch64-apple-darwin"]);
+fn test_resolve_fallback_cargo_manifest_triple_dir() {
+    // P2-2：triple 具体名**目录**优先命中
+    let _env = lock_env();
+    let triple = current_target_triple();
+    let tmp = build_onedir_dir(&format!("filemind-sidecar-{triple}"), main_exe_name());
     write_src_tauri(tmp.path());
     let src_tauri = tmp.path().join("src-tauri");
     let _g = EnvGuard::set(
@@ -276,15 +359,16 @@ fn test_resolve_fallback_cargo_manifest_triple_file() {
         src_tauri.to_string_lossy().to_string(),
     );
     let result = resolve_dev_binary_path(None);
-    // 如果当前平台刚好是 aarch64 mac → 必须解析到我们建的 triple 文件；
+    // 如果当前平台刚好是 aarch64 mac → 必须解析到我们建的 triple 目录；
     // 其他架构：triple 名字不对（我们只建了 arm64）→ 走错误路径，只要不 panic 就通过。
     if std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64" {
         let want = tmp
             .path()
-            .join("filemind/binaries/filemind-sidecar-aarch64-apple-darwin")
+            .join(format!("filemind/binaries/filemind-sidecar-{triple}"))
+            .join(main_exe_name())
             .canonicalize()
-            .expect("canonicalize triple 不应失败");
-        assert_eq!(result.expect("mac arm64 应命中 triple 文件"), want);
+            .expect("canonicalize triple 主可执行不应失败");
+        assert_eq!(result.expect("mac arm64 应命中 triple 目录"), want);
     } else {
         // 非 mac arm64：不做强断言；保证无 panic
         let _ = result;
@@ -292,9 +376,10 @@ fn test_resolve_fallback_cargo_manifest_triple_file() {
 }
 
 #[test]
-fn test_resolve_fallback_cargo_manifest_symlink_only() {
-    // 只放默认 filemind-sidecar（软链接名），不放 triple 具体名
-    let tmp = build_binaries_structure(&["filemind-sidecar"]);
+fn test_resolve_fallback_cargo_manifest_default_dir() {
+    // 只放默认名目录（软链接名），不放 triple 具体名
+    let _env = lock_env();
+    let tmp = build_onedir_dir("filemind-sidecar", main_exe_name());
     write_src_tauri(tmp.path());
     let src_tauri = tmp.path().join("src-tauri");
     let _g = EnvGuard::set(
@@ -302,32 +387,37 @@ fn test_resolve_fallback_cargo_manifest_symlink_only() {
         src_tauri.to_string_lossy().to_string(),
     );
     let triple = current_target_triple();
-    let want_sym = tmp.path().join("filemind/binaries/filemind-sidecar");
+    let want_default = tmp
+        .path()
+        .join("filemind/binaries/filemind-sidecar")
+        .join(main_exe_name());
     let want_triple = tmp
         .path()
         .join(format!("filemind/binaries/filemind-sidecar-{triple}"));
     let result = resolve_dev_binary_path(None);
     if want_triple.exists() {
-        // triple 名居然刚好被创建了（其他测试一般不会），就用 triple 结果
+        // triple 名目录居然刚好被创建了（其他测试一般不会），就用 triple 结果
         assert_eq!(
             result.expect("应能解析到 triple 产物"),
             want_triple
+                .join(main_exe_name())
                 .canonicalize()
-                .expect("canonicalize triple 不应失败")
+                .expect("canonicalize triple 主可执行不应失败")
         );
     } else {
-        // 常规情况：只有 symlink 文件，解析到 symlink 兜底
+        // 常规情况：只有默认名目录，解析到默认名兜底
         assert_eq!(
-            result.expect("应能解析到 symlink 兜底产物"),
-            want_sym
+            result.expect("应能解析到默认名兜底产物"),
+            want_default
                 .canonicalize()
-                .expect("canonicalize symlink 不应失败")
+                .expect("canonicalize 默认名主可执行不应失败")
         );
     }
 }
 
 #[test]
 fn test_resolve_all_missing_error() {
+    let _env = lock_env();
     let tmp = tempfile::tempdir().expect("建空临时目录不应失败");
     let fake_src_tauri = tmp.path().join("empty-src-tauri");
     std::fs::create_dir_all(&fake_src_tauri).expect("建空 src_tauri 不应失败");
@@ -381,17 +471,19 @@ fn test_start_fails_on_nonexistent_binary_with_nice_message() {
 }
 
 #[test]
-fn test_default_sidecar_uses_dev_binaries_symlink() {
+fn test_default_sidecar_uses_dev_binaries_dir() {
     // Default binary_path 纯基于编译时 env!("CARGO_MANIFEST_DIR") 常量拼接，
-    // 不读运行时 env，不需要 EnvGuard。拼接结果应为：
-    //   ${CARGO_MANIFEST_DIR}/../filemind/binaries/filemind-sidecar；
-    // 不 canonicalize（真实二进制可能尚未构建），直接比较逻辑路径。
+    // 不读运行时 env，不需要 EnvGuard。P2-2：产物是 onedir 目录，主可执行在目录内，
+    // 拼接结果应为：
+    //   ${CARGO_MANIFEST_DIR}/../filemind/binaries/filemind-sidecar/filemind-sidecar[.exe]；
+    // 不 canonicalize（真实产物可能尚未构建），直接比较逻辑路径。
     let m = SidecarManager::default();
     let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("filemind")
         .join("binaries")
-        .join("filemind-sidecar");
+        .join("filemind-sidecar")
+        .join(main_exe_name());
     assert_eq!(m.binary_path_inner(), expected.as_path());
     assert_eq!(m.binary_path(), expected.as_path());
 }
@@ -426,52 +518,69 @@ fn test_start_uses_placeholder_binary_gives_nice_error() {
 }
 
 #[test]
-fn test_resolve_bundle_prefers_triple_specific_binary() {
+fn test_resolve_bundle_prefers_sidecar_subdir() {
+    // P2-2 主路径：Tauri `bundle.resources` 把 onedir 目录拷到 `<root>/sidecar/`
     let tmp = tempfile::tempdir().expect("tempdir 不应失败");
-    let triple = current_target_triple();
-    // 放 triple 专属名（比通用名优先生效） + 通用名也放（验证不被优先选）
-    let triple_bin = tmp.path().join(format!("filemind-sidecar-{triple}"));
-    let generic_bin = tmp.path().join("filemind-sidecar");
-    std::fs::write(&triple_bin, b"fake-a").expect("写 triple 文件失败");
-    std::fs::write(&generic_bin, b"fake-b").expect("写 generic 文件失败");
+    let sidecar_dir = tmp.path().join(BUNDLE_SIDECAR_SUBDIR);
+    std::fs::create_dir_all(&sidecar_dir).expect("mkdir sidecar 不应失败");
+    let exe = sidecar_dir.join(main_exe_name());
+    std::fs::write(&exe, b"fake-exe").expect("写主可执行失败");
 
-    let got = resolve_bundle_from_resources(tmp.path()).expect("有 triple 文件应解析成功");
-    assert_eq!(got, triple_bin.canonicalize().unwrap());
+    let got = resolve_bundle_from_resources(tmp.path()).expect("<root>/sidecar 命中应解析成功");
+    assert_eq!(got, exe.canonicalize().unwrap());
 }
 
 #[test]
-fn test_resolve_bundle_falls_back_to_generic_name() {
+fn test_resolve_bundle_accepts_flat_onedir_dir() {
+    // 兜底路径：onedir 目录直接摆在根目录下（无 sidecar 子目录嵌套）
     let tmp = tempfile::tempdir().expect("tempdir 不应失败");
-    let triple = current_target_triple();
-    // 只放通用名（triple 名不存在）→ 回退通用名
-    let generic_bin = tmp.path().join("filemind-sidecar");
-    std::fs::write(&generic_bin, b"fake-g").expect("写 generic 文件失败");
-    // 放 triple 名的"目录"，非文件 → 应跳过
-    let triple_dir = tmp.path().join(format!("filemind-sidecar-{triple}"));
-    std::fs::create_dir(&triple_dir).expect("建 triple dir 不应失败");
+    let exe = tmp.path().join(main_exe_name());
+    std::fs::write(&exe, b"fake-flat").expect("写主可执行失败");
 
-    let got = resolve_bundle_from_resources(tmp.path()).expect("有 generic 文件应解析成功");
-    assert_eq!(got, generic_bin.canonicalize().unwrap());
+    let got = resolve_bundle_from_resources(tmp.path()).expect("根目录直放主可执行应解析成功");
+    assert_eq!(got, exe.canonicalize().unwrap());
+}
+
+/// P2-2 打包态集成契约：真实 macOS `.app` 布局下必须命中 bundle 侧车。
+///
+/// 复刻 `FileMind.app/Contents/` 结构（`MacOS/` 放主程序、`Resources/sidecar/` 放
+/// onedir 产物），按 `resolve_bundle_binary_path` 的根目录顺序（可执行目录 →
+/// `resource_dir`）调用纯函数，断言命中 `Resources/sidecar/filemind-sidecar`。
+/// 这是 P2-2 由 externalBin 改 bundle.resources 后最关键的一处路径契约，
+/// 离线可测（无需真实打包与 GUI 启动）。
+#[test]
+fn test_resolve_bundle_hits_real_macos_app_layout() {
+    let tmp = tempfile::tempdir().expect("tempdir 不应失败");
+    let app = tmp.path().join("FileMind.app").join("Contents");
+    let macos_dir = app.join("MacOS");
+    let resources_dir = app.join("Resources");
+    let sidecar_dir = resources_dir.join(BUNDLE_SIDECAR_SUBDIR);
+    std::fs::create_dir_all(&macos_dir).expect("mkdir MacOS 失败");
+    std::fs::create_dir_all(&sidecar_dir).expect("mkdir Resources/sidecar 失败");
+    // 主程序同目录无 sidecar（旧 externalBin 布局已不再使用）
+    std::fs::write(macos_dir.join("filemind"), b"app-exe").expect("写主程序失败");
+    let exe = sidecar_dir.join(main_exe_name());
+    std::fs::write(&exe, b"sidecar-exe").expect("写 sidecar 主可执行失败");
+
+    let got = resolve_bundle_from_roots(&[macos_dir, resources_dir])
+        .expect("真实 .app 布局应命中 bundle 侧车");
+    assert_eq!(got, exe.canonicalize().unwrap());
 }
 
 #[test]
 fn test_resolve_bundle_missing_reports_candidates() {
     let tmp = tempfile::tempdir().expect("tempdir 不应失败");
-    let triple = current_target_triple();
     match resolve_bundle_from_resources(tmp.path()) {
         Err(AppError::SidecarUnavailable(msg)) => {
             assert!(
-                msg.contains(&format!("filemind-sidecar-{triple}")),
-                "错误信息应列出 triple 候选，实际: {msg}"
+                msg.contains(BUNDLE_SIDECAR_SUBDIR),
+                "错误信息应列出 sidecar 子目录候选，实际: {msg}"
             );
             assert!(
-                msg.contains("filemind-sidecar"),
-                "错误信息应列出 generic 候选，实际: {msg}"
+                msg.contains("bundle.resources"),
+                "错误信息应提示 bundle.resources 配置，实际: {msg}"
             );
-            assert!(
-                msg.contains("resources_root="),
-                "错误信息应包含 resources_root 提示，实际: {msg}"
-            );
+            assert!(msg.contains("候选"), "错误信息应包含候选提示，实际: {msg}");
         }
         other => panic!("候选均不存在时应返回 SidecarUnavailable，实际: {other:?}"),
     }
@@ -613,16 +722,53 @@ fn spawn_orphan_listener(port: u16, name: &str) -> Option<u32> {
         perms.set_mode(perms.mode() | 0o755);
         std::fs::set_permissions(&fake, perms).expect("设置执行位失败");
     }
-    // sh 启动后台子进程后立即退出 → 子进程成孤儿（ppid=1）后监听端口
+    // sh 启动后台子进程后立即退出 → 子进程成孤儿（ppid=1）后监听端口。
+    //
+    // ⚠️ 这里**不能**用 `.output()`（或 `status()` 之外的捕获变体）：`output()` 会一直
+    // 读 stdout/stderr 管道直到 EOF，而 `nc -l` 继承了这两个 fd 且长期持有不关闭，
+    // 于是等待永不返回——CI Linux 上实测卡死到 job 6 小时上限（本机 macOS 的 nc
+    // 行为不同才没暴露）。故把三个 stdio 全部丢弃，只等 `sh` 自身退出。
     let _ = std::process::Command::new("sh")
         .arg("-c")
         .arg(format!("{} -l {port} &", fake.display()))
-        .output();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     let pid = wait_listener(port, std::time::Duration::from_secs(5));
     if pid.is_none() {
         force_kill_listeners(port);
     }
     pid
+}
+
+/// 取 pid 的 `pid/ppid/comm` 快照，供断言失败时定位（Linux 的 comm 会被截断）。
+#[cfg(unix)]
+fn ps_snapshot(pid: u32) -> String {
+    match std::process::Command::new("ps")
+        .args(["-o", "pid=,ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Err(e) => format!("ps 执行失败: {e}"),
+    }
+}
+
+/// Linux `/proc/<pid>/comm` 限长 15 字符：`filemind-sidecar`（16 字符）实际读到的是
+/// `filemind-sideca`，身份匹配必须容忍该截断，否则 Linux 上孤儿清理永远匹配不到。
+#[cfg(unix)]
+#[test]
+fn test_matches_sidecar_comm_tolerates_linux_truncation() {
+    // 完整名（macOS `ps -o comm=` 返回可执行路径，同样命中）
+    assert!(matches_sidecar_comm("filemind-sidecar"));
+    assert!(matches_sidecar_comm(
+        "/applications/filemind.app/contents/macos/filemind-sidecar"
+    ));
+    // Linux 截断形态
+    assert!(matches_sidecar_comm("filemind-sideca"));
+    // 不相关进程名不得命中（防误杀）
+    assert!(!matches_sidecar_comm("innocent-listener"));
+    assert!(!matches_sidecar_comm("python3"));
 }
 
 /// BE-M3 核心场景：名为 filemind-sidecar 的孤儿（ppid=1）占住端口 → 被清理。
@@ -639,7 +785,11 @@ fn test_cleanup_orphan_sidecar_kills_named_orphan() {
 
     // SIGTERM 后端口应释放（轮询最多 3s）
     let gone = wait_listener(PORT, std::time::Duration::from_secs(3)).is_none();
-    assert!(gone, "孤儿 Sidecar pid={pid} 应被清理，端口 {PORT} 应释放");
+    assert!(
+        gone,
+        "孤儿 Sidecar pid={pid} 应被清理，端口 {PORT} 应释放；ps: {}",
+        ps_snapshot(pid)
+    );
     force_kill_listeners(PORT);
 }
 
@@ -689,7 +839,7 @@ async fn test_restart_failure_counts_into_crash_loop_window() {
 /// 绕过系统代理直连本地 Ollama —— 否则 Clash 等代理会拦截 127.0.0.1 请求返回 502。
 ///
 /// 实现思路：用一个 shell 脚本作为占位 binary，把子进程的 env 写入临时文件，
-/// 然后 `start()` spawn 后读取文件校验是否包含预期的 NO_PROXY 值。
+/// 然后 `start()` spawn 后读取文件校验是否包含预期的 `NO_PROXY` 值。
 #[test]
 fn test_start_injects_no_proxy_env() {
     // 仅 Unix：脚本通过 /bin/sh 执行

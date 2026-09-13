@@ -99,6 +99,12 @@ fn test_execute_copy_success() {
 fn test_execute_delete_success() {
     let src_dir = tempfile::tempdir().unwrap();
     make_source_file(src_dir.path(), "to_delete.txt", "x").unwrap();
+    // 覆盖回收站目标目录：避免真实系统回收站（沙箱/并行污染），确定性断言
+    let trash_dir = tempfile::tempdir().unwrap();
+    let _guard = crate::services::trash::TEST_TRASH_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
     let src = src_dir.path().join("to_delete.txt");
 
     let item = make_plan_item(
@@ -114,8 +120,9 @@ fn test_execute_delete_success() {
     assert!(error.is_none());
     // Delete 后 current_hash = None
     assert!(current_hash.is_none(), "Delete 后 current_hash 应为 None");
-    // 文件已删除
+    // 文件已移入回收站目录（原位置消失、目标目录存在同名文件）
     assert!(!src.exists());
+    assert!(trash_dir.path().join("to_delete.txt").exists());
 }
 
 #[test]

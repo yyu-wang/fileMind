@@ -8,7 +8,8 @@
 
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
-import type { FileInfo, FileStats } from '../types/ipc';
+import type { FileInfo, FileStats, ScannedDirectory } from '../types/ipc';
+import { useClassifyStore } from './classifyStore';
 
 // FE-C4：文件列表请求序号——scanFiles/loadAllFiles 共用。
 // 慢请求（大目录扫描）后发起的快请求先返回时，旧响应到达后序号失配被丢弃，
@@ -28,6 +29,8 @@ interface FileState {
   stats: FileStats | null;
   /** 已选中文件的 id 列表 */
   selectedIds: string[];
+  /** 已扫描目录列表（目录级移除用） */
+  scannedDirectories: ScannedDirectory[];
   /** 错误信息 */
   error: string | null;
 
@@ -37,6 +40,12 @@ interface FileState {
   loadAllFiles: () => Promise<void>;
   /** 加载文件库统计 */
   loadStats: () => Promise<void>;
+  /** 加载已扫描目录列表 */
+  loadScannedDirectories: () => Promise<void>;
+  /** 移除目录：从索引中软删该目录下所有文件 + 清理向量，不删除磁盘文件 */
+  removeDirectory: (path: string) => Promise<number>;
+  /** 删除文件：把选中的文件移入系统回收站（成功项从列表移除，失败项保留并置 error） */
+  deleteFiles: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
   /** 切换单个文件的选中态 */
   toggleSelect: (id: string) => void;
   /** 批量设置选中（全选/清空用） */
@@ -56,6 +65,7 @@ export const useFileStore = create<FileState>()((set) => ({
   isScanning: false,
   stats: null,
   selectedIds: [],
+  scannedDirectories: [],
   error: null,
 
   scanFiles: async (path) => {
@@ -71,8 +81,9 @@ export const useFileStore = create<FileState>()((set) => ({
         isScanning: false,
         selectedIds: [],
       });
-      // 扫描完成后刷新统计
+      // 扫描完成后刷新统计 + 目录列表
       await useFileStore.getState().loadStats();
+      await useFileStore.getState().loadScannedDirectories();
     } else {
       set({ isScanning: false, error: result.error });
     }
@@ -108,6 +119,61 @@ export const useFileStore = create<FileState>()((set) => ({
     }
   },
 
+  loadScannedDirectories: async () => {
+    const result = await fileIpc.listScannedDirectories();
+    if (result.status === 'ok') {
+      set({ scannedDirectories: result.data });
+    } else {
+      set({ error: result.error });
+    }
+  },
+
+  removeDirectory: async (path) => {
+    const result = await fileIpc.removeDirectory(path);
+    if (result.status !== 'ok') {
+      set({ error: result.error });
+      throw new Error(result.error);
+    }
+    // 移除后刷新：文件列表、统计、目录列表
+    set((state) => ({
+      // 从当前文件列表中移除该目录下的文件（path 以被移除目录开头）
+      files: state.files.filter((f) => !f.path.startsWith(`${path}/`)),
+      scannedDirectories: state.scannedDirectories.filter((d) => d.path !== path),
+      selectedIds: state.selectedIds.filter((id) => {
+        const f = state.files.find((x) => x.id === id);
+        return f ? !f.path.startsWith(`${path}/`) : true;
+      }),
+    }));
+    await useFileStore.getState().loadStats();
+    return result.data.removed_files;
+  },
+
+  deleteFiles: async (ids) => {
+    if (ids.length === 0) return { deleted: 0, failed: 0 };
+    const result = await fileIpc.deleteFiles(ids);
+    if (result.status !== 'ok') {
+      set({ error: result.error });
+      throw new Error(result.error);
+    }
+    const removedIds = new Set<string>();
+    let failed = 0;
+    for (const item of result.data) {
+      if (item.success) {
+        removedIds.add(item.file_id);
+      } else {
+        failed += 1;
+      }
+    }
+    set((state) => ({
+      files: state.files.filter((f) => !removedIds.has(f.id)),
+      selectedIds: state.selectedIds.filter((id) => !removedIds.has(id)),
+      error:
+        failed > 0 ? `${failed} 个文件未能移入系统回收站（可能已被外部移动），其余已移入` : null,
+    }));
+    await useFileStore.getState().loadStats();
+    return { deleted: removedIds.size, failed };
+  },
+
   toggleSelect: (id) =>
     set((state) => ({
       selectedIds: state.selectedIds.includes(id)
@@ -117,9 +183,18 @@ export const useFileStore = create<FileState>()((set) => ({
 
   setSelection: (ids) => set({ selectedIds: ids }),
 
-  clearSelection: () => set({ selectedIds: [] }),
+  clearSelection: () => {
+    // 清除选中意味放弃当前分类意图：同步作废 classifyStore 里上一批的预览缓存
+    // （preview / pendingIds / execSummary / 进度），防止返回分类页时仍显示旧结果。
+    useClassifyStore.getState().reset();
+    set({ selectedIds: [] });
+  },
 
-  clearFiles: () => set({ files: [], scanPath: null, selectedIds: [] }),
+  clearFiles: () => {
+    // 清空文件库也意味着之前的分类选择完全作废，同步重置分类页缓存
+    useClassifyStore.getState().reset();
+    set({ files: [], scanPath: null, selectedIds: [] });
+  },
 
   clearError: () => set({ error: null }),
 }));

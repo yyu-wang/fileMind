@@ -31,11 +31,15 @@ fn main() {
             commands::rules::reorder_rules,
             commands::rules::list_categories,
             commands::file_ops::scan_directory,
+            commands::file_ops::list_scanned_directories,
+            commands::file_ops::remove_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
+            commands::file_ops::delete_files,
             commands::file_ops::undo_batch,
-            // T6.4 文件预览（文本 / 图片 / PDF）
+            // T6.4 文件预览（文本 / 图片 / PDF / Office 文档文本）
             commands::file_preview::read_file_preview,
+            commands::file_preview::read_document_preview,
             commands::file_query::list_files,
             // T6.4 全量文件列表（虚拟滚动）
             commands::file_query::list_all_files,
@@ -49,6 +53,7 @@ fn main() {
             commands::inference::get_inference_mode,
             commands::inference::set_inference_mode,
             commands::ollama::ollama_status,
+            commands::ollama::install_embedding_model,
             commands::config::get_config,
             commands::config::update_config,
             commands::config::sign_cloud_consent,
@@ -59,6 +64,13 @@ fn main() {
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,
             commands::api_key::delete_api_key,
+            // P-07 自定义云提供商管理（CRUD + base_url 查询）
+            commands::cloud_providers::list_cloud_providers,
+            commands::cloud_providers::upsert_cloud_provider,
+            commands::cloud_providers::delete_cloud_provider,
+            // P1-1 Sidecar 生命周期查询 / 手动重试
+            commands::sidecar::get_sidecar_status,
+            commands::sidecar::retry_sidecar_start,
         ]);
 
     if let Err(e) = builder.export(specta_typescript::Typescript::default(), &output_path) {

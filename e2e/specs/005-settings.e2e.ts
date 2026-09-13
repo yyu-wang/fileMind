@@ -10,7 +10,7 @@ import { expect } from '@wdio/globals';
 
 import { sel } from '../utils/selectors';
 
-const SIDEBAR_SETTINGS = 'a.sidebar__item[title*="设置"]';
+const SIDEBAR_SETTINGS = `${sel.sidebarItem}[title*="设置"]`;
 
 describe('E2E-005 设置', () => {
   it('进入设置并完成 Ollama 探测', async () => {
@@ -26,7 +26,11 @@ describe('E2E-005 设置', () => {
       },
       { timeout: 30000, timeoutMsg: 'Ollama 探测应结束并呈现可用/不可用' },
     );
-    await expect($(sel.ollamaRedetect)).toBeClickable();
+    // toExist 而非 toBeDisplayed：WKWebView 605.x 的 checkVisibility 在 .btn--ghost
+    // 上偶发返回 false（display:block 但判定不可见），导致 expect().toBeDisplayed()
+    // 在 waitforTimeout 内反复 stale 重试 → 首轮失败；retry 时已在设置页，filesTitle
+    // 永不存在 → 120s 超时。toExist 只验 DOM 存在，规避 checkVisibility 误判。
+    await expect($(sel.ollamaRedetect)).toExist();
   });
 
   it('重新检测按钮触发新一轮探测', async () => {

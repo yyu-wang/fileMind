@@ -346,11 +346,11 @@ describe('chatStore 流式渲染', () => {
 
   // ---------- FE-C3：看门狗 ----------
 
-  it('90s 空闲超时：置错误并复位 isStreaming', async () => {
+  it('300s 空闲超时：置错误并复位 isStreaming', async () => {
     await send('问题');
     useChatStore.getState().handleChatEvent(ev({ event: 'token', data: { content: '部分' } }));
-    // 无新事件推进 90s → 看门狗触发
-    vi.advanceTimersByTime(90_001);
+    // 无新事件推进 300s → 看门狗触发
+    vi.advanceTimersByTime(300_001);
     const state = useChatStore.getState();
     expect(state.isStreaming).toBe(false);
     expect(state.status).toBe('idle');

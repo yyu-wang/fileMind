@@ -13,6 +13,7 @@
     python3 benchmarks/rag_bench.py --out .bench/rag.json
     python3 benchmarks/rag_bench.py --skip-rag            # 仅 RSS
     FILEMIND_BENCH_RAG_COUNT=100 python3 benchmarks/rag_bench.py
+    FILEMIND_BENCH_LLM_MODEL=qwen2.5:7b python3 benchmarks/rag_bench.py
 
 输出：
     单文件 JSON（见 ``--out``），由 ``benchmarks/run-all.sh`` 合并进
@@ -40,7 +41,9 @@ from _sidecar_launcher import (
 )
 
 EMBEDDING_MODEL = "bge-large-zh-v1.5"
-LLM_MODEL = "qwen3.8-27b"
+#: LLM 模型可被 FILEMIND_BENCH_LLM_MODEL 覆盖（09_测试体系 §7 门控基准用
+#: qwen2.5:7b；默认取本机日常模型，两者结果均如实写入报告 llm_model 字段）
+LLM_MODEL = os.environ.get("FILEMIND_BENCH_LLM_MODEL", "qwen3.8-27b")
 DEFAULT_TABLE = "documents_bge-large-zh-v1.5_bench"
 # 与分类语料语义对齐的基准问句（命中「文档」类文件名/内容）
 BENCH_QUERY = "项目计划与年度总结相关文档"
@@ -212,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     count = args.count or int(os.environ.get("FILEMIND_BENCH_RAG_COUNT", "200"))
 
     sc = DevSidecar()
-    result: dict[str, object] = {"sidecar_rss_mb": None}
+    result: dict[str, object] = {"sidecar_rss_mb": None, "llm_model": LLM_MODEL}
     try:
         sc.start()
         if _wait_health() is None:

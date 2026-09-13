@@ -4,7 +4,7 @@
 //! 声明为线程池执行，避免阻塞主线程。
 
 use crate::db::models::{FileRecord, OperationLog};
-use crate::db::{ConfigRepo, FileRepo, OperationRepo};
+use crate::db::{ConfigRepo, FileRepo, OperationRepo, ScannedDirectoryRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
@@ -47,6 +47,16 @@ pub fn scan_directory(
     match persist_scan_files(&state.db, &mut files) {
         Ok(()) => {}
         Err(e) => log::warn!("scan_directory 写入 SQLite 失败（不影响扫描结果返回）: {e}"),
+    }
+
+    // —— 记录已扫描目录（非关键路径，失败只记 warn）—— //
+    // 目录级移除功能依赖该表；同一路径重复扫描只更新 updated_at
+    if let Ok(guard) = state.db.lock() {
+        if let Err(e) = ScannedDirectoryRepo::insert_or_update(guard.conn(), &path) {
+            log::warn!("scan_directory 记录扫描目录失败（不影响扫描结果返回）: {e}");
+        }
+    } else {
+        log::warn!("scan_directory 获取 DB 锁失败（跳过目录记录）");
     }
 
     Ok(files)
@@ -618,6 +628,153 @@ fn execute_operations_inner(
     })
 }
 
+/// 单个文件删除结果（移入系统回收站）。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct DeleteFilesResult {
+    /// 文件 id。
+    pub file_id: String,
+    /// 是否成功移入系统回收站。
+    pub success: bool,
+    /// 失败原因（成功时为 `None`）。
+    pub error: Option<String>,
+}
+
+/// 删除失败结果的简构（避免重复三元组）。
+fn delete_files_failure(file_id: String, reason: &str) -> DeleteFilesResult {
+    DeleteFilesResult {
+        file_id,
+        success: false,
+        error: Some(reason.to_string()),
+    }
+}
+
+/// 删除文件：把选中的文件移入系统回收站（安全网，非物理删除）。
+///
+/// 逐个执行（单个失败不阻断其余文件）：
+///   1. 路径安全校验 + 磁盘文件存在性检查
+///   2. 移入系统回收站（`operation_executor` 的 `Delete` 语义）
+///   3. 成功后 `files` 软删除（`is_deleted=1`）并写入 `operations_log` 审计行
+///
+/// 与分类预览的 `Delete` 计划共用同一执行器，保证删除语义唯一。删除批次
+/// 不参与应用内撤销（文件可从系统回收站手动恢复）。
+///
+/// # Errors
+///
+/// 入参全为不可删除（空/全部不存在）时返回成功空列表；单文件失败以
+/// `DeleteFilesResult.success=false` 返回，不中断整批。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn delete_files(
+    file_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<DeleteFilesResult>, String> {
+    delete_files_inner(&file_ids, &state).map_err(|e| e.to_string())
+}
+
+/// 删除纯逻辑入口（便于单元测试，不依赖 `tauri::State`）。
+fn delete_files_inner(file_ids: &[String], state: &AppState) -> AppResult<Vec<DeleteFilesResult>> {
+    // 去重（保序）：同一文件重复提交只删一次
+    let mut seen = HashSet::with_capacity(file_ids.len());
+    let mut ids: Vec<String> = Vec::with_capacity(file_ids.len());
+    for file_id in file_ids {
+        if seen.insert(file_id) {
+            ids.push(file_id.clone());
+        }
+    }
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let records = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::get_by_ids(guard.conn(), &ids)?
+    };
+    let record_map: HashMap<String, FileRecord> =
+        records.into_iter().map(|r| (r.id.clone(), r)).collect();
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    let mut results = Vec::with_capacity(ids.len());
+    let mut logs_to_insert: Vec<OperationLog> = Vec::new();
+
+    for file_id in ids {
+        let Some(record) = record_map.get(&file_id) else {
+            results.push(delete_files_failure(file_id, "文件不存在或已删除"));
+            continue;
+        };
+        if record.is_deleted {
+            results.push(delete_files_failure(file_id, "文件已删除"));
+            continue;
+        }
+        let source = match security::validate(&record.path) {
+            Ok(path) => path,
+            Err(e) => {
+                results.push(delete_files_failure(file_id, &e.to_string()));
+                continue;
+            }
+        };
+        if !source.is_file() {
+            results.push(delete_files_failure(
+                file_id,
+                "文件不存在（可能已被外部移除）",
+            ));
+            continue;
+        }
+
+        let item = PlanItem {
+            file_id: file_id.clone(),
+            file_name: record.file_name.clone(),
+            original_path: record.path.clone(),
+            new_path: None,
+            operation: OperationType::Delete,
+            status: PlanStatus::Ok,
+            conflict_type: None,
+        };
+        let (success, error, current_hash) =
+            operation_executor::execute_plan_item(&item, record.content_hash.clone());
+
+        if success {
+            // 软删除：磁盘已进回收站，DB 标记 is_deleted=1（失败仅告警）
+            if let Ok(guard) = state.db.lock() {
+                if let Err(e) = FileRepo::soft_delete(guard.conn(), &file_id) {
+                    log::warn!("delete_files soft_delete 失败（不影响删除结果）: {e}");
+                }
+            }
+        }
+
+        logs_to_insert.push(OperationLog {
+            id: uuid::Uuid::new_v4().to_string(),
+            batch_id: batch_id.clone(),
+            operation_type: "delete".to_string(),
+            source_path: record.path.clone(),
+            target_path: String::new(),
+            status: if success { "done" } else { "failed" }.into(),
+            prev_hash: record.content_hash.clone().unwrap_or_default(),
+            current_hash: current_hash.unwrap_or_default(),
+            chain_hash: String::new(),
+            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        });
+        results.push(DeleteFilesResult {
+            file_id,
+            success,
+            error,
+        });
+    }
+
+    // 批量写审计日志（链式哈希由 OperationRepo::insert_batch 计算）
+    if !logs_to_insert.is_empty() {
+        if let Ok(guard) = state.db.lock() {
+            if let Err(e) = OperationRepo::insert_batch(guard.conn(), &logs_to_insert) {
+                log::warn!("delete_files 写 operations_log 失败（不影响删除结果）: {e}");
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// 按批次 ID 撤销已执行的批量操作（API §s2-2c）。
 ///
 /// 流程（反向操作链）：
@@ -663,7 +820,8 @@ fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse>
         )));
     }
 
-    // Delete 为永久删除（T3.3），物理文件无法恢复，暂不支持撤销
+    // 删除已移入系统回收站：应用内无回收站还原路径，整批拒绝撤销
+    // （用户可在系统回收站手动恢复）
     if logs.iter().any(|l| l.operation_type == "delete") {
         return Err(AppError::Forbidden("删除批次暂不支持撤销".into()));
     }
@@ -757,29 +915,40 @@ fn scan_files_on_disk(root: &Path) -> AppResult<Vec<FileInfo>> {
 /// 入库会拖垮文件库规模与 UI 性能（见历史问题：63.9 万文件卡死）。
 const SKIP_DIR_NAMES: &[&str] = &[
     "node_modules",
-    ".git",
-    ".svn",
-    ".hg",
     "dist",
     "build",
     "target",
     "__pycache__",
-    ".venv",
     "venv",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".cache",
-    ".idea",
-    ".vscode",
     "vendor",
+    // Windows 系统目录
+    "$recycle.bin",
+    "system volume information",
+    // macOS 系统目录
+    "__macosx",
+    ".spotlight-v100",
+    ".fseventsd",
+    ".trashes",
+    // 通用缓存/日志目录
+    "cache",
+    "caches",
+    "logs",
 ];
 
 /// 扫描时跳过的文件（垃圾/临时文件，不区分大小写）。
 const SKIP_FILE_NAMES: &[&str] = &[".ds_store", "thumbs.db"];
 
 /// 判断目录名是否命中跳过黑名单。
+///
+/// 跳过优先级：
+/// 1. 隐藏目录（以 `.` 开头）——统一跳过，系统/应用数据，非用户文件
+/// 2. 显式黑名单目录（`SKIP_DIR_NAMES`）——工程依赖、系统目录
 fn is_skipped_dir(name: &str) -> bool {
+    // 隐藏目录兜底：以 `.` 开头的目录在 Finder 中默认不可见，
+    // 绝大多数是系统/应用数据，不应纳入文件整理范围
+    if name.starts_with('.') {
+        return true;
+    }
     let lower = name.to_lowercase();
     SKIP_DIR_NAMES.contains(&lower.as_str())
 }
@@ -1044,6 +1213,161 @@ pub struct ExecuteResponse {
     pub summary: ExecuteSummary,
 }
 
+/// `/index/delete_by_file_ids` 请求体（对齐 sidecar）。
+#[derive(Debug, Serialize)]
+struct SidecarDeleteByFileIdsRequest {
+    table_name: String,
+    file_ids: Vec<String>,
+}
+
+/// 移除目录响应体。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct RemoveDirectoryResponse {
+    /// 从索引中移除的文件数。
+    #[specta(type = specta_typescript::Number)]
+    pub removed_files: i64,
+}
+
+/// 列出所有已扫描目录（含每个目录的文件数）。
+///
+/// # Errors
+///
+/// DB 锁中毒或查询失败时返回错误。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn list_scanned_directories(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<crate::db::ScannedDirectory>, String> {
+    let guard = state.db.lock().map_err(|e| format!("DB 锁中毒: {e}"))?;
+    ScannedDirectoryRepo::list_with_file_count(guard.conn()).map_err(|e| e.to_string())
+}
+
+/// 移除目录：软删该目录下所有文件 + 清理向量索引 + 删除目录记录。
+///
+/// 不删除磁盘文件，仅从 `FileMind` 索引中移除。重新扫描该目录即可恢复。
+///
+/// 流程：
+///   1. 路径安全校验
+///   2. 获取该目录下所有未软删除文件的 ID
+///   3. best-effort 调 sidecar 清理对应向量（失败仅告警）
+///   4. 软删该目录下所有文件，并同步清空其索引状态标记（防重扫后误跳过）
+///   5. 删除目录记录
+///
+/// # Errors
+///
+/// 路径未通过安全校验或 DB 操作失败时返回错误。
+#[tauri::command(async)]
+#[specta::specta]
+pub fn remove_directory(
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<RemoveDirectoryResponse, String> {
+    remove_directory_inner(&path, &state).map_err(|e| e.to_string())
+}
+
+/// `remove_directory` 纯逻辑入口（便于测试）。
+fn remove_directory_inner(path: &str, state: &AppState) -> AppResult<RemoveDirectoryResponse> {
+    // 1. 路径安全校验
+    let _safe_path = security::validate(path)?;
+
+    // 2. 获取该目录下所有未软删除文件的 ID（用于清理向量）
+    let file_ids = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        FileRepo::get_ids_by_path_prefix(guard.conn(), path)?
+    };
+
+    // 3. best-effort 清理向量索引（sidecar 未就绪或失败仅告警）
+    if !file_ids.is_empty() {
+        spawn_index_delete_by_file_ids(state, file_ids.clone());
+    }
+
+    // 4. 软删该目录下所有文件 + 同步清空索引状态标记。
+    //    marker 必须清空：否则向量已删但标记仍在，之后重新扫描同一目录时，
+    //    增量索引会把复活文件误判为「已建」而跳过（见 FileRepo::clear_embedding_marker）。
+    let removed_files = {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        let removed = FileRepo::soft_delete_by_path_prefix(guard.conn(), path)?;
+        if let Err(e) = FileRepo::clear_embedding_marker(guard.conn(), &file_ids) {
+            log::warn!("移除目录：清空索引状态标记失败（不影响移除结果）: {e}");
+        }
+        drop(guard);
+        removed
+    };
+
+    // 5. 删除目录记录
+    {
+        let guard = state
+            .db
+            .lock()
+            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+        ScannedDirectoryRepo::delete(guard.conn(), path)?;
+    }
+
+    Ok(RemoveDirectoryResponse { removed_files })
+}
+
+/// 尽力而为：从向量索引中删除指定文件的全部向量行。
+///
+/// 与 `spawn_index_path_sync` 同模式：异步 spawn，失败仅告警，不影响主流程。
+fn spawn_index_delete_by_file_ids(state: &AppState, file_ids: Vec<String>) {
+    if file_ids.is_empty() {
+        return;
+    }
+
+    let table_name = match state.db.lock() {
+        Ok(guard) => match ConfigRepo::get(guard.conn()) {
+            Ok(config) => format!("documents_{}_v1", config.embedding_model),
+            Err(e) => {
+                log::warn!("索引向量清理：读取 embedding 模型失败（跳过）: {e}");
+                return;
+            }
+        },
+        Err(poisoned) => {
+            log::warn!("索引向量清理：获取 DB 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+
+    let psk = match state.sidecar_psk.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => {
+            log::warn!("索引向量清理：获取 PSK 锁中毒（跳过）: {poisoned}");
+            return;
+        }
+    };
+    let Some(psk) = psk else {
+        return;
+    };
+    let seq = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    let count = file_ids.len();
+    tauri::async_runtime::spawn(async move {
+        let request = SidecarDeleteByFileIdsRequest {
+            table_name,
+            file_ids,
+        };
+        let body = match serde_json::to_string(&request) {
+            Ok(body) => body,
+            Err(e) => {
+                log::warn!("索引向量清理：序列化请求失败（跳过）: {e}");
+                return;
+            }
+        };
+        match proxy::forward_post("/index/delete_by_file_ids", &body, &psk, seq).await {
+            Ok(_) => log::info!("索引向量已清理 {count} 个文件"),
+            Err(e) => log::warn!("索引向量清理失败（不影响移除结果）: {e}"),
+        }
+    });
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1132,7 +1456,9 @@ mod tests {
 
     #[test]
     fn test_scan_skips_blacklist_dirs() -> Result<(), Box<dyn std::error::Error>> {
-        // 黑名单目录（node_modules/.git/dist/target/__pycache__/venv）整体跳过
+        // 黑名单目录：
+        // - node_modules / dist / target / __pycache__：显式列表跳过
+        // - .git / .venv：以 `.` 开头的隐藏目录，由 starts_with('.') 规则跳过
         let tmp = tempfile::tempdir()?;
         for dir in [
             "node_modules",
@@ -1161,6 +1487,43 @@ mod tests {
             "黑名单目录内文件不应被扫描: {names:?}"
         );
         assert!(!names.contains(&"deep.js"), "嵌套黑名单目录应跳过");
+        Ok(())
+    }
+
+    #[test]
+    fn test_scan_skips_hidden_dirs() -> Result<(), Box<dyn std::error::Error>> {
+        // 所有以 `.` 开头的目录应统一跳过（系统/应用数据，非用户文件）
+        let tmp = tempfile::tempdir()?;
+
+        // 隐藏目录及其文件
+        for dir in [".git", ".venv"] {
+            std::fs::create_dir_all(tmp.path().join(dir))?;
+            create_temp_file(&tmp.path().join(dir), "data.bin", "x")?;
+        }
+        // 嵌套隐藏目录：在 .git 下创建子目录和文件
+        std::fs::create_dir_all(tmp.path().join(".git/objects"))?;
+        create_temp_file(&tmp.path().join(".git/objects"), "nested.txt", "x")?;
+
+        // 正常文件应保留
+        create_temp_file(tmp.path(), "report.pdf", "pdf")?;
+        std::fs::create_dir_all(tmp.path().join("Documents"))?;
+        create_temp_file(&tmp.path().join("Documents"), "doc.txt", "doc")?;
+
+        let files = scan_files_on_disk(tmp.path())?;
+        let names: Vec<&str> = files.iter().map(|f| f.file_name.as_str()).collect();
+        assert!(names.contains(&"report.pdf"), "正常文件应保留: {names:?}");
+        assert!(
+            names.contains(&"doc.txt"),
+            "正常子目录文件应保留: {names:?}"
+        );
+        assert!(
+            !names.contains(&"data.bin"),
+            "隐藏目录内文件不应被扫描: {names:?}"
+        );
+        assert!(
+            !names.contains(&"nested.txt"),
+            "嵌套隐藏目录内文件不应被扫描: {names:?}"
+        );
         Ok(())
     }
 
@@ -1288,6 +1651,11 @@ mod tests {
         let scan_root = tempfile::tempdir()?;
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
 
         let (_, exec) = preview_then_execute(
             &state,
@@ -1302,6 +1670,77 @@ mod tests {
         let result = undo_batch_inner(&exec.batch_id, &state);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), AppError::Forbidden(_)));
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // delete_files（移入系统回收站）测试
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_delete_files_moves_all_to_trash() -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
+        let ids = seed_files_for_preview(&state, scan_root.path(), &["a.txt", "b.txt"])?;
+
+        let results = delete_files_inner(&ids, &state)?;
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success && r.error.is_none()));
+
+        // 磁盘原文件已消失（移入系统回收站）
+        assert!(!scan_root.path().join("a.txt").exists());
+        assert!(!scan_root.path().join("b.txt").exists());
+        // 文件确实移入了回收站目录（而非物理删除）
+        assert!(trash_dir.path().join("a.txt").exists());
+        assert!(trash_dir.path().join("b.txt").exists());
+
+        // DB 软删除：get_by_id 不返回软删除行 → 每条应查无记录
+        let guard = state.db.lock().map_err(|e| e.to_string())?;
+        for id in &ids {
+            let file = FileRepo::get_by_id(guard.conn(), id).map_err(|e| e.to_string())?;
+            assert!(file.is_none(), "删除后记录应被软删除（id={id}）");
+        }
+        let count: i64 = guard
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM operations_log WHERE operation_type = 'delete'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        assert_eq!(count, 2, "应写入 2 条 delete 审计日志");
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_files_partial_unknown_id_fails_others_succeed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let scan_root = tempfile::tempdir()?;
+        let tmp_db = tempfile::NamedTempFile::new()?;
+        let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
+        let mut ids = seed_files_for_preview(&state, scan_root.path(), &["keep.txt"])?;
+        ids.push("missing-id".into());
+
+        let results = delete_files_inner(&ids, &state)?;
+        assert_eq!(results.len(), 2);
+        assert!(results[0].success, "存在的文件应删除成功");
+        assert!(results[0].error.is_none());
+        assert!(!results[1].success, "未知 id 应返回失败");
+        assert!(results[1].error.is_some());
+
+        // 存在的文件已移走；未知 id 不产生副作用
+        assert!(!scan_root.path().join("keep.txt").exists());
         Ok(())
     }
 
@@ -1367,7 +1806,7 @@ mod tests {
     fn make_test_app_state(db_path: &std::path::Path) -> AppState {
         let db = Database::open(db_path).expect("打开测试 DB 失败");
         AppState {
-            db: std::sync::Mutex::new(db),
+            db: std::sync::Arc::new(std::sync::Mutex::new(db)),
             sidecar_manager: Mutex::new(SidecarManager::new(
                 "/dev/null/sidecar-nonexistent".into(),
             )),
@@ -1375,6 +1814,7 @@ mod tests {
             sidecar_binary: Mutex::new("/dev/null/sidecar-nonexistent".into()),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
+            sidecar_status: Mutex::new(crate::SidecarStatus::Starting),
         }
     }
 
@@ -1922,6 +2362,11 @@ mod tests {
         let scan_root = tempfile::tempdir()?;
         let tmp_db = tempfile::NamedTempFile::new()?;
         let state = make_test_app_state(tmp_db.path());
+        let trash_dir = tempfile::tempdir()?;
+        let _guard = crate::services::trash::TEST_TRASH_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::env::set_var("FILEMIND_TRASH_DIR", trash_dir.path());
 
         let (_, exec) = preview_then_execute(
             &state,

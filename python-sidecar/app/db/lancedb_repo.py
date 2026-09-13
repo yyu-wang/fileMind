@@ -23,13 +23,14 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import lancedb
-import numpy as np
-
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    # 惰性导入（P2-1）：lancedb 冷导入约 0.7s（连带 lance_namespace / pyarrow 扩展），
+    # 仅在真正建立连接时加载，避免拖慢 Sidecar 启动（/health 可服务时间）。
+    # 运行时导入见 ``LanceDBManager.connect``。
+    import lancedb
     from lancedb.table import Table as LanceTable
 
 # LanceDB 0.37.1 使用 pa.Table 创建 schema；这里通过 Pydantic 兼容层描述
@@ -71,7 +72,9 @@ class LanceDBManager:
     """LanceDB 生命周期管理器（FastAPI lifespan 里单例初始化）。"""
 
     db_path: Path
-    _db: lancedb.DBConnection | None = None  # noqa: F821 - lancedb 动态属性
+    # 惰性求值：``from __future__ import annotations`` 下此为字符串注解，
+    # 不在导入期解析 lancedb.DBConnection（该导入在 TYPE_CHECKING 分支）
+    _db: lancedb.DBConnection | None = None
     #: 表句柄缓存：open_table 命中后跳过列目录/读元数据（T10.2 检索首 token 优化）。
     #: 表被删除重建时须调 invalidate_table/invalidate_all 使旧句柄失效。
     _table_cache: dict[str, LanceTable] = field(default_factory=dict, init=False)
@@ -92,6 +95,9 @@ class LanceDBManager:
         Raises:
             RuntimeError: LanceDB 连接失败时，抛带路径上下文的异常
         """
+        # P2-1：惰性导入（模块级不导入 lancedb，见文件头 TYPE_CHECKING 说明）
+        import lancedb
+
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             # 父目录 0700：仅 owner 可进入/读/写
@@ -181,7 +187,7 @@ class LanceDBManager:
         version: int,
         dim: int,
     ) -> str:
-        """确保指定模型版本的表存在。
+        """确保指定模型版本的表存在（规范化表名）。
 
         步骤：
             1. 计算规范化表名
@@ -200,12 +206,34 @@ class LanceDBManager:
         Raises:
             ValueError: dim < 1 / version < 1 / 模型名非法
         """
+        tname = self.table_name(model, version)
+        return self.ensure_table_named(tname, dim)
+
+    def ensure_table_named(self, table_name: str, dim: int) -> str:
+        """确保指定名称的向量表存在（幂等，不做名称规范化）。
+
+        与 :meth:`ensure_table` 的区别：直接按调用方给出的表名建表，
+        不套用 ``documents_{model}_v{version}`` 规范——供基准隔离表
+        （``..._bench``）等非规范表名使用；规范名场景两者等价。
+
+        Args:
+            table_name: 目标表名（原样使用）。
+            dim: 向量维度（建表时写入一条长度为 dim 的零向量作为 schema 锚点）。
+
+        Returns:
+            建表/已存在的表名（等于 ``table_name``）。
+
+        Raises:
+            ValueError: dim < 1 或 table_name 为空。
+        """
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
         if dim < 1:
             raise ValueError(f"dim 必须 >= 1，当前={dim}")
+        if not table_name:
+            raise ValueError("table_name 不能为空")
+        tname = table_name
 
-        tname = self.table_name(model, version)
         if self.is_table_exists(tname):
             return tname
 
@@ -350,6 +378,9 @@ class LanceDBManager:
         Returns:
             按 ``_distance`` 升序的命中列表；表不存在时返回空列表。
         """
+        # P2-1：numpy 惰性导入（模块级不导入，避免启动期加载）
+        import numpy as np
+
         if self._db is None:
             raise RuntimeError("LanceDBManager.connect() 尚未调用")
         # 表不存在（尚未建索引）→ 返回空列表，混合检索退化为纯 FTS 排序。
@@ -372,7 +403,10 @@ class LanceDBManager:
             .limit(top_k)
             .to_list()
         )
-        return [
+        # SC-m25：LanceDB ANN 对距离相同的向量不保证稳定序（底层 HNSW/IVF
+        # 按插入顺序返回等距候选）。显式二次排序 → distance 升序 → chunk_id
+        # 升序，使向量检索输出全确定性，跨查询 / 跨模式结果一致。
+        hits = [
             VectorHit(
                 chunk_id=str(row["chunk_id"]),
                 file_path=str(row["file_path"]),
@@ -382,3 +416,5 @@ class LanceDBManager:
             )
             for row in rows
         ]
+        hits.sort(key=lambda h: (h.distance, h.chunk_id))
+        return hits

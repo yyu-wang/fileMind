@@ -29,6 +29,7 @@ from app.api import (
     routes_index,
     routes_inference,
     routes_metrics,
+    routes_preview,
     routes_search,
     routes_shutdown,
 )
@@ -118,7 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="FileMind Sidecar",
-    version="0.1.0",
+    version="1.0.0",
     description="Python Sidecar for FileMind — classification + RAG + embedding",
     lifespan=lifespan,
 )
@@ -139,6 +140,7 @@ app.include_router(routes_metrics.router)
 app.include_router(routes_classify.router)
 app.include_router(routes_index.router)
 app.include_router(routes_inference.router)
+app.include_router(routes_preview.router)
 app.include_router(routes_chat.router)
 app.include_router(routes_embedding.router)
 app.include_router(routes_search.router)

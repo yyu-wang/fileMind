@@ -49,6 +49,10 @@ class ClassifyRequest(BaseModel):
 class IndexBuildResponse(BaseModel):
     indexed_count: int
     skipped_count: int
+    indexed_file_ids: list[str] = Field(
+        default_factory=list,
+        description="实际写入向量的 file_id（供 Rust 回写索引状态标记）",
+    )
 
 
 class IndexBuildFile(BaseModel):
@@ -102,6 +106,19 @@ class IndexPathUpdateResponse(BaseModel):
     """POST /index/update_paths 响应体。"""
 
     updated: int
+
+
+class IndexDeleteByFileIdsRequest(BaseModel):
+    """POST /index/delete_by_file_ids 请求体：从向量索引删除指定文件的全部向量行。"""
+
+    table_name: str
+    file_ids: list[str]
+
+
+class IndexDeleteByFileIdsResponse(BaseModel):
+    """POST /index/delete_by_file_ids 响应体。"""
+
+    deleted_files: int
 
 
 class EmbeddingModelsResponse(BaseModel):
@@ -319,3 +336,18 @@ class _OllamaTagsResponse(BaseModel):
     """GET {OLLAMA_HOST}/api/tags 响应体。"""
 
     models: list[_OllamaTagModel] = Field(default_factory=list)
+
+
+class ModelInstallRequest(BaseModel):
+    """POST /inference/install-model 请求体：从 Ollama 拉取指定模型。"""
+
+    model_name: str = Field(description="注册表模型名（如 bge-small-zh-v1.5）")
+
+
+class ModelInstallResponse(BaseModel):
+    """POST /inference/install-model 响应体。"""
+
+    success: bool
+    model_name: str
+    ollama_name: str
+    message: str = ""

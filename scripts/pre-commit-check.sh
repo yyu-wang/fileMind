@@ -7,10 +7,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 echo "=== Pre-commit 自检 ==="
 
 # 1. TypeScript lint + format check
-if git diff --cached --name-only | grep -qE '\.(ts|tsx)$'; then
+# 只处理新增/复制/修改/重命名的文件（--diff-filter=ACMR），排除已删除文件，
+# 否则删除 .tsx 提交时会因文件不存在导致 eslint/prettier 报错。
+TS_FILES=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' '*.tsx')
+if [ -n "$TS_FILES" ]; then
   echo "[1/4] TypeScript lint..."
-  npx eslint $(git diff --cached --name-only -- '*.ts' '*.tsx') --max-warnings 0
-  npx prettier --check $(git diff --cached --name-only -- '*.ts' '*.tsx')
+  npx eslint $TS_FILES --max-warnings 0
+  npx prettier --check $TS_FILES
 fi
 
 # 2. Rust clippy + fmt check

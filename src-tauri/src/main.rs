@@ -19,20 +19,20 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use filemind_lib::commands;
-use filemind_lib::db::{CategoryRepo, ConfigRepo, Database, OperationRepo};
+use filemind_lib::db::{CategoryRepo, ConfigRepo, Database, OperationRepo, RuleRepo};
 use filemind_lib::error::AppError;
 use filemind_lib::security::cloud_proxy::{self, CLOUD_PROXY_HOST, CLOUD_PROXY_PORT};
 use filemind_lib::security::{generate_token, log_redact};
 use filemind_lib::sidecar::{
-    cleanup_orphan_sidecar, resolve_bundle_binary_path, resolve_dev_binary_path, CloudSidecarEnv,
-    SidecarManager, WatchdogAction, SIDECAR_PORT,
+    cleanup_orphan_sidecar, resolve_dev_binary_path, spawn_sidecar_bootstrap,
+    update_sidecar_status, CloudSidecarEnv, SidecarManager, WatchdogAction, SIDECAR_PORT,
 };
-use filemind_lib::tray::handle_tray_menu_event;
-use filemind_lib::AppState;
+use filemind_lib::tray::{handle_tray_menu_event, reveal_main_window};
+use filemind_lib::{AppState, SidecarStatus};
 use tauri::{
     menu::{Menu, MenuItem},
     Emitter, Manager,
@@ -64,21 +64,6 @@ fn get_db_path() -> PathBuf {
         format!("{}/.filemind", home.display())
     });
     PathBuf::from(data_home).join("filemind.db")
-}
-
-/// 启动 Sidecar 并完成 HMAC 握手，返回 PSK。
-///
-/// 由 `block_on` 在当前线程 runtime 上执行（Tauri 初始化阶段没有异步上下文）。
-///
-/// # Errors
-///
-/// 任何启动或握手步骤失败时返回对应错误。
-fn start_sidecar_with_handshake(manager: &mut SidecarManager) -> Result<Vec<u8>, AppError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| AppError::SidecarUnavailable(format!("tokio runtime 初始化失败: {e}")))?;
-    runtime.block_on(async { manager.start_with_handshake().await })
 }
 
 /// 重启成功后同步新 PSK / seq / 重启计数到 `AppState`。
@@ -159,34 +144,35 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                             log::warn!("Sidecar 需要重启，退避等待 {backoff:?} 后开始");
                             tokio::time::sleep(backoff).await;
                             // 阶段 B：重启（持锁，期间阻塞其他方访问 manager 可接受）
-                            // 注：restart 路径用一次性 tokio runtime，避免主 runtime `rt`
-                            // 已被 move 进外层 async 块无法再被借用到的借用错误。
+                            // 注：直接在外层 runtime 上 await——嵌套 `block_on`
+                            // （旧实现：此处新建 inner_rt 并 block_on）会触发 tokio
+                            // panic「Cannot start a runtime from within a runtime」，
+                            // 且 release profile 为 panic=abort，整进程直接闪退
+                            // （回归：打包版首次提问时 sidecar 加载 rerank 模型
+                            // 饥饿事件循环 → /health 连续失败 → watchdog 重启 → 崩溃）。
                             let restart_result: Result<Vec<u8>, AppError> = {
                                 let state = app_handle.state::<AppState>();
                                 let Ok(mut manager) = state.sidecar_manager.lock() else {
                                     return;
                                 };
-                                let inner_rt = match tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                {
-                                    Ok(rt) => rt,
-                                    Err(e) => {
-                                        log::error!("restart 阶段 tokio runtime 失败: {e}");
-                                        return;
-                                    }
-                                };
-                                inner_rt.block_on(manager.restart())
+                                manager.restart().await
                             };
                             match restart_result {
                                 Ok(new_psk) => {
                                     // 同步新 PSK / seq / 计数（失败告警见函数注释）
                                     on_restart_success(&app_handle.state::<AppState>(), new_psk);
+                                    // P1-1：重启成功同步前端状态（事件 + AppState）
+                                    update_sidecar_status(&app_handle, SidecarStatus::Ready);
                                 }
                                 Err(e) => {
                                     log::error!("Sidecar 重启失败: {e}");
-                                    // 失败后仍继续循环（下一轮再次 NeedRestart 时退避更长），
-                                    // 直到 CrashLoop 暂停。
+                                    // P1-1：单次重启失败即转 Failed 交给用户重试，
+                                    // 不再无限退避重试（重启后 process/psk 均为 None，
+                                    // watchdog 守卫会停在 Idle，见 manager.rs）
+                                    update_sidecar_status(
+                                        &app_handle,
+                                        SidecarStatus::Failed(e.to_string()),
+                                    );
                                 }
                             }
                         }
@@ -197,6 +183,11 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
                         }) => {
                             log::error!(
                                 "Sidecar 进入 CrashLoop（{count}/{window_secs}s）：{message}"
+                            );
+                            // P1-1：同步为 Failed，前端展示错误 + 重试入口
+                            update_sidecar_status(
+                                &app_handle,
+                                SidecarStatus::Failed(message.clone()),
                             );
                             // BE-M7：通知前端展示「自动恢复已暂停」提示；
                             // 本分支自带 60s sleep，事件至多每分钟一条不会刷屏
@@ -228,6 +219,59 @@ fn spawn_watchdog(app_handle: tauri::AppHandle) {
     }
 }
 
+/// 启动期窗口自愈守卫（缓解 macOS 26 + tao 0.35.x 上游间歇缺陷：
+/// 窗口按 `visible: true` 创建但 `show` 偶发被系统静默吞掉，导致冷启动后
+/// 进程/WebView 正常却无可见窗口，见 tauri#15517 / open-pdf-studio#208）。
+///
+/// 规则：仅当主窗口**从启动起从未可见**时才反复 `reveal`（最多约 8 次 / 20s）；
+/// 一旦观察到窗口可见过即退出，之后用户「关闭到托盘」等主动隐藏不再被干扰——
+/// 因此不会把用户刚藏起的窗口弹回来。
+///
+/// 该守卫是纯增量保险：正常启动（窗口秒现）首次轮询即 `is_visible == true`
+/// 直接退出，零开销；上游修复后此函数可整体移除。
+fn spawn_startup_window_guard(app: tauri::AppHandle) {
+    const GUARD_MAX_MS: u64 = 20_000;
+    const GUARD_INTERVAL_MS: u64 = 2_500;
+    let spawn_result = std::thread::Builder::new()
+        .name("startup-window-guard".into())
+        .spawn(move || {
+            let mut elapsed_ms = 0u64;
+            let mut seen_visible = false;
+            while elapsed_ms < GUARD_MAX_MS {
+                std::thread::sleep(Duration::from_millis(GUARD_INTERVAL_MS));
+                elapsed_ms += GUARD_INTERVAL_MS;
+                let Some(window) = app.get_webview_window("main") else {
+                    // 主窗口尚未创建（启动早期）或已销毁：跳过本轮
+                    continue;
+                };
+                match window.is_visible() {
+                    Ok(true) => {
+                        seen_visible = true;
+                    }
+                    Ok(false) if !seen_visible => {
+                        // 从未可见 = 疑似 show 被吞，重试唤回
+                        log::warn!(
+                            "启动守卫：主窗口启动 {elapsed_ms}ms 仍不可见，重试显示（macOS 26 上游缺陷缓解）"
+                        );
+                        reveal_main_window(&app);
+                    }
+                    Ok(false) => {
+                        // 曾可见后被主动隐藏（关闭到托盘等）：尊重用户操作，不干预
+                        return;
+                    }
+                    Err(e) => {
+                        log::warn!("启动守卫：is_visible 查询失败: {e}");
+                    }
+                }
+            }
+            // 20s 仍从未可见：交回给用户（Dock/托盘仍可唤回），仅告警一次
+            log::warn!("启动守卫：主窗口 20s 内未能确认可见，请通过 Dock/托盘图标唤回");
+        });
+    if let Err(e) = spawn_result {
+        log::error!("startup-window-guard 线程创建失败: {e}");
+    }
+}
+
 /// 应用入口：初始化日志与数据库后启动 Sidecar 与握手，注册 IPC 命令后启动 Tauri 事件循环。
 ///
 /// `generate_context!` 宏在编译期生成较大的上下文结构体（框架行为），
@@ -245,6 +289,7 @@ fn main() {
             let message = log_redact::redact(&record.args().to_string());
             writeln!(buf, "[{} {}] {}", record.level(), record.target(), message)
         })
+        .parse_default_env()
         .init();
 
     // 正则集合编译：模式为编译期常量，正常不可达失败；此时日志可能明文泄漏
@@ -256,18 +301,42 @@ fn main() {
     let db_path = get_db_path();
 
     let database = match Database::open(&db_path) {
-        Ok(db) => db,
+        Ok(db) => Arc::new(Mutex::new(db)),
         Err(e) => {
             log::error!("Failed to initialize database: {e}");
             std::process::exit(1);
         }
     };
 
+    // 工具闭包（局部作用域）：取 DB 守卫，main 启动阶段直接 `lock_db().conn()` 即可。
+    let lock_db = || {
+        database.lock().unwrap_or_else(|_| {
+            log::error!("DB lock poisoned during startup");
+            std::process::exit(1);
+        })
+    };
+
     // T6.5 内置分类种子：保证启发式分类有目标分类可用（幂等，失败不阻断启动）
-    match CategoryRepo::seed_builtin_categories(database.conn()) {
+    let seed_result = {
+        let db_guard = lock_db();
+        CategoryRepo::seed_builtin_categories(db_guard.conn())
+    };
+    match seed_result {
         Ok(0) => log::info!("内置分类已存在，跳过种子"),
         Ok(n) => log::info!("内置分类种子：新增 {n} 个分类"),
         Err(e) => log::warn!("内置分类种子失败（不影响启动）: {e}"),
+    }
+
+    // 内置默认规则种子：分类种子之后执行（默认规则外键指向 builtin-document）。
+    // 仅在 rules 表为空时补齐两条默认禁用规则（PDF/文本归档），失败不阻断启动。
+    let seed_rule_result = {
+        let db_guard = lock_db();
+        RuleRepo::seed_default_rules(db_guard.conn())
+    };
+    match seed_rule_result {
+        Ok(0) => log::info!("默认规则已存在或已有自定义规则，跳过种子"),
+        Ok(n) => log::info!("默认规则种子：新增 {n} 条规则"),
+        Err(e) => log::warn!("默认规则种子失败（不影响启动）: {e}"),
     }
 
     // T9.5 E2E：`FILEMIND_E2E_SKIP_ONBOARDING=1` 时预置配置，让应用直达文件页。
@@ -275,7 +344,10 @@ fn main() {
     // 隔离），不影响真实用户配置；release 不编译此分支。
     #[cfg(debug_assertions)]
     if std::env::var("FILEMIND_E2E_SKIP_ONBOARDING").is_ok_and(|v| v == "1") {
-        let mut config = ConfigRepo::get(database.conn()).unwrap_or_default();
+        let mut config = {
+            let db_guard = lock_db();
+            ConfigRepo::get(db_guard.conn()).unwrap_or_default()
+        };
         config.onboarding_completed = true;
         config.inference_mode = "local".to_string();
         if let Some(dir) = std::env::var("FILEMIND_E2E_DATA_DIR")
@@ -284,7 +356,11 @@ fn main() {
         {
             config.data_directory = dir;
         }
-        match ConfigRepo::upsert(database.conn(), &config) {
+        let upsert_result = {
+            let db_guard = lock_db();
+            ConfigRepo::upsert(db_guard.conn(), &config)
+        };
+        match upsert_result {
             Ok(()) => log::info!(
                 "T9.5 E2E：FILEMIND_E2E_SKIP_ONBOARDING=1 已预置 onboarding_completed=true"
             ),
@@ -293,7 +369,11 @@ fn main() {
     }
 
     // T3.5：启动时校验操作日志链式哈希完整性，检测到篡改仅告警、不阻断启动
-    match OperationRepo::verify_chain(database.conn()) {
+    let verify_result = {
+        let db_guard = lock_db();
+        OperationRepo::verify_chain(db_guard.conn())
+    };
+    match verify_result {
         Ok(None) => log::info!("操作日志链式哈希校验通过"),
         Ok(Some(break_id)) => {
             log::error!("操作日志链式哈希校验失败，检测到篡改，断裂于记录 {break_id}");
@@ -301,28 +381,51 @@ fn main() {
         Err(e) => log::error!("操作日志链式哈希校验出错: {e}"),
     }
 
-    // 启动 Sidecar 并完成 HMAC 握手：失败直接退出，避免在未验证身份时进入主循环
+    // ---- Sidecar 二进制解析（仅定位，启动交给 setup 后台引导，P1-1）----
     //
-    // 解析 Sidecar 二进制路径（P1 阶段：只做 dev 路径解析；P2 阶段增加 AppHandle
-    // bundle 路径覆盖 + AppState.sidecar_binary 字段暴露）。
-    // FILEMIND_SIDECAR_BINARY env 存在则优先生效，便于 CI / 调试覆盖。
-    let sidecar_binary =
-        match resolve_dev_binary_path(std::env::var("FILEMIND_SIDECAR_BINARY").ok().as_deref()) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Sidecar 二进制解析失败: {e}");
-                std::process::exit(1);
-            }
-        };
-    log::info!(
-        "Sidecar binary path: {}",
-        log_redact::sanitize_path(&sidecar_binary.display().to_string())
-    );
+    // 解析优先级：
+    //   1) FILEMIND_SIDECAR_BINARY env 强制指定（CI / 调试覆盖）
+    //   2) dev 布局解析（CARGO_MANIFEST_DIR / cwd 下的 repo `filemind/binaries/`）
+    //   3) macOS/Windows 打包态：dev 找不到 → **不退出**，留空由后台引导按 Tauri
+    //      `externalBin` 落地路径（主可执行文件同目录）启动，保证安装包在任意
+    //      cwd（用户双击 / Spotlight 启动）下都能跑。
+    // 其他平台无 bundle 兜底，dev 找不到直接退出（与旧行为一致）。
+    let env_override = std::env::var("FILEMIND_SIDECAR_BINARY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let can_bundle =
+        cfg!(any(target_os = "macos", target_os = "windows")) && env_override.is_none();
+    let sidecar_binary = match resolve_dev_binary_path(env_override.as_deref()) {
+        Ok(p) => {
+            log::info!(
+                "Sidecar binary path: {}",
+                log_redact::sanitize_path(&p.display().to_string())
+            );
+            p
+        }
+        Err(e) if can_bundle => {
+            log::warn!("dev 模式未找到 Sidecar 二进制，交由后台引导按 bundle 路径解析: {e}");
+            PathBuf::new()
+        }
+        Err(e) => {
+            log::error!("Sidecar 二进制解析失败: {e}");
+            std::process::exit(1);
+        }
+    };
+    // 引导线程用（setup 闭包 move 需要独立副本；env_override 直接 move 进闭包）
+    let bootstrap_binary = sidecar_binary.clone();
     let mut sidecar_manager = SidecarManager::new(sidecar_binary.clone());
 
-    // T7.4 云端代理（07-§4）：生成调用方共享 token → 启动本机代理（127.0.0.1:8766）→
-    // 按当前推理模式决定给 Sidecar 注入哪些云端 env（含脱敏开关）。
-    // 失败即退出（安全边界初始化不可跳过，模式与 log_redact 一致）。
+    // T7.4 云端代理（07-§4）：生成调用方共享 token → 在 setup 阶段启动本机代理
+    // （127.0.0.1:8766）→ 按当前推理模式决定给 Sidecar 注入哪些云端 env（含脱敏开关）。
+    //
+    // ⚠️ 端口绑定（spawn_proxy_server）**必须延迟到 Tauri `Builder` 构建之后**（即
+    // setup 回调内执行）：tauri-plugin-single-instance 的「唤醒已有实例并退出」逻辑
+    // 只在 `builder.build()` 阶段才生效。若在 main 早期（插件生效前）抢先绑定 8766，
+    // 当上一实例/残留进程已占用该端口时，第二实例会在插件检测前因 Address already
+    // in use 直接闪退——用户表现为「点击启动无任何页面」。推迟后第二实例由单实例
+    // 插件通知主实例 reveal 主窗口并干净退出，主实例 setup 绑定失败才中止。
+    // token 生成失败仍即退出（安全边界初始化不可跳过，模式与 log_redact 一致）。
     let proxy_token = match generate_token() {
         Ok(token) => token,
         Err(e) => {
@@ -330,20 +433,28 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) =
-        cloud_proxy::spawn_proxy_server(cloud_proxy::CloudProxyState::new(proxy_token.clone()))
-    {
-        log::error!("云端代理启动失败: {e}");
-        std::process::exit(1);
-    }
+    let proxy_state =
+        cloud_proxy::CloudProxyState::new(proxy_token.clone()).with_db(Arc::clone(&database));
     // 脱敏仅云端需要（本地 Ollama 需要原始内容做 RAG）；读失败按本地处理，不阻断启动
-    let masking_on =
-        ConfigRepo::get(database.conn()).is_ok_and(|config| config.inference_mode == "cloud");
-    log::info!("云端代理就绪: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}, masking={masking_on}");
+    // P-07：同时读出 active_cloud_provider（默认空串），用于 Sidecar env 注入
+    let (masking_on, active_cloud_provider) = {
+        let get_result = {
+            let db_guard = lock_db();
+            ConfigRepo::get(db_guard.conn())
+        };
+        match get_result {
+            Ok(config) => (
+                config.inference_mode == "cloud",
+                config.active_cloud_provider.unwrap_or_default(),
+            ),
+            Err(_) => (false, String::new()),
+        }
+    };
     sidecar_manager.set_cloud_env(CloudSidecarEnv {
         proxy_url: format!("http://{CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}"),
         proxy_token,
         masking_on,
+        active_cloud_provider,
     });
 
     // BE-M3：启动前清理上次异常退出残留的孤儿 Sidecar（ppid==1 且名字匹配），
@@ -352,24 +463,10 @@ fn main() {
     // 兜住该竞态：活实例的 Sidecar ppid 非孤，不会被误杀。
     cleanup_orphan_sidecar(SIDECAR_PORT);
 
-    let sidecar_psk = match start_sidecar_with_handshake(&mut sidecar_manager) {
-        Ok(psk) => Some(psk),
-        Err(e) => {
-            log::error!("Sidecar handshake failed: {e}");
-            // BE-M3：std::process::exit 跳过 Drop，必须显式杀掉子进程再退出，
-            // 否则留下孤儿进程占住端口（start_with_handshake 内部已清理一次，
-            // 这里对「错误发生在 start 之前」等残余路径再兜底）。
-            if let Err(kill_err) = sidecar_manager.stop_hard() {
-                log::error!("退出前清理 Sidecar 子进程失败: {kill_err}");
-            }
-            std::process::exit(1);
-        }
-    };
-    // 主流程 manager 当前已持有 PSK（start_with_handshake 内部已存进 self.psk），
-    // 若与 AppState 写入的 psk 不一致以 AppState 为准，这里同步拷贝一次保持一致。
-    debug_assert!(sidecar_manager
-        .psk()
-        .is_none_or(|inner| Some(inner) == sidecar_psk.as_deref()));
+    // P1-1：Sidecar 不再在本阶段启动——`setup` 内 `spawn_sidecar_bootstrap`
+    // 起后台线程完成启动 + 握手（打包态冷启动 30s+ 不阻塞窗口显示）。
+    // 失败收敛为 `sidecar-status` 事件 + 前端重试，不再 `process::exit`。
+    log::info!("Sidecar 启动已异步化：由 setup 后台引导线程接管");
 
     // Tauri AppState 生命周期贯穿整个 Tauri 运行期，
     // 同时 main 栈变量也持有 AppState 引用直到 run() 返回；
@@ -378,14 +475,14 @@ fn main() {
     let builder = tauri::Builder::default()
         // T6.1 单实例：第二个进程启动时回调里把已有窗口显示出来并聚焦，新进程随后退出
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            reveal_main_window(app);
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // 自动更新：手动检查（设置页触发）；更新安装后经 process 插件重启
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
     // T9.5 E2E：嵌入式 WebDriver server 仅 debug 构建注册（release 不携带自动化入口）。
     // 由 @wdio/tauri-service 以 driverProvider:'embedded' 连接 127.0.0.1:4445。
     #[cfg(debug_assertions)]
@@ -393,12 +490,15 @@ fn main() {
 
     let builder = builder
         .manage(AppState {
-            db: Mutex::new(database),
+            db: Arc::clone(&database),
             sidecar_manager: Mutex::new(sidecar_manager),
-            sidecar_psk: Mutex::new(sidecar_psk),
+            // P1-1：PSK 由后台引导线程握手成功后写入，初始为 None
+            sidecar_psk: Mutex::new(None),
             sidecar_binary: Mutex::new(sidecar_binary),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
+            // P1-1：初始 Starting，后台引导线程随后更新
+            sidecar_status: Mutex::new(SidecarStatus::Starting),
         })
         .invoke_handler(tauri::generate_handler![
             // T6.6 RAG 问答（Sidecar /chat/stream SSE 代理）
@@ -414,10 +514,14 @@ fn main() {
             commands::rules::reorder_rules,
             commands::rules::list_categories,
             commands::file_ops::scan_directory,
+            commands::file_ops::list_scanned_directories,
+            commands::file_ops::remove_directory,
             commands::file_ops::preview_operations,
             commands::file_ops::execute_operations,
+            commands::file_ops::delete_files,
             commands::file_ops::undo_batch,
             commands::file_preview::read_file_preview,
+            commands::file_preview::read_document_preview,
             commands::file_query::list_files,
             commands::file_query::list_all_files,
             commands::file_query::search_files,
@@ -429,6 +533,7 @@ fn main() {
             commands::inference::get_inference_mode,
             commands::inference::set_inference_mode,
             commands::ollama::ollama_status,
+            commands::ollama::install_embedding_model,
             commands::config::get_config,
             commands::config::update_config,
             commands::config::sign_cloud_consent,
@@ -437,78 +542,31 @@ fn main() {
             commands::api_key::get_api_key_status,
             commands::api_key::set_api_key,
             commands::api_key::delete_api_key,
+            // P-07 自定义云提供商管理（对应 cloud_providers 表 CRUD）
+            commands::cloud_providers::list_cloud_providers,
+            commands::cloud_providers::upsert_cloud_provider,
+            commands::cloud_providers::delete_cloud_provider,
+            // P1-1 Sidecar 生命周期查询 / 手动重试
+            commands::sidecar::get_sidecar_status,
+            commands::sidecar::retry_sidecar_start,
             // T9.5 E2E 测试专用命令（仅 debug 注册；release 不携带自动化入口）
             #[cfg(debug_assertions)]
             commands::e2e::e2e_get_test_dir,
         ])
         .setup(move |app| {
-            // T1.3-P2：setup 内 AppHandle 可用 → 决策是否启用 bundle 路径覆盖
-            //
-            // 规则矩阵（main dev 解析先用，这里可能替换）：
-            //   FILEMIND_SIDECAR_BINARY env 已设置             → 不动，强制 env 路径
-            //   env 未设置 + 命中 macOS/Windows bundle / force → 走 Tauri resource_dir
-            //   env 未设置 + dev cargo run                      → 保持 dev 解析结果
-            let env_override_set = std::env::var("FILEMIND_SIDECAR_BINARY")
-                .ok()
-                .is_some_and(|s| !s.is_empty());
-            let force_bundle = std::env::var("FILEMIND_FORCE_BUNDLE_PATH").is_ok();
-            let native_bundle =
-                cfg!(any(target_os = "macos", target_os = "windows"));
-            let should_try_bundle = !env_override_set && (force_bundle || native_bundle);
-
-            if should_try_bundle {
-                match resolve_bundle_binary_path(app.handle()) {
-                    Ok(bundle_path) => {
-                        log::info!(
-                            "命中 bundle Sidecar 路径: {}; 将替换当前 dev 路径并重新握手",
-                            bundle_path.display()
-                        );
-                        let mut new_mgr = SidecarManager::new(bundle_path.clone());
-                        match start_sidecar_with_handshake(&mut new_mgr) {
-                            Ok(new_psk) => {
-                                let state = app.state::<AppState>();
-                                // 顺序：先锁旧 manager → 调用 stop_hard 占位对象（dev 路径
-                                // 的 manager 其实是真启动，务必杀避免端口/孤儿泄漏）→ 再 replace
-                                {
-                                    let Ok(mut old_mgr) = state.sidecar_manager.lock() else {
-                                        log::error!("setup 替换 manager 时 Mutex 中毒，放弃 bundle 切换（沿用 dev 路径）");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    // 旧 manager 可能已经在握手后启动（真正持有 Child），
-                                    // stop_hard 兜底确保旧进程一定杀掉。
-                                    let _ = old_mgr.stop_hard();
-                                    *old_mgr = new_mgr;
-                                }
-                                {
-                                    let Ok(mut binary_guard) = state.sidecar_binary.lock() else {
-                                        log::error!("setup 替换 sidecar_binary 时 Mutex 中毒");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    *binary_guard = bundle_path;
-                                }
-                                {
-                                    let Ok(mut psk_guard) = state.sidecar_psk.lock() else {
-                                        log::error!("setup 替换 sidecar_psk 时 Mutex 中毒");
-                                        spawn_watchdog(app.handle().clone());
-                                        return Ok(());
-                                    };
-                                    *psk_guard = Some(new_psk);
-                                }
-                                state.request_seq.store(0, Ordering::SeqCst);
-                                log::info!("Sidecar 已切换为 bundle 路径并重新握手成功");
-                            }
-                            Err(e) => {
-                                log::warn!("bundle manager 启动+握手失败，回退沿用 dev 路径（已可用）: {e}");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("未命中 bundle Sidecar 路径（可能是 dev 环境），保持 dev 路径: {e}");
-                    }
-                }
+            // T7.4：云端代理在 127.0.0.1:8766 的绑定放到 setup 首步（见 main 处注释）：
+            // 二次启动的第二实例在此阶段之前已被 single-instance 插件接管退出，不会
+            // 因端口占用在无 UI 阶段闪退；此处只有主实例会执行，绑定失败才中止。
+            if let Err(e) = cloud_proxy::spawn_proxy_server(proxy_state) {
+                log::error!("云端代理启动失败（setup 阶段）: {e}");
+                return Err(e.into());
             }
+            log::info!("云端代理已就绪（setup）: {CLOUD_PROXY_HOST}:{CLOUD_PROXY_PORT}");
+
+            // P1-1：Sidecar 后台引导（不阻塞窗口显示）。
+            // 路径解析（dev/bundle/env）与启动+握手全部在后台线程完成，
+            // 状态经 `sidecar-status` 事件推送；失败由前端展示 + 重试，不退出。
+            spawn_sidecar_bootstrap(app.handle().clone(), bootstrap_binary, env_override);
             spawn_watchdog(app.handle().clone());
 
             // T9.5 E2E：`FILEMIND_E2E=1` 时强制显示主窗口（debug 构建专用，避免依赖
@@ -541,13 +599,13 @@ fn main() {
                 .on_tray_icon_event(|tray, _event| {
                     // 点击托盘图标时显示主窗口（macOS 上 on_menu_event 的 show 已覆盖左键点击；
                     // 这里兜底 Windows/Linux 行为）
-                    let app = tray.app_handle();
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    reveal_main_window(tray.app_handle());
                 })
                 .build(app)?;
+
+            // T6.1-bug：macOS 26 冷启动窗口偶发不可见的上游缺陷缓解守卫
+            // （依赖 setup 已跑完、主窗口已由 config 创建；线程内按 20s 窗口轮询）
+            spawn_startup_window_guard(app.handle().clone());
             Ok(())
         });
 
@@ -603,12 +661,39 @@ fn main() {
         }
     });
 
-    let run_result = builder.run(tauri::generate_context!());
+    // app 级事件（macOS Dock 激活 Reopen 等）需要自定义 run 回调分发；
+    // 先 build 拿 App 再 `app.run`。build 失败 = Tauri 初始化级错误（资源/配置
+    // 缺失），无 UI 可补救，打日志退出。
+    let app = match builder.build(tauri::generate_context!()) {
+        Ok(app) => app,
+        Err(e) => {
+            log::error!("Error while building tauri application: {e}");
+            std::process::exit(1);
+        }
+    };
 
-    if let Err(e) = run_result {
-        log::error!("Error while running tauri application: {e}");
-        std::process::exit(1);
-    }
+    app.run(|app_handle, event| {
+        // macOS Dock/Finder 图标激活已运行实例：若窗口被「关闭到托盘」（hide）后
+        // 无可见窗口，标准 macOS 行为是唤回主窗口（tauri RunEvent::Reopen 仅 macOS 发射）。
+        //
+        // 修复「点红钮关闭后，从 Dock 再点打不开窗口」：不信任 macOS 的
+        // has_visible_windows 标志——它对「已隐藏/迷你化」的窗口可能仍上报 true
+        // （Apple 文档：迷你化窗口在 hasVisibleWindows 中算可见），旧实现
+        // `has_visible_windows: false` 匹配不到导致唤回被跳过。改用主窗口实际
+        // 可见性判断：只要当前不可见就唤回，窗口正可见时则不抢焦点。
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            let needs_reveal = app_handle
+                .get_webview_window("main")
+                .is_some_and(|w| !w.is_visible().unwrap_or(false));
+            if needs_reveal {
+                log::info!("Dock 图标激活：主窗口不可见，唤回主窗口");
+                reveal_main_window(app_handle);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 
     // 后备：若主窗口关闭事件路径未触发（极少，仅 headless/菜单退出等非 CloseRequested），
     // SidecarManager 此时由 Tauri managed state 析构 → Drop → stop_hard() 兜底杀一次。

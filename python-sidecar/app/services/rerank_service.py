@@ -151,7 +151,10 @@ async def rerank(
     # T10.3：记录最后使用时间（空闲卸载判定；推理失败则不计入使用）
     _last_used_monotonic = time.monotonic()
     scored = [(float(score), cand) for score, cand in zip(raw_scores, candidates, strict=False)]
-    scored.sort(key=lambda item: item[0], reverse=True)
+    # SC-m25：cross-encoder 对近似等距候选可能产出浮点精度差异（±1e-8），
+    # 再加上 Python sort stable 依赖上游顺序，显式加 chunk_id 升序作为
+    # tie-breaker，确保重排结果全确定性。
+    scored.sort(key=lambda item: (-item[0], item[1].chunk_id))
     return [
         RerankResult(
             chunk_id=cand.chunk_id,

@@ -4,9 +4,157 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FileMind</title>
+    <!-- 设计文档 05_交互原型 §设计令牌：Noto Sans SC + JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500;600;700;900&display=swap"
+      rel="stylesheet"
+    />
+    <!--
+      P1-2 启动 splash：React 挂载前（JS bundle 加载期间）的首帧反馈。
+      - 与 globals.css 设计令牌对齐（颜色/圆角/缓动/logoIn/spin 同源）
+      - globals.css 由 main.tsx 导入，splash 期间尚未加载，故内联一套同名令牌
+      - React 挂载前由 main.tsx 移除；若 JS 加载失败则 splash 保留可见（优于白屏）
+    -->
+    <style>
+      :root {
+        color-scheme: light;
+        --fm-bg: #f5f7fa;
+        --fm-ink: #1a365d;
+        --fm-muted: #64748b;
+        --fm-accent-a: #1a365d;
+        --fm-accent-b: #2b6cb0;
+        --fm-spin-track: #e2e8f0;
+        --fm-spin-top: #2b6cb0;
+      }
+      :root[data-theme='dark'] {
+        color-scheme: dark;
+        --fm-bg: #0f172a;
+        --fm-ink: #3b82f6;
+        --fm-muted: #94a3b8;
+        --fm-accent-a: #3b82f6;
+        --fm-accent-b: #60a5fa;
+        --fm-spin-track: #1e293b;
+        --fm-spin-top: #60a5fa;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme]) {
+          color-scheme: dark;
+          --fm-bg: #0f172a;
+          --fm-ink: #3b82f6;
+          --fm-muted: #94a3b8;
+          --fm-accent-a: #3b82f6;
+          --fm-accent-b: #60a5fa;
+          --fm-spin-track: #1e293b;
+          --fm-spin-top: #60a5fa;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      .fm-splash {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        gap: 4px;
+        background: var(--fm-bg);
+        color: var(--fm-muted);
+        font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      .fm-splash__logo {
+        width: 64px;
+        height: 64px;
+        border-radius: 8px;
+        background: linear-gradient(135deg, var(--fm-accent-a), var(--fm-accent-b));
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 8px 24px rgba(26, 54, 93, 0.3);
+        /* 复用原型 logoIn（引导页 Logo 入场） */
+        animation: fm-logo-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      .fm-splash__logo svg {
+        width: 36px;
+        height: 36px;
+        color: #fff;
+      }
+      .fm-splash__name {
+        margin: 4px 0 0;
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--fm-ink);
+        letter-spacing: -0.02em;
+      }
+      .fm-splash__text {
+        margin: 0;
+        font-size: 13px;
+      }
+      .fm-splash__spinner {
+        margin-top: 12px;
+        width: 24px;
+        height: 24px;
+        border: 3px solid var(--fm-spin-track);
+        border-top-color: var(--fm-spin-top);
+        border-radius: 50%;
+        /* 复用 app-loading 的 spin */
+        animation: fm-spin 0.8s linear infinite;
+      }
+      @keyframes fm-logo-in {
+        from {
+          transform: scale(0) rotate(-180deg);
+        }
+        to {
+          transform: scale(1) rotate(0);
+        }
+      }
+      @keyframes fm-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+    <script>
+      // P1-2：首帧前应用持久化主题（与 main.tsx 的 applyTheme 对齐），
+      // 避免启动 splash / 应用首帧出现主题闪烁。System 不设属性，走 CSS 媒体查询。
+      // zustand persist 存储格式：{ "state": { ..., "theme": "Light|Dark|System" }, "version": 0 }
+      (function () {
+        try {
+          var settings = JSON.parse(localStorage.getItem('filemind-settings') || '{}');
+          var theme = settings.state && settings.state.theme;
+          if (theme === 'Light' || theme === 'Dark') {
+            document.documentElement.setAttribute('data-theme', theme.toLowerCase());
+          }
+        } catch (e) {
+          // 忽略：localStorage 不可用或解析失败时回退默认主题
+        }
+      })();
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="fm-splash" id="fm-splash" role="status" aria-label="应用启动中">
+        <div class="fm-splash__logo" aria-hidden>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z" />
+          </svg>
+        </div>
+        <p class="fm-splash__name">FileMind</p>
+        <p class="fm-splash__text">智能文件整理分类器 · 正在启动…</p>
+        <div class="fm-splash__spinner" aria-hidden />
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

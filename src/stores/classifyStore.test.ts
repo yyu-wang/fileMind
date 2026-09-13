@@ -22,6 +22,8 @@ import { useClassifyStore } from './classifyStore';
 import { useFileStore } from './fileStore';
 
 const SCAN_ROOT = '/tmp/root';
+/** 分类输出收纳根（与后端 `sibling_output_root` 同口径：`<扫描根名>_已分类`）。 */
+const OUT_ROOT = `${SCAN_ROOT}_已分类`;
 
 /** T6.12 测试用分类构造器。 */
 function makeCategory(id: string, name: string, targetDir: string): Category {
@@ -51,7 +53,7 @@ function makeItem(id: string, overrides: Partial<ClassifyPlanItem> = {}): Classi
     file_id: id,
     file_name: `${id}.png`,
     original_path: `${SCAN_ROOT}/${id}.png`,
-    target_path: `${SCAN_ROOT}/图片/${id}.png`,
+    target_path: `${OUT_ROOT}/图片/${id}.png`,
     category_name: '图片',
     rule_source: 'heuristic',
     status: 'Ok',
@@ -64,6 +66,7 @@ function makePreview(items: ClassifyPlanItem[]): ClassifyPreview {
   const categorized = items.filter((i) => i.category_name != null).length;
   return {
     batch_id: 'batch-preview',
+    output_root: OUT_ROOT,
     items,
     stats: {
       total: items.length,
@@ -82,7 +85,7 @@ function okExecute(batchId: string, fileIds: string[]): ExecuteResponse {
       file_id: fid,
       operation: 'Move',
       source_path: `${SCAN_ROOT}/${fid}.png`,
-      target_path: `${SCAN_ROOT}/图片/${fid}.png`,
+      target_path: `${OUT_ROOT}/图片/${fid}.png`,
       success: true,
       error: null,
       prev_hash: null,
@@ -665,7 +668,7 @@ describe('assignCategory', () => {
     const item = state.preview?.items.find((i) => i.file_id === 'pend');
     expect(item?.category_name).toBe('财务');
     expect(item?.rule_source).toBe('manual');
-    expect(item?.target_path).toBe(`${SCAN_ROOT}/财务/pend.png`);
+    expect(item?.target_path).toBe(`${OUT_ROOT}/财务/pend.png`);
   });
 
   it('rejects unsafe target_dir', async () => {
@@ -725,7 +728,7 @@ describe('assignCategories', () => {
     const p1 = state.preview?.items.find((i) => i.file_id === 'p1');
     expect(p1?.category_name).toBe('财务');
     expect(p1?.rule_source).toBe('manual');
-    expect(p1?.target_path).toBe(`${SCAN_ROOT}/财务/p1.png`);
+    expect(p1?.target_path).toBe(`${OUT_ROOT}/财务/p1.png`);
   });
 
   it('skips already-categorized ids and is no-op when none assigned', async () => {

@@ -17,8 +17,35 @@ vi.mock('../../lib/ipc', () => ({
 
 import { fileIpc } from '../../lib/ipc';
 import { useSettingsStore } from '../../stores/settingsStore';
-import type { ApiKeyStatus } from '../../types/ipc';
+import type { ApiKeyStatus, CloudProviderRecord } from '../../types/ipc';
 import { CloudApiKeySection } from './CloudApiKeySection';
+
+// P-07：Provider 行来自 store.cloudProviders，seed 两条内置记录（name 需命中
+// `OpenAI API Key 输入框` 等既有 DOM 查询，provider_key 沿用测试既有大小写约定）
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: '',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
 
 const NO_KEY_OPENAI: ApiKeyStatus = { provider: 'Openai', has_key: false, hint: '' };
 const NO_KEY_DEEPSEEK: ApiKeyStatus = { provider: 'Deepseek', has_key: false, hint: '' };
@@ -37,14 +64,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   useSettingsStore.setState({
     apiKeyStatus: { Openai: NO_KEY_OPENAI, Deepseek: NO_KEY_DEEPSEEK },
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
     error: null,
   });
 });
 
 function openaiRow(): HTMLElement {
-  const cell = screen.getByText('OpenAI');
-  const row = cell.closest('.settings-row');
-  // .settings-row 恒为 div，转 HTMLElement 供 within 使用
+  const input = screen.getByLabelText('OpenAI API Key 输入框');
+  const row = input.closest('.setting-row');
+  // .setting-row 恒为 div，转 HTMLElement 供 within 使用
   return row as HTMLElement;
 }
 
@@ -53,8 +82,8 @@ describe('CloudApiKeySection', () => {
     mockNoKeys();
     render(<CloudApiKeySection />);
 
-    expect(screen.getByText('OpenAI')).toBeInTheDocument();
-    expect(screen.getByText('DeepSeek')).toBeInTheDocument();
+    expect(screen.getByText(/OpenAI API Key/)).toBeInTheDocument();
+    expect(screen.getByText(/DeepSeek API Key/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByText('未配置')).toHaveLength(2));
   });
 
@@ -90,8 +119,6 @@ describe('CloudApiKeySection', () => {
 
   it('deletes a key and shows 未配置 again', async () => {
     const user = userEvent.setup();
-    // FE-m13：删除前有 window.confirm 二次确认，需 mock 放行
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(fileIpc.getApiKeyStatus).mockResolvedValue({
       status: 'ok',
       data: [CONFIGURED_OPENAI, NO_KEY_DEEPSEEK],
@@ -100,7 +127,11 @@ describe('CloudApiKeySection', () => {
     render(<CloudApiKeySection />);
     await screen.findByText('已保存 ····abcd');
 
+    // 删除按钮先弹 ConfirmDialog，确认后才真正删除
     await user.click(within(openaiRow()).getByRole('button', { name: '删除' }));
+    expect(vi.mocked(fileIpc.deleteApiKey)).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: '删除 API Key' });
+    await user.click(within(dialog).getByRole('button', { name: '删除' }));
 
     expect(vi.mocked(fileIpc.deleteApiKey)).toHaveBeenCalledWith('Openai');
     await waitFor(() => expect(screen.getAllByText('未配置')).toHaveLength(2));

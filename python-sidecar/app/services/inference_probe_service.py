@@ -20,6 +20,7 @@ from app.core.logging import getLogger
 from app.models import (
     EmbeddingModelAvailability,
     InferenceTestResponse,
+    ModelInstallResponse,
     OllamaModelInfo,
     _OllamaTagModel,
     _OllamaTagsResponse,
@@ -102,14 +103,19 @@ def _to_ollama_model_info(model: _OllamaTagModel) -> OllamaModelInfo:
 
 
 def _to_embedding_availability(model_name: str, installed: set[str]) -> EmbeddingModelAvailability:
-    """按注册表模型名检查其 Ollama 模型是否已安装。"""
+    """按注册表模型名检查其 Ollama 模型是否已安装（原名或别名单一命中即可）。
+
+    注册表名（``bge-small-zh-v1.5``）与社区命名空间别名
+    （``qllama/bge-small-zh-v1.5``）任一安装即视为可用——用户两种拉取
+    方式（官方库原名 / 社区命名空间）都不应被误判为"未安装"。
+    """
     info = get_model_info(model_name)
-    ollama_name = _OLLAMA_MODEL_ALIASES.get(model_name, model_name)
+    candidates = {model_name, _OLLAMA_MODEL_ALIASES.get(model_name, model_name)}
     return EmbeddingModelAvailability(
         name=model_name,
         dim=info.dim,
         version=info.default_version,
-        available=ollama_name in installed,
+        available=any(name in installed for name in candidates),
     )
 
 
@@ -131,3 +137,67 @@ def _unavailable(message: str) -> InferenceTestResponse:
         error_code="OLLAMA_UNAVAILABLE",
         message=message,
     )
+
+
+#: /api/pull 拉取超时（秒）——模型下载可能较慢，给足预算
+PULL_TIMEOUT = float(os.environ.get("FILEMIND_PULL_TIMEOUT", "600"))
+
+
+async def install_embedding_model(model_name: str) -> ModelInstallResponse:
+    """从 Ollama 拉取指定 Embedding 模型。
+
+    Args:
+        model_name: 注册表模型名（如 ``bge-small-zh-v1.5``）。
+
+    Returns:
+        安装结果。
+
+    Raises:
+        ValueError: 模型名不在注册表中。
+        httpx.HTTPError: Ollama 请求失败。
+    """
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"未知 Embedding 模型: {model_name!r}")
+
+    ollama_name = _OLLAMA_MODEL_ALIASES.get(model_name, model_name)
+    logger.info("inference_probe.install_model.start", model=model_name, ollama_name=ollama_name)
+
+    try:
+        async with httpx.AsyncClient(timeout=PULL_TIMEOUT) as client:
+            resp = await client.post(
+                f"{OLLAMA_HOST}/api/pull",
+                json={"name": ollama_name, "stream": False},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+        logger.info(
+            "inference_probe.install_model.done",
+            model=model_name,
+            status=body.get("status", "unknown"),
+        )
+        return ModelInstallResponse(
+            success=True,
+            model_name=model_name,
+            ollama_name=ollama_name,
+            message=body.get("status", "success"),
+        )
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "inference_probe.install_model.http_error",
+            model=model_name,
+            status=exc.response.status_code,
+        )
+        return ModelInstallResponse(
+            success=False,
+            model_name=model_name,
+            ollama_name=ollama_name,
+            message=f"Ollama 返回错误: HTTP {exc.response.status_code}",
+        )
+    except httpx.HTTPError as exc:
+        logger.error("inference_probe.install_model.error", model=model_name, error=str(exc))
+        return ModelInstallResponse(
+            success=False,
+            model_name=model_name,
+            ollama_name=ollama_name,
+            message=f"连接 Ollama 失败: {exc}",
+        )

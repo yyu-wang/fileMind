@@ -7,11 +7,13 @@
 //!
 //! 安全措施：
 //! - 共享 token 鉴权（`X-FileMind-Token`）：防本机其他进程盗用云端 API 配额
-//! - 上游 URL 白名单：仅 OpenAI / DeepSeek 官方域，杜绝任意 URL 转发
+//! - 上游 URL 来源：用户在设置页写入 `cloud_providers.base_url`（P-07 自定义提供商），
+//!   代理在每次请求时查 DB 实时取；表单已在入库前校验为 https 或本地回环 http，
+//!   Python/Sidecar 无法绕过。无 DB 句柄环境（单测）回落旧硬编码白名单。
 //! - Key 仅作局部变量，使用后经 `zeroize` 清零再 drop（`unsafe_code=deny`）
 //! - 审计日志只记 provider 与是否流式，不记 Key、不记内容（T7.1 二次兜底）
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -24,6 +26,7 @@ use axum::Router;
 use serde_json::Value;
 use zeroize::Zeroize;
 
+use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::security;
 
@@ -75,21 +78,33 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 pub struct CloudProxyState {
     /// 本机调用方共享 token（仅内存 + Sidecar env 持有）。
     token: String,
-    /// 测试用上游 URL 覆盖；生产为 `None`（走白名单）。
+    /// 测试用上游 URL 覆盖；生产为 `None`（走 DB 查询）。
     upstream_override: Option<String>,
     /// Keychain 读取器（fn 指针，测试可注入假实现）。
     key_reader: fn(&str) -> AppResult<Option<String>>,
+    /// 运行时 DB 句柄（P-07：查 `base_url` 的唯一真源）。
+    /// 单测环境为 `None`；main.rs 生产启动必须注入。
+    db: Option<Arc<Mutex<Database>>>,
 }
 
 impl CloudProxyState {
-    /// 生产构造：Keychain 读取器固定为 `security::get_key`。
+    /// 生产构造：Keychain 读取器固定为 `security::get_key`，无 DB（DB 另外调用
+    /// [`Self::with_db`] 注入，避免在 `main.rs` 改动前编译失败）。
     #[must_use]
     pub fn new(token: String) -> Self {
         Self {
             token,
             upstream_override: None,
             key_reader: security::get_key,
+            db: None,
         }
+    }
+
+    /// 给生产实例补 DB 句柄（链式调用，main.rs 中 `CloudProxyState::new(t).with_db(db)`）。
+    #[must_use]
+    pub fn with_db(mut self, db: Arc<Mutex<Database>>) -> Self {
+        self.db = Some(db);
+        self
     }
 
     /// 测试构造：注入假 Key 读取器与假上游 URL。
@@ -103,6 +118,7 @@ impl CloudProxyState {
             token,
             upstream_override: Some(upstream_override),
             key_reader,
+            db: None,
         }
     }
 
@@ -115,19 +131,50 @@ impl CloudProxyState {
             .is_some_and(|v| constant_time_eq(v, &self.token))
     }
 
-    /// 目标上游 URL：测试覆盖优先，否则走白名单。
+    /// 目标上游 URL：测试覆盖 → DB 查询 → 硬编码白名单兜底。
+    ///
+    /// 返回时自动在 `base_url` 后拼接 `/chat/completions`，供请求方直接 POST。
     #[must_use]
     fn upstream_url(&self, provider: &str) -> Option<String> {
         if let Some(override_url) = &self.upstream_override {
             return Some(override_url.clone());
         }
-        provider_upstream(provider).map(str::to_owned)
+        // 1) DB 有值 → 用户自定义 base_url（P-07 自定义提供商）
+        if let Some(db_arc) = &self.db {
+            let guard = match db_arc.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    log::error!("cloud_proxy upstream_url: DB lock poisoned ({e})");
+                    return None;
+                }
+            };
+            match crate::db::ConfigRepo::get_provider_base_url(guard.conn(), provider) {
+                Ok(Some(base)) if !base.ends_with('/') => {
+                    return Some(format!("{base}/chat/completions"));
+                }
+                Ok(Some(base)) => {
+                    // 表单已在入库时禁止尾斜杠；此处兜底避免 404 双斜杠
+                    return Some(format!("{base}chat/completions"));
+                }
+                Ok(None) => {
+                    // 故意不落 error：首次升级 / 用户新建中，可能短暂为空
+                    log::debug!("cloud_proxy: provider={provider} 未配置 base_url");
+                }
+                Err(e) => {
+                    log::error!("cloud_proxy upstream_url: DB 读取失败 ({e})");
+                    return None;
+                }
+            }
+        }
+        // 2) DB 无句柄或无记录 → 编译期白名单兜底（升级过渡 + 单测/CLI）
+        provider_upstream_legacy(provider).map(str::to_owned)
     }
 }
 
-/// 上游 URL 白名单（07-§4：仅官方 API，杜绝任意 URL 转发）。
+/// 升级过渡期的硬编码白名单：仅当 DB 无数据时兜底使用。
+/// 保持与 P-07 改造前一致，保证升级瞬间旧请求不崩。
 #[must_use]
-fn provider_upstream(provider: &str) -> Option<&'static str> {
+fn provider_upstream_legacy(provider: &str) -> Option<&'static str> {
     match provider {
         "openai" => Some("https://api.openai.com/v1/chat/completions"),
         "deepseek" => Some("https://api.deepseek.com/chat/completions"),
@@ -360,17 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn provider_upstream_whitelist() {
+    fn provider_upstream_whitelist_legacy() {
         assert_eq!(
-            provider_upstream("openai"),
+            provider_upstream_legacy("openai"),
             Some("https://api.openai.com/v1/chat/completions")
         );
         assert_eq!(
-            provider_upstream("deepseek"),
+            provider_upstream_legacy("deepseek"),
             Some("https://api.deepseek.com/chat/completions")
         );
-        assert_eq!(provider_upstream("unknown"), None);
-        assert_eq!(provider_upstream("http://evil.example.com"), None);
+        assert_eq!(provider_upstream_legacy("unknown"), None);
+        assert_eq!(provider_upstream_legacy("http://evil.example.com"), None);
     }
 
     #[test]
@@ -491,3 +538,5 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
+
+// lint fix notes: doc_markdown (base_url 反引号)

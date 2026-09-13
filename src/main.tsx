@@ -7,6 +7,7 @@ import { applyTheme } from './lib/theme';
 import { useChatStore } from './stores/chatStore';
 import { useFileStore } from './stores/fileStore';
 import { useSettingsStore } from './stores/settingsStore';
+import { useSidecarStore } from './stores/sidecarStore';
 import './styles/globals.css';
 
 // T9.5：@wdio/tauri-service 在 macOS 上依赖 `window.__wdio_original_core__` 做每个命令的
@@ -40,6 +41,10 @@ applyTheme(useSettingsStore.getState().theme);
 
 const rootElement = document.getElementById('root');
 if (rootElement) {
+  // P1-2：React 挂载前移除 index.html 内联启动 splash。
+  // 在同一同步任务内完成「移除 + 首次 render」，期间无绘制，不会闪白；
+  // 若 JS 加载失败（splash 未被移除），splash 保留可见而非白屏。
+  rootElement.querySelector('#fm-splash')?.remove();
   createRoot(rootElement).render(
     <StrictMode>
       <ErrorBoundary>
@@ -67,6 +72,14 @@ useChatStore
   .getState()
   .initChatListener()
   .catch((e) => console.warn('[main] chat listener init failed:', e));
+
+// P1-1：订阅 sidecar-status 事件 + 查询初始状态（引擎状态胶囊 / AI 功能门控）。
+// 事件可能在页面监听建立前就发出（窗口秒开后侧车仍在启动），refreshStatus 兜底对齐。
+useSidecarStore
+  .getState()
+  .initListener()
+  .catch((e) => console.warn('[main] sidecar listener init failed:', e));
+void useSidecarStore.getState().refreshStatus();
 
 // T6.1：窗口启动时 visible:false 避免白屏，React 渲染完成后调用 show 显示
 // 非 Tauri 环境（纯浏览器开发调试）时调用会失败，忽略错误

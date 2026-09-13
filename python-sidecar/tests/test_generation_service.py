@@ -60,7 +60,11 @@ def test_system_has_answer_rules_and_citation_format() -> None:
     """SYSTEM 含 6 条回答规则与引用标注约束，明确「不要输出 JSON」。"""
     system, _ = build_rag_prompt("查询", [chunk(1)])
     assert "回答规则" in system
-    assert "引用来源" in system and "[引用编号]" in system
+    # 引用标注约束：既提到「引用来源」字面，也要求输出 [N]（数字为来源编号）。
+    # 早期版本写成 "[引用编号]"，现统一为 "[N]"，两者二选一即可，不影响语义。
+    assert "引用来源" in system and (
+        "[引用编号]" in system or ("[N]" in system and "来源编号" in system)
+    )
     assert "未找到相关信息" in system
     assert "不要输出 JSON" in system
 
@@ -223,7 +227,8 @@ def test_build_prompt_cloud_variant_consistent_with_local() -> None:
     cloud_system, cloud_user = build_rag_prompt("查询", [chunk(1)], version="cloud")
     # 输出格式 DoD：引用标注与禁 JSON 约束两者都有
     for template in (local_system, cloud_system):
-        assert "[引用编号]" in template
+        # 引用标注：接受旧写法 "[引用编号]" 或新写法 "[N]" + "来源编号"（不改变语义）
+        assert "[引用编号]" in template or ("[N]" in template and "来源编号" in template)
         assert "不要输出 JSON" in template
     # 云端精简：省略 few-shot 示例（本地含示例正文，云端无该段）
     assert "根据财务报告" in local_user

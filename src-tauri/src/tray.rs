@@ -33,18 +33,29 @@ pub fn tray_menu_action(menu_id: &str) -> TrayAction {
     }
 }
 
+/// 显示并聚焦主窗口（若未最小化先还原）。
+///
+/// 唤回主窗口的唯一入口，供以下场景复用：
+/// - 托盘菜单「显示主窗口」/ 托盘图标左键点击
+/// - 单实例二次启动（`tauri-plugin-single-instance` 回调）
+/// - macOS Dock 图标激活（`RunEvent::Reopen`，修复「关闭到托盘后 Dock 无法唤回」）
+///
+/// 窗口不存在时静默跳过（各调用方按自身场景兜底），不 panic。
+pub fn reveal_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// 执行托盘菜单动作（副作用集中于此；菜单事件回调只做分发）。
 ///
 /// 泛型 `R: Runtime` 允许用 `tauri::test::mock_app`（MockRuntime）注入测试，
 /// 而生产路径由 Tauri 自动推断为 `Wry`。
 pub fn handle_tray_menu_event<R: Runtime>(app: &AppHandle<R>, menu_id: &str) {
     match tray_menu_action(menu_id) {
-        TrayAction::Show => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
+        TrayAction::Show => reveal_main_window(app),
         TrayAction::Quit => {
             IS_QUITTING.store(true, Ordering::SeqCst);
             if let Some(window) = app.get_webview_window("main") {

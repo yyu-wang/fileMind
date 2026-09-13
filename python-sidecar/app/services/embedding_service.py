@@ -37,6 +37,8 @@ EMBED_TIMEOUT = float(os.environ.get("FILEMIND_EMBED_TIMEOUT", "60"))
 #: 注册表模型标识 → Ollama 实际模型名（bge 系列非官方库，社区命名空间托底）
 _OLLAMA_MODEL_ALIASES: dict[str, str] = {
     "bge-large-zh-v1.5": "qllama/bge-large-zh-v1.5",
+    "bge-m3": "awenleven/bge-m3:567m",
+    "bge-small-zh-v1.5": "qllama/bge-small-zh-v1.5",
 }
 
 
@@ -104,7 +106,9 @@ async def embed_texts(texts: list[str], model: str = EMBEDDING_MODEL) -> list[li
                 f"{_ollama_model_name(model)}）"
             ) from exc
         raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, ConnectionError) as exc:
+        # ollama SDK 在连接失败时抛出内置 ConnectionError（非 httpx.HTTPError），
+        # 需显式捕获，否则异常逃逸到 ASGI 层导致 SSE 流断裂、前端看门狗超时。
         raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
     except TimeoutError as exc:
         raise EmbeddingUnavailableError(f"Embedding 超时（>{EMBED_TIMEOUT}s）") from exc

@@ -21,14 +21,14 @@ describe('E2E-001 首次引导', () => {
     await wizard.waitForExist({ timeout: 120000 });
     await expect(wizard).toBeExisting();
 
-    // —— 2. 默认「本地模式」选中 ——
-    await expect($(sel.onboardingModeLocal)).toBeChecked();
-    await expect($(sel.onboardingModeCloud)).not.toBeChecked();
+    // —— 2. 默认「本地模式」选中（role="radio" div，断言 aria-checked）——
+    await expect($(sel.onboardingModeLocal)).toHaveAttr('aria-checked', 'true');
+    await expect($(sel.onboardingModeCloud)).toHaveAttr('aria-checked', 'false');
 
     // —— 3. 切「云端模式」→ 进入同意书 ——
-    await $('.onboarding__option*=云端模式').click();
+    await $(sel.onboardingModeCloud).click();
     const nextBtn = $(sel.onboardingNext);
-    await nextBtn.waitForClickable();
+    await nextBtn.waitForExist({ timeout: 5000 });
     await nextBtn.click();
 
     // —— 4. 同意书：未滚到底 checkbox 禁用 → 滚动到底解锁 → 勾选确认 ——

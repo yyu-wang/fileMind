@@ -29,8 +29,8 @@ describe('E2E-003 知识问答（RAG）', () => {
 
   ragTest('建立索引 → 索引完成 10 个文件', async function () {
     this.timeout(300000);
-    await $('a.sidebar__item[title*="知识问答"]').click();
-    await $(sel.buildIndex).waitForClickable({ timeout: 15000 });
+    await $(`${sel.sidebarItem}[title*="知识问答"]`).click();
+    await $(sel.buildIndex).waitForExist({ timeout: 15000 });
     await $(sel.buildIndex).click();
     // 索引中… → 完成提示（真实 Ollama 向量化 10 篇，可能较慢）
     await $(sel.chatIndexTip).waitForExist({ timeout: 240000 });
@@ -39,7 +39,7 @@ describe('E2E-003 知识问答（RAG）', () => {
 
   ragTest('提问推理模式 → 流式回答含 本地推理/云端推理 → 引用 [1] 可跳转', async function () {
     this.timeout(300000);
-    await $(sel.chatInput).waitForClickable({ timeout: 15000 });
+    await $(sel.chatInput).waitForExist({ timeout: 15000 });
     await $(sel.chatInput).setValue('FileMind 支持哪些推理模式？');
     await browser.keys('Enter');
 
@@ -66,7 +66,7 @@ describe('E2E-003 知识问答（RAG）', () => {
     if (await closeBtn.isExisting()) {
       await closeBtn.click();
     }
-    await $(sel.chatInput).waitForClickable({ timeout: 15000 });
+    await $(sel.chatInput).waitForExist({ timeout: 15000 });
     await $(sel.chatInput).setValue('本地模式有什么优势？');
     await browser.keys('Enter');
 

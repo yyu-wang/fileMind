@@ -1,4 +1,4 @@
-// RuleList 单元测试：渲染、分类兜底、启用切换、编辑/删除与拖拽重排。
+// RuleList 单元测试（对齐交互原型 §规则编辑）：rule-item 渲染、选中态、tags、拖拽重排。
 
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -41,11 +41,9 @@ function renderList(overrides: Partial<Parameters<typeof RuleList>[0]> = {}) {
   const props = {
     rules: [rule('r1', { priority: 20 }), rule('r2', { pattern: 'doc', target_category: null })],
     categories,
-    onEdit: vi.fn(),
-    onDelete: vi.fn(),
-    onToggle: vi.fn(),
+    selectedId: null,
+    onSelect: vi.fn(),
     onReorder: vi.fn(),
-    disabledIds: [],
     ...overrides,
   };
   render(<RuleList {...props} />);
@@ -53,13 +51,14 @@ function renderList(overrides: Partial<Parameters<typeof RuleList>[0]> = {}) {
 }
 
 describe('RuleList', () => {
-  it('renders rule name, type label, pattern, category and priority', () => {
+  it('renders rule name, description, type tag and priority', () => {
     renderList();
     expect(screen.getByText('规则 r1')).toBeInTheDocument();
-    expect(screen.getAllByText('扩展名')).toHaveLength(2);
-    expect(screen.getByText('pdf')).toBeInTheDocument();
-    expect(screen.getByText('文档')).toBeInTheDocument();
     expect(screen.getByText('#20')).toBeInTheDocument();
+    // 启用 tag（r2 因 target_category=null 仍展示启用 tag，因为 is_enabled=true）
+    expect(screen.getAllByText('启用')).toHaveLength(2);
+    // 类型 tag（两条规则都是 extension）
+    expect(screen.getAllByText('扩展名')).toHaveLength(2);
   });
 
   it('renders disabled tag when rule is disabled', () => {
@@ -67,31 +66,28 @@ describe('RuleList', () => {
     expect(screen.getByText('已禁用')).toBeInTheDocument();
   });
 
-  it('maps missing category to 已删除分类 and null to em dash', () => {
-    renderList({
-      rules: [rule('r1', { target_category: 'gone' }), rule('r2', { target_category: null })],
-    });
-    expect(screen.getByText('已删除分类')).toBeInTheDocument();
-    expect(screen.getByText('—')).toBeInTheDocument();
+  it('renders count tag in header', () => {
+    renderList({ rules: [rule('r1')] });
+    expect(screen.getByText('1 条')).toBeInTheDocument();
   });
 
-  it('toggles rule via checkbox with aria-label', async () => {
+  it('calls onSelect when rule-item clicked', () => {
     const props = renderList();
-    fireEvent.click(screen.getByLabelText('禁用规则 规则 r1'));
-    expect(props.onToggle).toHaveBeenCalledWith(props.rules[0]);
+    const items = screen.getAllByRole('button');
+    fireEvent.click(items[0]);
+    expect(props.onSelect).toHaveBeenCalledWith(props.rules[0]);
   });
 
-  it('calls onEdit and onDelete from buttons', () => {
-    const props = renderList();
-    fireEvent.click(screen.getAllByRole('button', { name: '编辑' })[0]);
-    expect(props.onEdit).toHaveBeenCalledWith(props.rules[0]);
-    fireEvent.click(screen.getAllByRole('button', { name: '删除' })[0]);
-    expect(props.onDelete).toHaveBeenCalledWith(props.rules[0]);
+  it('applies active class to selected rule', () => {
+    renderList({ selectedId: 'r1' });
+    const items = screen.getAllByTestId('rule-item');
+    expect(items[0].className).toContain('active');
+    expect(items[1].className).not.toContain('active');
   });
 
   it('reorders on drop and submits final id order', () => {
     const props = renderList();
-    const items = screen.getAllByRole('listitem');
+    const items = screen.getAllByTestId('rule-item');
     fireEvent.dragStart(items[0]);
     fireEvent.drop(items[1]);
     // r1 拖到 r2 之后 → [r2, r1]
@@ -100,7 +96,7 @@ describe('RuleList', () => {
 
   it('drop on same item does not reorder', () => {
     const props = renderList();
-    const items = screen.getAllByRole('listitem');
+    const items = screen.getAllByTestId('rule-item');
     fireEvent.dragStart(items[0]);
     fireEvent.drop(items[0]);
     expect(props.onReorder).not.toHaveBeenCalled();
@@ -108,10 +104,10 @@ describe('RuleList', () => {
 
   it('adds dragging class to the dragged item', () => {
     renderList();
-    const items = screen.getAllByRole('listitem');
+    const items = screen.getAllByTestId('rule-item');
     fireEvent.dragStart(items[0]);
-    expect(items[0].className).toContain('rules-item--dragging');
+    expect(items[0].className).toContain('rule-item--dragging');
     fireEvent.dragEnd(items[0]);
-    expect(items[0].className).not.toContain('rules-item--dragging');
+    expect(items[0].className).not.toContain('rule-item--dragging');
   });
 });

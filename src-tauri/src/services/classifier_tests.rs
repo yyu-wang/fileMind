@@ -3,13 +3,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::classifier::{
-    aggregate_stats, apply_llm_fallback, generate_plan, ClassifyPlanItem, HEURISTIC_SOURCE,
-    LLM_SOURCE, NEEDS_REVIEW_SOURCE, PENDING_SOURCE, RULE_SOURCE_PREFIX,
+    aggregate_stats, apply_llm_fallback, generate_plan, sibling_output_root, ClassifyPlanItem,
+    HEURISTIC_SOURCE, LLM_SOURCE, NEEDS_REVIEW_SOURCE, PENDING_SOURCE, RULE_SOURCE_PREFIX,
 };
 use crate::db::models::{Category, FileRecord, Rule};
 use crate::services::conflict_resolver::PlanStatus;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn mk_category(id: &str, name: &str, target_dir: &str) -> Category {
     Category {
@@ -55,6 +55,11 @@ fn mk_file(id: &str, name: &str, root: &Path) -> FileRecord {
     }
 }
 
+/// 与分类实现同口径的同级收纳根：`<临时目录名>_已分类`（`sibling_output_root`）。
+fn out_root(root: &Path) -> PathBuf {
+    sibling_output_root(root).expect("同级收纳根应可计算")
+}
+
 #[test]
 fn test_extension_rule_matches() {
     let root = tempfile::tempdir().unwrap();
@@ -69,7 +74,7 @@ fn test_extension_rule_matches() {
     assert_eq!(item.rule_source, format!("{RULE_SOURCE_PREFIX}PDF"));
     assert_eq!(
         item.target_path,
-        root.path()
+        out_root(root.path())
             .join("财务")
             .join("report.pdf")
             .to_string_lossy()
@@ -177,7 +182,10 @@ fn test_heuristic_fallback() {
     assert_eq!(items[0].rule_source, "heuristic");
     assert_eq!(
         items[0].target_path,
-        root.path().join("图片").join("photo.png").to_string_lossy()
+        out_root(root.path())
+            .join("图片")
+            .join("photo.png")
+            .to_string_lossy()
     );
 }
 
@@ -228,8 +236,10 @@ fn test_target_dir_empty_stays_in_place() {
 #[test]
 fn test_conflict_marked_when_target_exists() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(root.path().join("图片")).unwrap();
-    std::fs::write(root.path().join("图片").join("photo.png"), b"existing").unwrap();
+    // 冲突检测基于同级收纳根下的目标：目标已存在 → 标记 Conflict（Skip）
+    let out = out_root(root.path());
+    std::fs::create_dir_all(out.join("图片")).unwrap();
+    std::fs::write(out.join("图片").join("photo.png"), b"existing").unwrap();
     let categories = vec![mk_category("builtin-image", "图片", "图片")];
     let files = vec![mk_file("f1", "photo.png", root.path())];
 
@@ -329,7 +339,7 @@ fn test_llm_fallback_classified_merges() {
     assert_eq!(items[0].rule_source, LLM_SOURCE);
     assert_eq!(
         items[0].target_path,
-        root.path()
+        out_root(root.path())
             .join("财务")
             .join("report.txt")
             .to_string_lossy()

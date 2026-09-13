@@ -106,7 +106,7 @@ class OllamaProvider(LLMProvider):
                     num_ctx=OLLAMA_NUM_CTX,
                 ),
             )
-        except (httpx.HTTPError, ResponseError) as exc:
+        except (httpx.HTTPError, ConnectionError, ResponseError) as exc:
             raise LLMUnavailableError(f"Ollama 调用失败: {exc}") from exc
         message = resp.message
         if message is None:
@@ -158,7 +158,7 @@ class OllamaProvider(LLMProvider):
                 content = message.content
                 if content:
                     yield content
-        except (httpx.HTTPError, ResponseError) as exc:
+        except (httpx.HTTPError, ConnectionError, ResponseError) as exc:
             raise LLMUnavailableError(f"Ollama 流式生成失败: {exc}") from exc
 
     async def embed(self, texts: list[str], **kwargs: object) -> list[list[float]]:
@@ -195,7 +195,7 @@ class OllamaProvider(LLMProvider):
                     f"{_ollama_model_name(model)}）"
                 ) from exc
             raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, ConnectionError) as exc:
             raise EmbeddingUnavailableError(f"Embedding 调用失败: {exc}") from exc
         except TimeoutError as exc:
             raise EmbeddingUnavailableError(f"Embedding 超时（>{EMBED_TIMEOUT}s）") from exc

@@ -1,48 +1,113 @@
 // 底部状态栏：订阅 settingsStore + fileStore 显示真实状态。
 //
-// 显示项（设计稿 §2 状态栏）：
-// - 推理模式标签（三色：紫=本地/蓝=云端/琥珀=混合，当前仅 Local/Cloud）
+// 显示项（设计稿 05_交互原型 §状态栏）：
+// - 推理模式标签（mode-badge 三色：紫=本地/蓝=云端/琥珀=混合）
 // - 模型名
 // - 文件数 + 索引状态
-// - 版本号
+// - 选中数量 + 清除按钮（有选中时显示）
+// - 版本号（右侧）
 
 import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { MODE_COLORS } from '../../types/models';
+import { useSidecarStore } from '../../stores/sidecarStore';
+import { MODE_COLORS, resolveDisplayModel } from '../../types/models';
+
+const MODE_BADGE_CLASS: Record<string, string> = {
+  Local: 'local',
+  Cloud: 'cloud',
+};
 
 export function StatusBar() {
   const inferenceMode = useSettingsStore((s) => s.inferenceMode);
   const llmModel = useSettingsStore((s) => s.llmModel);
+  const cloudModel = useSettingsStore((s) => s.cloudModel);
+  const cloudConsentProvider = useSettingsStore((s) => s.cloudConsentProvider);
   const isLoadingSettings = useSettingsStore((s) => s.isLoading);
   const stats = useFileStore((s) => s.stats);
+  const selectedIds = useFileStore((s) => s.selectedIds);
+  const clearSelection = useFileStore((s) => s.clearSelection);
+  // P1-1：Sidecar 引擎状态（启动中/失败 → 状态栏展示，失败可重试）
+  const sidecarStatus = useSidecarStore((s) => s.status);
+  const sidecarMessage = useSidecarStore((s) => s.message);
+  const retrySidecar = useSidecarStore((s) => s.retryStart);
 
   const modeColor = MODE_COLORS[inferenceMode];
+  const badgeClass = MODE_BADGE_CLASS[inferenceMode] ?? 'local';
+  const displayModel = resolveDisplayModel(
+    inferenceMode,
+    llmModel,
+    cloudModel,
+    cloudConsentProvider,
+  );
+  const engineStarting = sidecarStatus === 'starting';
+  const engineFailed = sidecarStatus === 'failed' || sidecarStatus === 'crash_loop';
 
   return (
-    <footer className="status-bar" aria-label="状态栏">
-      <span
-        className="status-bar__tag"
-        style={{ background: modeColor.bg, color: modeColor.dot }}
-        title="当前推理模式"
-      >
-        ● {modeColor.label}
+    <footer className="statusbar" aria-label="状态栏">
+      <span className={`status-item mode-badge ${badgeClass}`} title="当前推理模式">
+        <span className="mode-dot" style={{ background: modeColor.dot }} aria-hidden />
+        {modeColor.label}
       </span>
-      <span className="status-bar__sep" aria-hidden>
-        |
+      <span className="status-divider" aria-hidden />
+      <span className="status-item" title="当前模型">
+        {displayModel}
       </span>
-      <span className="status-bar__text" title="当前模型">
-        {llmModel}
-      </span>
-      <span className="status-bar__sep" aria-hidden>
-        |
-      </span>
-      <span className="status-bar__text" title="文件数与索引状态">
+      <span className="status-divider" aria-hidden />
+      <span className="status-item" title="文件数与索引状态">
         {isLoadingSettings ? '加载中...' : stats ? `${stats.total_files} 文件` : '0 文件'}
       </span>
-      <span className="status-bar__spacer" />
-      <span className="status-bar__text status-bar__text--muted" title="版本号">
-        v0.1.0
-      </span>
+      {selectedIds.length > 0 && (
+        <>
+          <span className="status-divider" aria-hidden />
+          <span className="status-item" title="已选中文件数">
+            选中 {selectedIds.length}
+          </span>
+          <button
+            type="button"
+            className="status-bar__link"
+            onClick={clearSelection}
+            title="清除所有选中"
+            aria-label="清除选中"
+          >
+            清除
+          </button>
+        </>
+      )}
+      <div className="status-right">
+        {engineStarting && (
+          <>
+            <span className="engine-badge engine-badge--starting" title="AI 引擎正在后台启动">
+              <span className="engine-dot engine-dot--starting" aria-hidden />
+              引擎启动中…
+            </span>
+            <span className="status-divider" aria-hidden />
+          </>
+        )}
+        {engineFailed && (
+          <>
+            <span
+              className="engine-badge engine-badge--failed"
+              title={sidecarMessage ?? 'AI 引擎启动失败'}
+            >
+              <span className="engine-dot engine-dot--failed" aria-hidden />
+              引擎不可用
+            </span>
+            <button
+              type="button"
+              className="status-bar__link"
+              onClick={() => void retrySidecar()}
+              title="重新启动 AI 引擎"
+              aria-label="重试启动 AI 引擎"
+            >
+              重试
+            </button>
+            <span className="status-divider" aria-hidden />
+          </>
+        )}
+        <span className="status-item" title="版本号">
+          v1.0.0
+        </span>
+      </div>
     </footer>
   );
 }

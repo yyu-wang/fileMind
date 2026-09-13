@@ -1,4 +1,4 @@
-// 步骤三：选择扫描目录（03 设计稿 §3.3）。
+// 步骤三：选择扫描目录（对齐交互原型 §Onboarding Step 3）。
 //
 // 调 @tauri-apps/plugin-dialog 的 open 选目录；
 // 拖拽接收留 T6.4。选定后触发 completeOnboarding + scanFiles。
@@ -16,8 +16,7 @@ interface StepDirectoryProps {
 export function StepDirectory({ onComplete, mode }: StepDirectoryProps) {
   const [directory, setDirectory] = useState<string | null>(null);
 
-  // T9.5 E2E：存在测试目录时跳过原生对话框自动填充（原生 open() 无法被 WebDriver 点击）。
-  // 非 E2E 环境 getE2eTestDir() 返回 null，不影响正常选目录流程。
+  // T9.5 E2E：存在测试目录时跳过原生对话框自动填充。
   useEffect(() => {
     let cancelled = false;
     void getE2eTestDir().then((dir) => {
@@ -52,42 +51,60 @@ export function StepDirectory({ onComplete, mode }: StepDirectoryProps) {
   const modeLabel = mode === 'Cloud' ? '云端' : '本地';
 
   return (
-    <div className="onboarding__step">
-      <h2 className="onboarding__title">选择要管理的目录</h2>
-      <p className="onboarding__subtitle">
+    <div>
+      <h3>选择要管理的目录</h3>
+      <p className="step-desc">
         选择你想要整理和建立知识库的目录。你当前选择的是{modeLabel}模式，扫描后的文件
         {mode === 'Cloud' ? '内容摘要将上传到云端处理' : '将完全在本地处理'}。
       </p>
 
       {/* 拖拽区 + 浏览按钮 */}
-      <div
-        className={`onboarding__drop-zone ${directory ? 'filled' : ''}`}
-        onClick={() => void handleBrowse()}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            void handleBrowse();
-          }
-        }}
-      >
-        {directory ? (
-          <div className="onboarding__selected-dir">
-            <span className="onboarding__dir-icon">📁</span>
-            <span className="onboarding__dir-path">{directory}</span>
+      {!directory && (
+        <div
+          className="dropzone"
+          onClick={() => void handleBrowse()}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              void handleBrowse();
+            }
+          }}
+        >
+          <div className="icon" aria-hidden>
+            📁
           </div>
-        ) : (
-          <>
-            <div className="onboarding__drop-icon">📁</div>
-            <p className="onboarding__drop-hint">点击选择目录</p>
-            <p className="onboarding__drop-sub">或拖拽文件夹到此处（T6.4 支持）</p>
-          </>
-        )}
-      </div>
+          <p>拖拽文件夹到此处</p>
+          <p style={{ fontSize: 12, color: 'var(--muted2)', marginTop: 4 }}>或点击浏览选择目录</p>
+        </div>
+      )}
 
-      <div className="onboarding__actions onboarding__actions--between">
-        <span className="onboarding__step-indicator">步骤 3/3</span>
+      {/* 已选目录展示 */}
+      {directory && (
+        <div className="selected-dir">
+          <span style={{ fontSize: 16 }} aria-hidden>
+            📂
+          </span>
+          <span className="mono">{directory}</span>
+          <span className="tag tag-green" style={{ marginLeft: 'auto' }}>
+            已选择
+          </span>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={() => void handleBrowse()}
+            aria-label="重新选择目录"
+          >
+            重新选择
+          </button>
+        </div>
+      )}
+
+      <div className="step-actions step-actions--between">
+        <button type="button" className="btn btn--ghost" onClick={() => void handleBrowse()}>
+          ← 上一步
+        </button>
         <button
           type="button"
           className="btn btn--primary"

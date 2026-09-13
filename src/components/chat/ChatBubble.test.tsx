@@ -26,21 +26,21 @@ describe('ChatBubble', () => {
     const { container, rerender } = render(
       <ChatBubble message={makeMessage({ role: ChatRole.User })} onCitationClick={vi.fn()} />,
     );
-    expect(container.querySelector('.chat-bubble--user')).not.toBeNull();
+    expect(container.querySelector('.msg.user')).not.toBeNull();
     rerender(<ChatBubble message={makeMessage()} onCitationClick={vi.fn()} />);
-    expect(container.querySelector('.chat-bubble--assistant')).not.toBeNull();
+    expect(container.querySelector('.msg.ai')).not.toBeNull();
   });
 
   it('shows streaming cursor when streaming', () => {
     const { container } = render(
       <ChatBubble message={makeMessage()} streaming onCitationClick={vi.fn()} />,
     );
-    expect(container.querySelector('.chat-bubble__cursor')).not.toBeNull();
+    expect(container.querySelector('.streaming-cursor')).not.toBeNull();
   });
 
   it('renders no cursor when not streaming', () => {
     const { container } = render(<ChatBubble message={makeMessage()} onCitationClick={vi.fn()} />);
-    expect(container.querySelector('.chat-bubble__cursor')).toBeNull();
+    expect(container.querySelector('.streaming-cursor')).toBeNull();
   });
 
   it('renders citation chips and forwards click', async () => {

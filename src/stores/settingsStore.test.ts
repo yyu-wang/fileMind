@@ -19,8 +19,34 @@ vi.mock('../lib/ipc', () => ({
 import { CLOUD_CONSENT_VERSION } from '../lib/consent';
 import { fileIpc } from '../lib/ipc';
 import { ThemeMode } from '../types/models';
-import type { AppConfig, OllamaStatus } from '../types/ipc';
+import type { AppConfig, CloudProviderRecord, OllamaStatus } from '../types/ipc';
 import { useSettingsStore } from './settingsStore';
+
+// P-07：loadApiKeyStatus 以 store.cloudProviders 为默认项基准，seed 两条内置记录
+const builtinCloudProviders: CloudProviderRecord[] = [
+  {
+    id: 'builtin-openai',
+    provider_key: 'Openai',
+    name: 'OpenAI',
+    remark: '',
+    website: null,
+    base_url: 'https://api.openai.com/v1',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+  {
+    id: 'builtin-deepseek',
+    provider_key: 'Deepseek',
+    name: 'DeepSeek',
+    remark: '',
+    website: null,
+    base_url: 'https://api.deepseek.com/v1',
+    is_builtin: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  },
+];
 
 const baseConfig: AppConfig = {
   data_directory: '/data',
@@ -65,6 +91,7 @@ function resetSettings(): void {
     error: null,
     ollamaStatus: null,
     ollamaProbing: false,
+    lastOllamaProbeAt: 0,
     llmModelOptions: [],
     embeddingModelOptions: [],
     theme: ThemeMode.System,
@@ -72,6 +99,8 @@ function resetSettings(): void {
       Openai: { provider: 'Openai', has_key: false, hint: '' },
       Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
     },
+    cloudProviders: builtinCloudProviders,
+    cloudProvidersLoading: false,
   });
 }
 
@@ -169,12 +198,39 @@ describe('settingsStore', () => {
     expect(useSettingsStore.getState().ollamaProbing).toBe(false);
   });
 
+  it('probeOllama TTL 节流：60s 内已成功探测则复用，不再发 IPC', async () => {
+    (fileIpc.ollamaStatus as Mock).mockResolvedValue({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(1);
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('probeOllama force=true：绕过节流强制重探', async () => {
+    (fileIpc.ollamaStatus as Mock).mockResolvedValue({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    await useSettingsStore.getState().probeOllama(true);
+
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('probeOllama 失败不缓存：下次调用照常重探', async () => {
+    (fileIpc.ollamaStatus as Mock)
+      .mockResolvedValueOnce({ status: 'error', error: 'down' })
+      .mockResolvedValueOnce({ status: 'ok', data: ollamaOk });
+
+    await useSettingsStore.getState().probeOllama();
+    expect(useSettingsStore.getState().ollamaStatus).toBeNull();
+
+    await useSettingsStore.getState().probeOllama();
+    expect(fileIpc.ollamaStatus).toHaveBeenCalledTimes(2);
+    expect(useSettingsStore.getState().ollamaStatus?.available).toBe(true);
+  });
+
   it('setLlmModel：乐观更新并持久化', async () => {
-    // 持久化成功后 updateConfig 会重载配置；后端已落库新模型名，getConfig 返回更新值
-    (fileIpc.getConfig as Mock).mockResolvedValue({
-      status: 'ok',
-      data: { ...baseConfig, llm_model: 'qwen2.5' },
-    });
     (fileIpc.updateConfig as Mock).mockResolvedValue({
       status: 'ok',
       data: { ...baseConfig, llm_model: 'qwen2.5' },
@@ -188,7 +244,7 @@ describe('settingsStore', () => {
     );
   });
 
-  it('updateConfig 成功：合并当前状态提交并重载配置', async () => {
+  it('updateConfig 成功：合并当前状态提交并本地合并（不再重拉配置）', async () => {
     (fileIpc.getConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
     (fileIpc.updateConfig as Mock).mockResolvedValue({ status: 'ok', data: baseConfig });
 
@@ -197,7 +253,11 @@ describe('settingsStore', () => {
     const sent = (fileIpc.updateConfig as Mock).mock.calls[0][0] as AppConfig;
     expect(sent.max_file_size_mb).toBe(200);
     expect(sent.llm_model).toBe('qwen3.8-27b'); // 未传字段由当前状态合并
-    expect(fileIpc.getConfig).toHaveBeenCalled(); // 成功后重载保证一致
+    // 优化契约：成功后用发送值本地合并，不再全量 getConfig 重拉
+    //（省一次串行 IPC，且避免 loadConfig 置 isLoading 闪全屏加载态）
+    expect(fileIpc.getConfig).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().maxFileSizeMb).toBe(200);
+    expect(useSettingsStore.getState().llmModel).toBe('qwen3.8-27b');
   });
 
   it('updateConfig 不得清空已签署的同意书字段（FE-B1 回归）', async () => {

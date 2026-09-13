@@ -17,6 +17,11 @@ from pathlib import Path
 
 from app.core.logging import getLogger, sanitize_path
 from app.db.lancedb_repo import DocumentChunk, LanceDBManager
+from app.services.doc_extract import (
+    DocumentExtractError,
+    extract_document_text,
+    is_binary_document,
+)
 from app.services.embedding_service import EMBEDDING_MODEL, embed_texts
 
 logger = getLogger("filemind.ingest")
@@ -51,8 +56,8 @@ TEXT_EXTENSIONS: set[str] = {
     "sql",
 }
 
-#: 单文件读取上限（2MB）。超限截断，避免超大文本耗尽内存/embedding 预算
-MAX_FILE_BYTES: int = 2 * 1024 * 1024
+#: 单文件读取上限（50MB）。超限截断，避免超大文本耗尽内存/embedding 预算
+MAX_FILE_BYTES: int = 50 * 1024 * 1024
 #: 分块目标长度（字符），对齐 P-03 上下文片段 CONTENT_MAX=500
 CHUNK_TARGET_CHARS: int = 500
 #: 单次 Embedding 调用最大文本条数（对齐并发/内存预算）
@@ -69,6 +74,9 @@ class BuildIndexResult:
     skipped: int
     """跳过的文件数（非文本 / 读取失败 / 空内容）。"""
 
+    indexed_file_ids: tuple[str, ...] = ()
+    """实际写入向量的 file_id（供 Rust 回写索引状态标记）。"""
+
 
 def _extension(path: Path) -> str:
     """返回小写扩展名（无扩展名返回空串）。"""
@@ -78,6 +86,30 @@ def _extension(path: Path) -> str:
 def is_supported_text(path: Path) -> bool:
     """文件扩展名是否属于可索引文本类。"""
     return _extension(path) in TEXT_EXTENSIONS
+
+
+def read_indexable_text(path: Path) -> str | None:
+    """按扩展名读取可索引正文：纯文本直读或二进制文档抽取。
+
+    - 文本类（TEXT_EXTENSIONS）：直接 UTF-8 读取（见 :func:`read_text`）；
+    - 二进制文档（pdf/docx/xlsx/pptx）：经 :func:`extract_document_text` 抽取；
+    - 其余类型返回 ``None``（调用方跳过）。
+
+    Args:
+        path: 文件绝对路径。
+
+    Returns:
+        可索引正文；非索引类型返回 ``None``。
+
+    Raises:
+        OSError: 文本文件不可读（非 UTF-8 字节按替换符降级）。
+        DocumentExtractError: 二进制文档解析失败。
+    """
+    if _extension(path) in TEXT_EXTENSIONS:
+        return read_text(path)
+    if is_binary_document(path):
+        return extract_document_text(path)
+    return None
 
 
 def read_text(path: Path) -> str:
@@ -144,17 +176,19 @@ def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
     docs: list[DocumentChunk] = []
     for file_id, raw_path in files:
         path = Path(raw_path)
-        if not path.is_file() or not is_supported_text(path):
+        if not path.is_file():
             continue
         try:
-            text = read_text(path)
-        except OSError as exc:
+            text = read_indexable_text(path)
+        except (OSError, DocumentExtractError) as exc:
             logger.warning(
                 "ingest.read_failed",
                 file_id=file_id,
                 path=sanitize_path(raw_path),
                 error=str(exc),
             )
+            continue
+        if text is None or not text.strip():
             continue
         chunks = chunk_text(text)
         if not chunks:
@@ -209,7 +243,6 @@ async def build_index(
 
     if not docs:
         return BuildIndexResult(indexed=0, skipped=skipped)
-
     # 阶段 2：分批 Embedding（网络 IO，事件循环友好）
     for start in range(0, len(docs), EMBED_BATCH_SIZE):
         batch = docs[start : start + EMBED_BATCH_SIZE]
@@ -236,7 +269,11 @@ async def build_index(
         chunks=len(docs),
         table=table_name,
     )
-    return BuildIndexResult(indexed=indexed, skipped=skipped)
+    return BuildIndexResult(
+        indexed=indexed,
+        skipped=skipped,
+        indexed_file_ids=tuple(sorted(indexed_file_ids)),
+    )
 
 
 def _is_safe_file_id(value: str) -> bool:
@@ -290,3 +327,37 @@ def update_paths(
         updated += 1
     # SC-m16：updated 计数是有效映射数（LanceDB update 不返回影响行数）
     return updated
+
+
+def delete_by_file_ids(
+    table_name: str,
+    file_ids: list[str],
+    mgr: LanceDBManager,
+) -> int:
+    """从向量索引中删除指定文件的全部向量行（目录级移除用）。
+
+    逐个调用 :meth:`LanceDBManager.delete_chunks_by_file_id`，表不存在或
+    ``file_ids`` 为空时返回 0（静默跳过）。非法 file_id 跳过并告警，
+    不中断整体。
+
+    Args:
+        table_name: 目标向量表名（``documents_{model}_v{version}``）。
+        file_ids: 待删除向量的文件 ID 列表。
+        mgr: LanceDB 管理器。
+
+    Returns:
+        成功删除向量的文件数（一个文件对应多个分块行，计数按文件计）。
+    """
+    if not file_ids:
+        return 0
+    if not mgr.is_table_exists(table_name):
+        return 0
+
+    deleted = 0
+    for file_id in file_ids:
+        if not _is_safe_file_id(file_id):
+            logger.warning("ingest.delete_by_file_ids_skipped", file_id=file_id)
+            continue
+        mgr.delete_chunks_by_file_id(table_name, file_id)
+        deleted += 1
+    return deleted

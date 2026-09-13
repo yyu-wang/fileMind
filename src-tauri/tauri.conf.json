@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "FileMind",
-  "version": "0.1.0",
-  "identifier": "com.filemind.app",
+  "version": "1.0.0",
+  "identifier": "com.filemind.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -21,11 +21,12 @@
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
-        "visible": false
+        "visible": true,
+        "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: https://data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'self' ipc: asset: tauri: file:; img-src 'self' asset: data: https://*; style-src 'self' 'unsafe-inline' data: https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' blob: data:; connect-src 'self' ws://localhost:1420 ws: wss: http: https: ipc: asset: tauri:; worker-src 'self' blob: data:",
       "assetProtocol": {
         "enable": true,
         "scope": ["$HOME/**"]
@@ -41,6 +42,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Utility",
+    "shortDescription": "智能文件整理分类 + RAG 问答助手",
+    "longDescription": "FileMind 是一款桌面文件整理分类器 + RAG 问答系统：基于规则/启发式/AI 三层分类引擎自动整理文件，并对本地文档建立索引后用自然语言问答（本地 Ollama 或云端模型）。所有 AI 处理均在知情同意下进行，数据目录与密钥本地安全保管。",
+    "publisher": "FileMind",
+    "copyright": "Copyright © 2026 FileMind. MIT License.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -49,6 +55,17 @@
       "icons/icon.ico"
     ],
     "externalBin": [],
-    "resources": []
+    "resources": {
+      "../filemind/binaries/filemind-sidecar/": "sidecar"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMUE3MjBGNjI0MkY4ODQKUldTRStFSmlEM0lhTW1XTlExeWVlQmc5QUFKV1FFZm14cUQ5bUg3bUVjNjZRK2VtQnpvNlJ4VHMK",
+      "endpoints": [
+        "https://github.com/yyu-wang/fileMind/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

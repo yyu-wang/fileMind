@@ -52,7 +52,9 @@ def client() -> Generator[mock.MagicMock]:
     from app.services.providers.openai_provider import _get_cached_client
 
     _get_cached_client.cache_clear()
-    with mock.patch("app.services.providers.openai_provider.AsyncOpenAI") as cls:
+    # P2-1：AsyncOpenAI 已惰性化（模块级不导入），patch 源模块；
+    # ``_get_cached_client`` 调用时的 ``from openai import AsyncOpenAI`` 会取到该 mock。
+    with mock.patch("openai.AsyncOpenAI") as cls:
         cls.return_value.chat.completions.create = mock.AsyncMock()
         yield cls
     _get_cached_client.cache_clear()

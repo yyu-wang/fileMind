@@ -31,8 +31,9 @@ use tauri::Manager as _;
 /// Sidecar 固定监听端口（本机回环）。
 pub const SIDECAR_PORT: u16 = 8765;
 /// Sidecar 就绪轮询最大尝试次数。
-/// 打包态 Sidecar 现包含 lancedb / numpy / pyarrow 等重依赖，冷启动实测约 39s，
-/// 放宽到 60s 窗口（600 × 100ms），避免重依赖场景下握手超时。
+/// 打包态 Sidecar 现包含 lancedb / numpy / pyarrow 等重依赖，冷启动主要由
+/// `PyInstaller` onefile 解压主导（P2-1 惰性导入后本机实测 21s 冷 / 16s 热盘）。
+/// 保留 60s 窗口（600 × 100ms）作为慢盘 / 首次解压的余量，避免握手超时。
 const MAX_READY_ATTEMPTS: u32 = 600;
 /// 每次就绪轮询间隔（毫秒）。
 const READY_POLL_INTERVAL_MS: u64 = 100;
@@ -59,6 +60,7 @@ const GRACEFUL_TOTAL_TIMEOUT_SECS: u64 = 5;
 /// 由 Rust 在启动 Sidecar 前设置；Sidecar 侧 E8 Provider 据此调用
 /// `FILEMIND_CLOUD_PROXY_URL` 代理并携带 `FILEMIND_CLOUD_PROXY_TOKEN` 鉴权头，
 /// `FILEMIND_CLOUD_MASKING` 触发 T7.2 云端脱敏。
+#[derive(Clone)]
 pub struct CloudSidecarEnv {
     /// Rust 云端代理地址（`http://127.0.0.1:{CLOUD_PROXY_PORT}`）。
     pub proxy_url: String,
@@ -66,6 +68,11 @@ pub struct CloudSidecarEnv {
     pub proxy_token: String,
     /// 是否启用云端数据脱敏（T7.2，`inference_mode=cloud` 时为真）。
     pub masking_on: bool,
+    /// P-07：当前激活的云提供商 slug（`app_config.active_cloud_provider`），
+    /// Sidecar 通过 env `FILEMIND_ACTIVE_CLOUD_PROVIDER` 读取后，
+    /// `GenericCloudProvider` 用它拼 Rust 云端代理路由尾段。空串表示未指定
+    /// （`ProviderFactory` 回落内置前缀匹配 + 本地 `Ollama`）。
+    pub active_cloud_provider: String,
 }
 
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
@@ -153,6 +160,15 @@ impl SidecarManager {
         self.cloud_env = Some(cloud_env);
     }
 
+    /// 当前云端模式 env 配置（未设置时为 `None`）。
+    ///
+    /// 供 setup 在「用 bundle 路径重建 SidecarManager」时把 main 阶段解析好的
+    /// 云端 env 克隆到新管理器，避免打包态云端模式丢配置（T7.4）。
+    #[must_use]
+    pub const fn cloud_env(&self) -> Option<&CloudSidecarEnv> {
+        self.cloud_env.as_ref()
+    }
+
     /// 启动 Sidecar 子进程，通过 stdin 注入 PSK，返回 PSK 给调用方。
     ///
     /// # Errors
@@ -170,6 +186,19 @@ impl SidecarManager {
 
         let mut cmd = std::process::Command::new(&self.binary_path_);
         cmd.env("SIDECAR_PORT", self.port.to_string());
+        // PSK 双通路注入（优先 env，stdin 兜底）：dev 模式 bash wrapper 脚本可能
+        // 在启动过程中意外消费 stdin 首行（shell profile / heredoc 处理等），
+        // 导致 Python 端 readline 读到空串或脏数据，握手签名校验失败返回 401。
+        // 通过 env 通路保证无论 shell 层行为如何，PSK_HEX 都能精确到达 Python
+        // 端 _inject_psk() 的 env 分支（优先级高于 stdin）。
+        // 安全：env PSK 同用户其他进程可读，但 dev 模式仅本机，且与打包态 stdin
+        // 主路径语义独立，不降低生产（PyInstaller 二进制 + stdin only）安全。
+        cmd.env("PSK_HEX", &psk_hex);
+        // 数据目录：传递 FILEMIND_DATA_HOME 给 Python Sidecar，保证 SQLite 与 LanceDB 落在同一根
+        // 未设置时不传递，Python 端会使用默认的 ~/.filemind
+        if let Ok(data_home) = std::env::var("FILEMIND_DATA_HOME") {
+            cmd.env("FILEMIND_DATA_HOME", data_home);
+        }
         // T7.4：云端模式注入代理地址/token/脱敏开关（重启后经字段保持）
         if let Some(cloud) = &self.cloud_env {
             cmd.env("FILEMIND_CLOUD_PROXY_URL", &cloud.proxy_url);
@@ -178,6 +207,14 @@ impl SidecarManager {
                 "FILEMIND_CLOUD_MASKING",
                 if cloud.masking_on { "1" } else { "0" },
             );
+            // P-07：注入激活提供商 slug（Sidecar ProviderFactory 据此选
+            // GenericCloudProvider，空串不注入，Python 端 env 读不到即回落内置规则）
+            if !cloud.active_cloud_provider.is_empty() {
+                cmd.env(
+                    "FILEMIND_ACTIVE_CLOUD_PROVIDER",
+                    &cloud.active_cloud_provider,
+                );
+            }
         }
         // 本地服务（Ollama / Sidecar 自身）必须绕过系统代理（Clash 等），
         // 否则 httpx 读 http_proxy 走代理 → 本地 127.0.0.1 被代理拦截返回 502。
@@ -348,6 +385,12 @@ impl SidecarManager {
     /// 失败计数，但外部捕获该错误可用于排障日志。
     pub async fn watchdog_tick(&mut self) -> AppResult<WatchdogAction> {
         if self.is_stopped() {
+            return Ok(WatchdogAction::Idle);
+        }
+        // P1-1：尚未启动（后台引导线程处理中 / 启动失败等待用户重试）——
+        // 不探测、不重启，避免 watchdog 与 bootstrap 线程竞态双开进程占住端口。
+        // 运行期崩溃后 `stop_hard` + 握手失败也会落到此态，此时交给用户重试。
+        if self.process.is_none() && self.psk.is_none() {
             return Ok(WatchdogAction::Idle);
         }
         if self.is_crash_loop_paused() {
@@ -575,15 +618,15 @@ impl Default for SidecarManager {
     fn default() -> Self {
         // Default 仅用于 Mutex::new(Default::default()) 类型占位或单测；
         // 真实二进制运行前（main/setup）会被具体解析后的路径覆盖。
-        // 拼接 ``${CARGO_MANIFEST_DIR}/../filemind/binaries/filemind-sidecar``，
-        // 即便文件不存在，也保证 binary_path() 字段语义对应约定的 dev 产物位置，
-        // 不会再误指向 Cargo.toml 文本。
-        let dev_stub = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        // P2-2：产物是 onedir 目录 ``binaries/filemind-sidecar/``，主可执行在目录内
+        // （文件名按平台），故拼接 ``.../binaries/filemind-sidecar/filemind-sidecar[.exe]``，
+        // 即便文件不存在，也保证 binary_path() 语义对应约定的 dev 产物位置。
+        let dev_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("filemind")
             .join("binaries")
             .join("filemind-sidecar");
-        Self::new(dev_stub)
+        Self::new(dev_dir.join(main_exe_base_name()))
     }
 }
 
@@ -605,166 +648,268 @@ pub fn current_target_triple() -> String {
     }
 }
 
-/// dev 模式解析 Sidecar 二进制绝对路径（打包模式由 Tauri `PathResolver` 代替本函数）。
+/// dev 模式解析 Sidecar 可执行文件绝对路径（打包模式由 Tauri `PathResolver` 代替）。
+///
+/// P2-2 起**布局发现**只认 onedir 目录形态（见 [`main_exe_in_dir`]），不再扫描 onefile
+/// 单文件产物；但**显式覆盖**（`FILEMIND_SIDECAR_BINARY`）语义是「直接指定要执行的
+/// sidecar 可执行文件」，故同时接受目录与可执行文件——CI E2E 与本地 dev 会用 wrapper
+/// 脚本（`scripts/e2e-sidecar-wrapper.sh` / `binaries/filemind-sidecar-dev`）注入
+/// `python -m app` 启动参数，这是文件而非目录。
 ///
 /// 优先级从高到低：
 ///
-/// 1. `override_env`：调用方读 `FILEMIND_SIDECAR_BINARY` 后传入（绝对/相对都行，
-///    存在即 canonicalize 返回）；传 `None` 或空串 → 跳过。
+/// 1. `override_env`：调用方读 `FILEMIND_SIDECAR_BINARY` 后传入（绝对/相对都行）；
+///    目录 → 定位其中的主可执行；可执行文件 → 直接使用；传 `None` 或空串 → 跳过。
 /// 2. 基于 `CARGO_MANIFEST_DIR` 环境变量（cargo 注入，指向 ``<repo>/src-tauri``）：
 ///    向上回退到 repo 根，然后找 ``filemind/binaries/``：
-///    a. ``filemind-sidecar-{triple}`` 具体架构产物（优先生效）
-///    b. ``filemind-sidecar`` 软链接（兜底，build-sidecar.sh 创建）
-/// 3. 最后回退：``${cwd}/filemind/binaries/filemind-sidecar``（兼容手工启动场景）。
+///    a. ``filemind-sidecar-{triple}/`` 具体架构产物目录（优先生效）
+///    b. ``filemind-sidecar/`` 软链接目录（兜底，build-sidecar.sh 创建）
+/// 3. 最后回退：``${cwd}/filemind/binaries/filemind-sidecar/``（兼容手工启动场景）。
 ///
-/// 返回：第一个命中且 `metadata().is_file()` 的路径（已 `canonicalize`，无相对段）。
+/// 返回：第一个命中的主可执行文件路径（已 `canonicalize`，无相对段）。
 ///
 /// # Errors
 ///
-/// 全部候选路径不存在时返回 [`AppError::SidecarUnavailable`]，错误信息附带候选列表
-/// + 当前 triple 构建建议，便于排障。
+/// 全部候选目录不存在或无主可执行文件时返回 [`AppError::SidecarUnavailable`]，
+/// 错误信息附带候选列表 + 当前 triple 构建建议，便于排障。
 pub fn resolve_dev_binary_path(override_env: Option<&str>) -> AppResult<std::path::PathBuf> {
     let mut tried: Vec<String> = Vec::new();
 
-    // ---- 优先级 1：显式覆盖（CI / 调试） ----
+    // ---- 优先级 1：显式覆盖（CI / 调试）----
     if let Some(ov) = override_env.filter(|s| !s.is_empty()) {
-        let p = std::path::PathBuf::from(ov);
-        tried.push(format!("(override) {}", p.display()));
-        if is_existing_file(&p) {
-            return p.canonicalize().map_err(|e| {
-                AppError::SidecarUnavailable(format!("canonicalize override 失败: {e}"))
-            });
+        if let Some(p) = resolve_override(ov, &mut tried)? {
+            return Ok(p);
         }
     }
 
-    // ---- 优先级 2：CARGO_MANIFEST_DIR → repo 根回退 ----
+    // ---- 优先级 2/3：dev 布局发现（CARGO_MANIFEST_DIR 回退 → cwd 兜底）----
+    if let Some(p) = find_in_dev_layout(&mut tried)? {
+        return Ok(p);
+    }
+
+    // ---- 全部不命中 ----
+    Err(AppError::SidecarUnavailable(format!(
+        "dev 模式未找到 Sidecar onedir 产物目录（目录内应含主可执行 filemind-sidecar），候选列表:\n  - {}\n\
+         建议：1) 先跑 bash scripts/build-sidecar.sh --target {}；2) 或设置 FILEMIND_SIDECAR_BINARY 指向产物目录绝对路径",
+        tried.join("\n  - "),
+        current_target_triple()
+    )))
+}
+
+/// 解析显式覆盖（`FILEMIND_SIDECAR_BINARY`）：目录取其中主可执行，可执行文件直接采用。
+///
+/// 返回语义：
+/// - `Ok(Some(p))`：命中（已 canonicalize）
+/// - `Ok(None)`：路径不可用 → 交由布局发现继续兜底（保持既有「覆盖不生效不阻塞」语义）
+/// - `Err`：命中但 canonicalize 失败（真实故障应暴露）
+fn resolve_override(ov: &str, tried: &mut Vec<String>) -> AppResult<Option<std::path::PathBuf>> {
+    let p = std::path::PathBuf::from(ov);
+    tried.push(format!("(override) {}", p.display()));
+    let hit = if p.is_dir() {
+        main_exe_in_dir(&p)
+    } else if is_existing_file(&p) {
+        // wrapper 脚本 / 直接指定的可执行文件
+        Some(p)
+    } else {
+        None
+    };
+    hit.map_or(Ok(None), |exe| {
+        exe.canonicalize()
+            .map(Some)
+            .map_err(|e| AppError::SidecarUnavailable(format!("canonicalize override 失败: {e}")))
+    })
+}
+
+/// dev 布局发现：`CARGO_MANIFEST_DIR` 回退到 repo 根的 `filemind/binaries/`，再 cwd 兜底。
+///
+/// `tried` 累积探测记录（供调用方拼错误信息）；命中返回 `Ok(Some(已 canonicalize 路径))`。
+fn find_in_dev_layout(tried: &mut Vec<String>) -> AppResult<Option<std::path::PathBuf>> {
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let src_tauri = std::path::PathBuf::from(manifest_dir);
         // CARGO_MANIFEST_DIR = <repo>/src-tauri → repo 根 = parent()
         if let Some(repo_root) = src_tauri.parent() {
             let binaries_dir = repo_root.join("filemind").join("binaries");
             let triple = current_target_triple();
-            let cand_triple = binaries_dir.join(format!("filemind-sidecar-{triple}"));
-            tried.push(format!("(cargo-triple) {}", cand_triple.display()));
-            if is_existing_file(&cand_triple) {
-                return cand_triple.canonicalize().map_err(|e| {
-                    AppError::SidecarUnavailable(format!("canonicalize triple-binary 失败: {e}"))
-                });
-            }
-            let cand_sym = binaries_dir.join("filemind-sidecar");
-            tried.push(format!("(cargo-symlink) {}", cand_sym.display()));
-            if is_existing_file(&cand_sym) {
-                return cand_sym.canonicalize().map_err(|e| {
-                    AppError::SidecarUnavailable(format!("canonicalize sidecar-symlink 失败: {e}"))
-                });
+            // triple 具体目录优先；基础名目录兜底（build-sidecar.sh 在 macOS 建软链接）
+            for (tag, dir) in [
+                (
+                    "cargo-triple",
+                    binaries_dir.join(format!("filemind-sidecar-{triple}")),
+                ),
+                ("cargo-default", binaries_dir.join("filemind-sidecar")),
+            ] {
+                if let Some(p) = probe_onedir(&dir, tag, tried)? {
+                    return Ok(Some(p));
+                }
             }
         }
     }
-
-    // ---- 优先级 3：cwd 兜底 ----
     if let Ok(cwd) = std::env::current_dir() {
         let fallback = cwd
             .join("filemind")
             .join("binaries")
             .join("filemind-sidecar");
-        tried.push(format!("(cwd) {}", fallback.display()));
-        if is_existing_file(&fallback) {
-            return fallback.canonicalize().map_err(|e| {
-                AppError::SidecarUnavailable(format!("canonicalize cwd fallback 失败: {e}"))
-            });
-        }
-    } else {
-        tried.push("(cwd) 无法读取 current_dir → 已跳过".to_string());
+        return probe_onedir(&fallback, "cwd", tried);
     }
-
-    // ---- 全部不命中 ----
-    Err(AppError::SidecarUnavailable(format!(
-        "dev 模式未找到 Sidecar 二进制，候选列表:\n  - {}\n\
-         建议：1) 先跑 bash scripts/build-sidecar.sh --target {}；2) 或设置 FILEMIND_SIDECAR_BINARY 指向产物绝对路径",
-        tried.join("\n  - "),
-        current_target_triple()
-    )))
+    tried.push("(cwd) 无法读取 current_dir → 已跳过".to_string());
+    Ok(None)
 }
 
-/// 小 helper：`fs::metadata(p).ok()?.is_file()` 走短路，不用再写多处。
+/// 在候选 onedir 目录内定位主可执行并 canonicalize；未命中返回 `Ok(None)`。
+fn probe_onedir(
+    dir: &std::path::Path,
+    tag: &str,
+    tried: &mut Vec<String>,
+) -> AppResult<Option<std::path::PathBuf>> {
+    tried.push(format!("({tag}) {}/", dir.display()));
+    main_exe_in_dir(dir).map_or(Ok(None), |exe| {
+        exe.canonicalize().map(Some).map_err(|e| {
+            AppError::SidecarUnavailable(format!("canonicalize {tag} 主可执行失败: {e}"))
+        })
+    })
+}
+
+/// 小 helper：`fs::metadata(p).is_ok_and(|m| m.is_file())`，不用再写多处。
 fn is_existing_file(p: &std::path::Path) -> bool {
-    std::fs::metadata(p).ok().is_some_and(|m| m.is_file())
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
 }
 
-// ---------- 二进制路径解析（bundle 模式 / Tauri resources 回退） ----------
+// ---------- onedir 产物匹配（P2-2） ----------
 
-/// bundle 模式下，基于给定的「resources 根目录」解析 Sidecar 可执行文件的绝对路径。
+/// onedir 目录在 bundle 内的落地子目录名。
 ///
-/// 纯函数：`resolve_bundle_binary_path`（Tauri 封装版）对 `AppHandle` 的 `PathResolver`
-/// 结果再调用本函数；单测可绕过 Tauri 直接传 `tempdir` 验证拼接和错误文案。
+/// 与 `src-tauri/tauri.conf.json` 中 `bundle.resources` map 的目标值保持一致：
+/// `{"../filemind/binaries/filemind-sidecar/": "sidecar"}` → 主可执行落在
+/// `$RESOURCE/sidecar/filemind-sidecar`（macOS）/ `<install>/sidecar/...`（Windows）。
+const BUNDLE_SIDECAR_SUBDIR: &str = "sidecar";
+
+/// onedir 主可执行的**基础名**（无 triple 后缀；Windows 带 `.exe`）。
+#[must_use]
+const fn main_exe_base_name() -> &'static str {
+    if cfg!(windows) {
+        "filemind-sidecar.exe"
+    } else {
+        "filemind-sidecar"
+    }
+}
+
+/// onedir 主可执行文件的候选文件名（不含目录），按优先级排列。
 ///
-/// 候选查找顺序：
-/// 1. `${resources_root}/filemind-sidecar-{triple}`（架构专属，优先生效）
-/// 2. `${resources_root}/filemind-sidecar`（Windows 上额外兼容 `.exe` 后缀兜底）
+/// P2-2 后产物是目录（`filemind-sidecar[.exe]` + `_internal/`）。构建侧命名可能保留
+/// triple 后缀或退化为基础名；与 `build-sidecar.sh` 的产物命名保持一致。
+#[must_use]
+fn resolve_main_exe_names() -> Vec<String> {
+    let triple = current_target_triple();
+    let mut names = Vec::new();
+    if cfg!(windows) {
+        names.push(format!("filemind-sidecar-{triple}.exe"));
+    }
+    names.push(format!("filemind-sidecar-{triple}"));
+    names.push(main_exe_base_name().to_string());
+    names
+}
+
+/// 在给定目录内定位 onedir 主可执行文件（纯逻辑）。
+///
+/// 只认「目录内的真实文件」：目录本身不是可执行产物，真正要启动的是其中的主程序，
+/// 其同级的 `_internal/` 由 `PyInstaller` bootloader 自行定位。
+#[must_use]
+pub(crate) fn main_exe_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    resolve_main_exe_names()
+        .into_iter()
+        .map(|name| dir.join(name))
+        .find(|c| is_existing_file(c))
+}
+
+/// bundle 模式下，在多个「根目录」中依次探测 onedir 主可执行文件。
+///
+/// 纯函数：按给定根目录顺序，每个根目录内依次尝试
+/// 1. `<root>/sidecar/`（Tauri `bundle.resources` 的 map 目标落地位置，P2-2 主路径）
+/// 2. `<root>/`（未嵌套的 onedir 目录，便于手工摆放 / 调试）
+///
+/// 首个命中即返回（已 canonicalize）。
+///
+/// Tauri v2 实测行为（2026-09-04）：`externalBin` 产物落在主可执行同目录；P2-2 改用
+/// `bundle.resources` 后落在 `resource_dir()/sidecar/`（macOS `Contents/Resources/sidecar/`）。
+/// 因此调用方同时传「主可执行目录」与 `resource_dir` 两个根，任一命中即可。
 ///
 /// # Errors
 ///
-/// 全部候选不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，附候选路径列表
-/// 与 `resources_root`，便于现场排障（如打包脚本漏拷了二进制）。
-pub fn resolve_bundle_from_resources(
-    resources_root: &std::path::Path,
-) -> AppResult<std::path::PathBuf> {
-    let triple = current_target_triple();
+/// 全部根目录 × 全部候选均不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，
+/// 附完整探测列表，便于现场排障（如打包脚本漏拷产物目录）。
+pub fn resolve_bundle_from_roots(roots: &[std::path::PathBuf]) -> AppResult<std::path::PathBuf> {
     let mut tried: Vec<String> = Vec::new();
-
-    let candidates: Vec<std::path::PathBuf> = if cfg!(windows) {
-        vec![
-            resources_root.join(format!("filemind-sidecar-{triple}.exe")),
-            resources_root.join("filemind-sidecar.exe"),
-            resources_root.join(format!("filemind-sidecar-{triple}")),
-            resources_root.join("filemind-sidecar"),
-        ]
-    } else {
-        vec![
-            resources_root.join(format!("filemind-sidecar-{triple}")),
-            resources_root.join("filemind-sidecar"),
-        ]
-    };
-
-    for c in candidates {
-        tried.push(format!("{}", c.display()));
-        if is_existing_file(&c) {
-            return c.canonicalize().map_err(|e| {
-                AppError::SidecarUnavailable(format!(
-                    "Sidecar 命中 bundle 候选 {} 但 canonicalize 失败: {e}",
-                    c.display()
-                ))
-            });
+    for root in roots {
+        for sub in [Some(BUNDLE_SIDECAR_SUBDIR), None] {
+            let dir = sub.map_or_else(|| root.clone(), |s| root.join(s));
+            tried.push(format!("{}/", dir.display()));
+            if let Some(exe) = main_exe_in_dir(&dir) {
+                return exe.canonicalize().map_err(|e| {
+                    AppError::SidecarUnavailable(format!(
+                        "Sidecar 命中 bundle 候选 {} 但 canonicalize 失败: {e}",
+                        exe.display()
+                    ))
+                });
+            }
         }
     }
 
     Err(AppError::SidecarUnavailable(format!(
-        "Sidecar 二进制在 Tauri resources 目录下未找到: resources_root={}; 候选列表:\n  {}\n请确认打包脚本 build-sidecar.sh 已把产物拷入 resources/",
-        resources_root.display(),
+        "Sidecar 主可执行在 bundle 根目录下未找到（探测根目录 {} 个，候选路径 {} 条）:\n  {}\n\
+         请确认 tauri.conf.json bundle.resources 已配置目录映射，且 build-sidecar.sh 产物在构建前生成",
+        roots.len(),
+        tried.len(),
         tried.join("\n  ")
     )))
 }
 
-/// bundle 模式下，通过 Tauri [`tauri::Manager::path`] 解析 Sidecar 可执行文件绝对路径。
+/// bundle 模式下，基于给定的单一「resources 根目录」解析 onedir 主可执行文件。
 ///
-/// 解析到的路径即传给 [`SidecarManager::new`] 启动；本函数仅做路径定位，不含进程启动。
-///
-/// 实现层：先取 `app.path().resource_dir()` → 命中再调纯函数
-/// [`resolve_bundle_from_resources`]。这样单测可以不用 Mock Tauri Runtime。
+/// 纯函数：兼容旧单测契约（直接传 `tempdir` 验证拼接与错误文案），内部委托
+/// [`resolve_bundle_from_roots`]。生产路径走 [`resolve_bundle_binary_path`]
+/// （多根目录探测，含主可执行文件目录）。
 ///
 /// # Errors
 ///
-/// - `app.path().resource_dir()` 返回 `None`（极少：非 bundle 环境或平台不支持）
-/// - resources 下所有候选均不命中（详情见 [`resolve_bundle_from_resources`]）
+/// 全部候选不存在 / 非文件 → 返回 [`AppError::SidecarUnavailable`]，附候选列表。
+pub fn resolve_bundle_from_resources(
+    resources_root: &std::path::Path,
+) -> AppResult<std::path::PathBuf> {
+    resolve_bundle_from_roots(&[resources_root.to_path_buf()])
+}
+
+/// bundle 模式下，解析打包态 Sidecar onedir 主可执行文件的绝对路径。
+///
+/// 解析到的路径即传给 [`SidecarManager::new`] 启动；本函数仅做路径定位，不含进程启动。
+///
+/// 根目录收集顺序（P2-2：产物经 `bundle.resources` 携带）：
+/// 1. **主可执行文件所在目录**（macOS `Contents/MacOS/`，Windows 安装根目录）——
+///    兼容「onedir 目录被摆在主可执行旁」的场景；
+/// 2. `resource_dir()`（macOS `Contents/Resources/`，Windows 安装根目录）——
+///    `bundle.resources` 的实际落地位置，P2-2 主命中路径
+///    （实际主可执行在 `resource_dir()/sidecar/`，见 [`BUNDLE_SIDECAR_SUBDIR`]）。
+///
+/// 纯逻辑在 [`resolve_bundle_from_roots`]，此处仅负责收集根目录，单测无需 Mock Tauri。
+///
+/// # Errors
+///
+/// - 主可执行文件目录无法解析（非 bundle 环境？）与 `resource_dir()` 查询失败时记 warn，
+///   不阻断（仍有另一根目录可探）
+/// - 全部根目录候选均不命中（详情见 [`resolve_bundle_from_roots`]）
 pub fn resolve_bundle_binary_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<std::path::PathBuf> {
-    let root = app.path().resource_dir().map_err(|e| {
-        AppError::SidecarUnavailable(format!(
-            "Tauri resource_dir 查询失败（非 bundle 环境？）: {e}"
-        ))
-    })?;
-    resolve_bundle_from_resources(&root)
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+        }
+    }
+    match app.path().resource_dir() {
+        Ok(dir) => roots.push(dir),
+        Err(e) => log::warn!("Tauri resource_dir 查询失败（作为兜底根目录跳过）: {e}"),
+    }
+    resolve_bundle_from_roots(&roots)
 }
 
 impl Drop for SidecarManager {
@@ -783,63 +928,134 @@ impl Drop for SidecarManager {
 
 // ---------- 孤儿 Sidecar 清理（BE-M3） ----------
 
+/// Sidecar 主可执行的进程名（打包 / onedir 形态）。
+const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
+
+/// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
+const LINUX_COMM_MAX_LEN: usize = 15;
+
+/// `ps -o comm=` 取到的进程名是否就是 Sidecar 主可执行。
+///
+/// ⚠️ Linux 的 `comm` 由内核按 `TASK_COMM_LEN - 1 = 15` 字符截断，而
+/// `filemind-sidecar` 恰好 16 字符，实际取到的是 `filemind-sideca`——只做
+/// `contains("filemind-sidecar")` 会**永远匹配不到**，导致 Linux 上孤儿清理
+/// 形同虚设（残留进程占住端口 → 下次启动握手 401）。故额外容忍该截断形态，
+/// 且用等值比较（`comm == 截断名`）而非前缀比较，避免放宽误杀范围。
+#[cfg(unix)]
+#[must_use]
+pub(crate) fn matches_sidecar_comm(comm: &str) -> bool {
+    if comm.contains(SIDECAR_COMM_NAME) {
+        return true;
+    }
+    let truncated = SIDECAR_COMM_NAME
+        .get(..LINUX_COMM_MAX_LEN)
+        .unwrap_or(SIDECAR_COMM_NAME);
+    comm == truncated
+}
+
 /// 启动新 Sidecar 前清理上次异常退出残留的孤儿进程。
 ///
 /// 场景：上次运行握手失败 / 崩溃路径 `std::process::exit(1)` 跳过 Drop，
 /// 子进程被 launchd 收养（ppid=1）继续占住 8765 端口 → 本次启动探活命中
 /// 旧进程（/health 无鉴权），新 PSK 握手必败 401 → 死循环只能手工杀进程。
 ///
-/// 双重防误杀：
-/// 1. `ps -o comm=` 进程名必须包含 `filemind-sidecar`（不杀无关程序）；
-/// 2. `ps -o ppid=` 必须为 1（真孤儿，父进程已死被 init 收养）。
-///    活着的应用实例其 Sidecar ppid 是该实例主进程，不会被误杀——因此
+/// 三重防误杀：
+/// 1. 端口匹配：仅处理监听 `port`（默认 8765）的进程（`lsof -ti tcp:{port}` 前置过滤）；
+/// 2. 进程身份匹配（满足任一即可）：
+///    a. 打包模式：`ps -o comm=` 进程名包含 `filemind-sidecar`（并容忍 Linux 15 字符截断形态 `filemind-sideca`，见 [`matches_sidecar_comm`]）；或
+///    b. dev 模式：进程名包含 `python` 且完整命令行 `ps -o args=` 包含 `-m app`（Sidecar 启动入口特征）；
+/// 3. 孤儿判定：自身 `ppid==1`（父进程已死被 init 收养），**或**父进程同为
+///    Sidecar（PyInstaller onefile 是 bootloader(父)+服务(子) 两进程，端口监听者
+///    是子进程）且父进程的父进程已死——两级祖先整体视为孤儿一并清理。
+///    活着的应用实例其 Sidecar ppid 链指向该实例主进程，不会被误杀——因此
 ///    「第二实例先于单实例插件启动 Sidecar」的竞态也是安全的：第二实例
 ///    不清掉第一实例的 Sidecar，自己 spawn 失败/握手失败后自我清理退出。
 ///
 /// 仅 Unix 实现；非 Unix 平台记日志跳过。工具（lsof/ps）缺失视为无可清理。
 pub fn cleanup_orphan_sidecar(port: u16) {
-    // 安全注释：kill 的目标经过「监听指定端口 + 名字匹配 + ppid==1」三重
-    // 校验，均为本应用残留 Sidecar；不涉及其他进程。
+    // 安全注释：kill 的目标经过「监听指定端口 + Sidecar 身份匹配（打包名或 python+-m app）
+    // + 孤儿判定（ppid==1 或父进程同为孤儿 Sidecar）」校验，均为本应用残留 Sidecar；
+    // 不涉及其他进程。
     #[cfg(unix)]
     {
-        let lsof = std::process::Command::new("lsof")
-            .args(["-ti", &format!("tcp:{port}")])
+        /// 读取进程 ps 字段（comm=/args=/ppid=），失败或非零退出返回 None。
+        fn read_ps(pid: u32, format: &str) -> Option<String> {
+            let out = std::process::Command::new("ps")
+                .args(["-o", format, "-p", &pid.to_string()])
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+
+        // 全量扫描所有进程（`ps -axo`），不依赖 lsof 端口过滤。端口过滤只能命中
+        // 「已就绪监听」的孤儿，会漏杀「仍在启动中、尚未监听端口」的孤儿——后者在
+        // cleanup 之后才占用端口，导致新 Sidecar 握手命中旧进程 401（时序竞态，
+        // 2026-09-10 实测：孤儿 Sidecar 在 cleanup 执行时尚未监听 8765）。
+        let ps_all = std::process::Command::new("ps")
+            .args(["-axo", "pid=,ppid=,comm="])
             .output();
-        let Ok(out) = lsof else {
-            log::info!("孤儿清理跳过：lsof 不可用");
+        let Ok(out) = ps_all else {
+            log::info!("孤儿清理跳过：ps 不可用");
             return;
         };
         if !out.status.success() {
-            return; // 无进程监听该端口（lsof 非零退出）——正常情况
+            return;
         }
-        let pids = String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .filter_map(|s| s.parse::<u32>().ok())
-            .collect::<Vec<u32>>();
-        for pid in pids {
-            // 校验 1：进程名包含 filemind-sidecar
-            let comm = std::process::Command::new("ps")
-                .args(["-o", "comm=", "-p", &pid.to_string()])
-                .output();
-            let name_matches = comm.is_ok_and(|c| {
-                c.status.success()
-                    && String::from_utf8_lossy(&c.stdout).contains("filemind-sidecar")
-            });
-            if !name_matches {
-                log::info!("孤儿清理跳过 pid={pid}：进程名不匹配");
+        // 收集所有 Sidecar 进程：打包模式（comm 含 `filemind-sidecar`），或 dev 模式
+        // （进程名 python 且命令行带 `-m app` / `sidecar_entry.py` 入口特征）。
+        let mut sidecar_procs: Vec<(u32, u32)> = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut parts = line.split_whitespace();
+            let Some(pid) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
+            };
+            let Some(parent_pid) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+                continue;
+            };
+            let comm = parts.next().unwrap_or("").to_lowercase();
+            let is_sidecar = if matches_sidecar_comm(&comm) {
+                true
+            } else if comm.contains("python") {
+                read_ps(pid, "args=")
+                    .is_some_and(|a| a.contains("-m app") || a.contains("sidecar_entry.py"))
+            } else {
+                false
+            };
+            if is_sidecar {
+                sidecar_procs.push((pid, parent_pid));
             }
-            // 校验 2：ppid == 1（父进程已死，被 init 收养的真孤儿）
-            let ppid = std::process::Command::new("ps")
-                .args(["-o", "ppid=", "-p", &pid.to_string()])
-                .output();
-            let is_orphan = ppid.is_ok_and(|c| {
-                c.status.success() && String::from_utf8_lossy(&c.stdout).trim() == "1"
-            });
-            if !is_orphan {
+        }
+        let mut to_kill: Vec<u32> = Vec::new();
+        for (pid, parent_pid) in &sidecar_procs {
+            // 孤儿判定放宽到「两级祖先」：
+            // - 自身父进程已死（ppid==1），被 init 收养的真孤儿；
+            // - 或父进程也是 Sidecar（PyInstaller onefile 实为 bootloader(父) +
+            //   服务进程(子) 两进程，端口监听者是子进程，其 ppid 指向父 bootloader
+            //   而非 1）且父进程的父进程已死——旧逻辑只认 ppid==1，漏杀整对
+            //   进程，子进程继续占住端口导致下一次启动握手失败崩溃。
+            let orphan = *parent_pid == 1
+                || sidecar_procs
+                    .iter()
+                    .any(|(parent, grand_ppid)| *parent == *parent_pid && *grand_ppid == 1);
+            if !orphan {
                 log::info!("孤儿清理跳过 pid={pid}：父进程仍存活（非孤儿）");
                 continue;
             }
+            if !to_kill.contains(pid) {
+                to_kill.push(*pid);
+            }
+            // 一并终止父 bootloader（自身不监听端口）
+            if *parent_pid != 1 {
+                if let Some(parent) = sidecar_procs.iter().find(|(p, _)| *p == *parent_pid) {
+                    if !to_kill.contains(&parent.0) {
+                        to_kill.push(parent.0);
+                    }
+                }
+            }
+        }
+        for pid in to_kill {
             // SIGTERM 温和终止；失败打日志即可，不阻断启动
             let kill = std::process::Command::new("kill")
                 .arg(pid.to_string())
@@ -866,3 +1082,5 @@ pub fn cleanup_orphan_sidecar(port: u16) {
 #[allow(clippy::expect_used)]
 #[path = "manager_tests.rs"]
 mod tests;
+
+// lint fix notes: doc_markdown (GenericCloudProvider / ProviderFactory / Ollama 反引号)

@@ -4,7 +4,7 @@
 //! 携带各自目标路径 + `ConflictStrategy::Skip`），共享链式撤销，无需重复实现执行链路。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,8 @@ async fn classify_preview_inner(
     }
 
     let safe_root = security::validate(scan_root)?;
+    // 同级收纳根（`<扫描根名>_已分类`），分类目标基于它拼接并回传前端
+    let output_root = unique_output_root(&safe_root)?;
 
     let (files, rules, categories) = {
         let guard = state
@@ -108,9 +110,28 @@ async fn classify_preview_inner(
 
     Ok(ClassifyPreview {
         batch_id,
+        output_root: output_root.to_string_lossy().to_string(),
         items,
         stats: preview_stats,
     })
+}
+
+/// 计算本次分类的收纳根：以同级 `<扫描根名>_已分类` 为基准。同名目录已存在时
+/// 视为已建收纳目录并**复用**（支持分批整理同一扫描根）；仅当该路径被同名普通
+/// 文件占用（非目录）时报错，避免执行期 `create_dir_all` 静默失败。
+///
+/// # Errors
+///
+/// 扫描根无法生成收纳目录名（文件系统根等），或同级路径被同名普通文件占用时返回 `InvalidInput`。
+fn unique_output_root(scan_root: &Path) -> AppResult<PathBuf> {
+    let base = classifier::sibling_output_root(scan_root)?;
+    if base.exists() && !base.is_dir() {
+        return Err(AppError::InvalidInput(format!(
+            "同级收纳目录名被同名文件占用：{}，请移动该文件后重试",
+            base.display()
+        )));
+    }
+    Ok(base)
 }
 
 // ----------------------------------------------------------------------
@@ -240,7 +261,7 @@ mod tests {
     fn make_test_app_state(db_path: &std::path::Path) -> AppState {
         let db = Database::open(db_path).expect("打开测试 DB 失败");
         AppState {
-            db: Mutex::new(db),
+            db: std::sync::Arc::new(Mutex::new(db)),
             sidecar_manager: Mutex::new(SidecarManager::new(
                 "/dev/null/sidecar-nonexistent".into(),
             )),
@@ -248,6 +269,7 @@ mod tests {
             sidecar_binary: Mutex::new("/dev/null/sidecar-nonexistent".into()),
             request_seq: AtomicU64::new(0),
             sidecar_restart_count: AtomicU64::new(0),
+            sidecar_status: Mutex::new(crate::SidecarStatus::Starting),
         }
     }
 
@@ -344,6 +366,45 @@ mod tests {
 
         let result = classify_preview_inner(&state, &["f1".to_string()], "/System").await;
         assert!(matches!(result, Err(AppError::UnsafePath(_))));
+        Ok(())
+    }
+
+    /// 收纳根 = 扫描根同级的 `<扫描根名>_已分类`；目录不存在时直接采用该名。
+    #[test]
+    fn test_unique_output_root_sibling_used_when_free() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let out = unique_output_root(root.path())?;
+        let expected = classifier::sibling_output_root(root.path())?;
+        assert_eq!(out, expected);
+        assert!(!out.exists(), "临时目录同级应无收纳目录，此处仅校验命名");
+        Ok(())
+    }
+
+    /// 同级收纳目录名被普通文件占用 → 明确报错（而非悄悄落到别处）。
+    #[test]
+    fn test_unique_output_root_rejects_occupied_by_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let occupied = classifier::sibling_output_root(root.path())?;
+        if let Some(parent) = occupied.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&occupied, b"occupied")?;
+
+        let result = unique_output_root(root.path());
+        assert!(matches!(result, Err(AppError::InvalidInput(_))));
+        Ok(())
+    }
+
+    /// 收纳目录已存在（同批/分批整理）→ 复用同名目录，不报错不递增。
+    #[test]
+    fn test_unique_output_root_reuses_existing_dir() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let out = classifier::sibling_output_root(root.path())?;
+        std::fs::create_dir_all(&out)?;
+
+        let resolved = unique_output_root(root.path())?;
+        assert_eq!(resolved, out);
         Ok(())
     }
 }

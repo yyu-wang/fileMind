@@ -19,6 +19,7 @@ export type ChatEventData =
         sources: Array<{ id: number; file_name: string; page: number; score: number }>;
       };
     }
+  | { event: 'search_warning'; data: { code: string; message: string } }
   | { event: 'token'; data: { content: string } }
   | { event: 'retry'; data: { reason: string; attempt: number; rewritten_query: string } }
   | {

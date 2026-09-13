@@ -8,6 +8,7 @@
 // 共享链式撤销；成功项再逐项调 `update_file_category` 打分类标签。
 
 import { create } from 'zustand';
+import { mapWithConcurrency } from '../lib/concurrency';
 import { fileIpc } from '../lib/ipc';
 import type { Category, ClassifyPlanItem, ClassifyPreview, PlanItem } from '../types/ipc';
 import { ClassifyStatus } from '../types/models';
@@ -18,14 +19,16 @@ export const PENDING_NAME = '待确认';
 
 /**
  * 分类执行方式：
- *   `move` 移动原文件到分类子文件夹（现有行为）；
- *   `copy` 保留原文件，复制副本到分类子文件夹（不影响原文件）。
+ *   `move` 移动原文件到同级收纳目录 `<扫描目录名>_已分类` 的分类子文件夹；
+ *   `copy` 保留原文件，复制副本到同级收纳目录的分类子文件夹（不影响原文件）。
  * 后端 `execute_operations` 原生支持 Copy，纯前端传 operation 即可。
  */
 export type ClassifyExecMode = 'move' | 'copy';
 
 /** 单块执行的文件数上限（分批调用避免单次 IPC 过久）。 */
 const CHUNK_SIZE = 50;
+/** chunk 内打标（updateFileCategory）并发数：SQLite 单写者下单条 UPDATE 安全，5 路已显著快于串行。 */
+const LABEL_CONCURRENCY = 5;
 
 interface ProgressState {
   /** 已完成数 */
@@ -89,6 +92,8 @@ interface ClassifyState {
   generatePreview: (fileIds: string[]) => Promise<void>;
   /** 加载分类列表（幂等，供手动分类下拉使用） */
   loadCategories: () => Promise<void>;
+  /** 强制重拉分类列表（ruleStore 增删分类后调用，使幂等缓存失效） */
+  refreshCategories: () => Promise<void>;
   /** 手动指定待确认文件的分类（T6.12：更新 preview，执行时随主批量移动+打标） */
   assignCategory: (fileId: string, category: Category) => void;
   /** 批量手动指定分类（T6.12 增强：一次 set 更新多个文件，避免逐点过慢） */
@@ -210,6 +215,15 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     }
   },
 
+  refreshCategories: async () => {
+    // 绕过幂等缓存强制重拉。失败保持旧缓存静默返回：调用方（规则页增删分类）
+    // 已有自己的成功/失败提示，此处再 set error 会把规则页操作误报为分类页错误。
+    const result = await fileIpc.listCategories();
+    if (result.status === 'ok') {
+      set({ categories: result.data });
+    }
+  },
+
   assignCategory: (fileId, category) => {
     const { preview, pendingIds } = get();
     if (!preview) return;
@@ -225,14 +239,16 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
       return;
     }
-    const scanPath = useFileStore.getState().scanPath;
-    if (!scanPath) {
+    // 分类目标统一落在收纳根（preview.output_root，扫描根同级的 `<扫描根名>_已分类`），
+    // 与 Rust `classify_preview` 的目标拼接同源；无预览时兜底扫描根（不应发生）。
+    const outputRoot = preview.output_root || useFileStore.getState().scanPath;
+    if (!outputRoot) {
       set({ error: '请先在文件页选择要整理的目录' });
       return;
     }
 
     // 计算目标路径（与 Rust build_target_path 拼接语义一致），更新 preview 项
-    const targetPath = joinPath(scanPath, targetDir, item.file_name);
+    const targetPath = joinPath(outputRoot, targetDir, item.file_name);
     const updatedItems = preview.items.map((i) =>
       i.file_id === fileId
         ? // FE-M2：手动指定 = 用户显式授权执行——重算 status 置 Ok。
@@ -272,8 +288,10 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ error: `分类「${category.name}」未配置有效目标目录，无法手动分类` });
       return;
     }
-    const scanPath = useFileStore.getState().scanPath;
-    if (!scanPath) {
+    // 分类目标统一落在收纳根（preview.output_root，扫描根同级的 `<扫描根名>_已分类`），
+    // 与 Rust `classify_preview` 的目标拼接同源；无预览时兜底扫描根（不应发生）。
+    const outputRoot = preview.output_root || useFileStore.getState().scanPath;
+    if (!outputRoot) {
       set({ error: '请先在文件页选择要整理的目录' });
       return;
     }
@@ -285,7 +303,7 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       // 只处理未分类项；已分类的跳过（避免重复计数/覆盖）
       if (i.category_name != null) return i;
       assigned += 1;
-      const targetPath = joinPath(scanPath, targetDir, i.file_name);
+      const targetPath = joinPath(outputRoot, targetDir, i.file_name);
       return {
         ...i,
         category_name: category.name,
@@ -369,8 +387,13 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
         set({ error: result.error });
         break;
       }
-      for (const r of result.data.results) {
-        if (r.success) {
+      // chunk 内打标限并发（LABEL_CONCURRENCY）：原逐项串行 await 最多 50 次
+      // 顺序 IPC 往返；结果统计在并发完成后按同序汇总，语义与串行版一致。
+      const outcomes = await mapWithConcurrency(
+        result.data.results,
+        LABEL_CONCURRENCY,
+        async (r) => {
+          if (!r.success) return false;
           const execItem = execItems.find((item) => item.file_id === r.file_id);
           // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
           // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
@@ -379,11 +402,15 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
             // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
             // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
             if (label.status === 'error') {
-              failed += 1;
               set({ error: `文件已移动但分类标签写入失败：${label.error}` });
-              continue;
+              return false;
             }
           }
+          return true;
+        },
+      );
+      for (const ok of outcomes) {
+        if (ok) {
           success += 1;
         } else {
           failed += 1;

@@ -62,6 +62,7 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
         .get(&url)
         .header(handshake::SIGNATURE_HEADER, &signature)
         .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
+        .timeout(Duration::from_secs(30)) // 30 秒超时，GET 请求应快速返回
         .send()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar 请求失败: {e}")))?;
@@ -93,13 +94,13 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
     let canonical = handshake::build_request_canonical("POST", path, body, seq);
     let signature = handshake::sign(psk, &canonical)?;
 
-    let client = client();
-    let resp = client
+    let resp = client()
         .post(&url)
         .header("Content-Type", "application/json")
         .header(handshake::SIGNATURE_HEADER, &signature)
         .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
         .body(body.to_string())
+        .timeout(Duration::from_mins(10)) // 10 分钟超时，防止索引构建等长任务挂起
         .send()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar POST 失败: {e}")))?;
