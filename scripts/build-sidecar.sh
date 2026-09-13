@@ -24,8 +24,9 @@
 #      （1384MB），两者共用 1600MB 门控，均 PASS。
 #      ⚠️ 体积一律按**逻辑大小**（`find -type f` 逐个 size 求和，不跟随 symlink）统计，
 #      不用 `du`：APFS 上 clone/硬链接共享块会让同一棵树的不同副本给出不一致读数。
-#   3. macOS 本机额外软链接 filemind/binaries/filemind-sidecar → 当前架构产物目录，
-#      供 src-tauri manager.rs 默认路径直接使用
+#   3. 三平台都额外提供默认名路径 filemind/binaries/filemind-sidecar（macOS/Linux 软链接、
+#      Windows 目录副本）：tauri.conf.json 的 bundle.resources 用的是这个与架构无关的
+#      路径，也是 manager.rs 开发态兜底路径；缺它 build.rs 资源校验会让 cargo 直接失败
 #
 # 启动性能（本机 aarch64 实测 2026-09-11）：onedir 稳态 /health 就绪 **1.0s**
 # （onefile 为 15.7s）；首次启动（冷页面缓存需读满 ~1.4GB）约 15s，后续均 1s。
@@ -216,18 +217,27 @@ if [[ ${NO_COPY} -eq 0 ]]; then
   cp -R "${SRC_DIR}" "${DST_DIR}"
   chmod +x "${DST_DIR}/filemind-sidecar${EXE_EXT}"
   echo "[build] 复制 → ${DST_DIR}/"
-  # macOS 本机构建：默认名软链接（指向目录），供 manager.rs 默认路径直接使用
+  # 默认名路径（无 triple）指向当前架构产物：tauri.conf.json 的 bundle.resources 用的是
+  # 与架构无关的 `../filemind/binaries/filemind-sidecar/`，故**三平台都必须存在**——缺它
+  # tauri-build 的 build.rs 资源校验会让任何 cargo 调用直接失败（2026-09-13 Windows CI 实测：
+  # merge-build 挂在 Build Sidecar 之后的 Generate IPC types）。
+  # macOS/Linux 用软链接；Windows 软链接需管理员或开发者模式，改为复制目录（无特权坑，
+  # 代价是多占一份磁盘，CI runner 可承受）。
+  DEF_LINK="${BINARIES_DIR}/filemind-sidecar"
+  # 清掉旧链接或旧目录：`rm -f` 遇同名真实目录会报错，配合 set -e 直接中断
+  # （实测过：手工把产物放在默认名下再跑构建即触发）。真实产物已在
+  # ${DST_DIR}，故此处删除默认名下的旧目录是安全的。
+  if [[ -d "${DEF_LINK}" && ! -L "${DEF_LINK}" ]]; then
+    rm -rf "${DEF_LINK}"
+  else
+    rm -f "${DEF_LINK}"
+  fi
   case "${TARGET}" in
-    aarch64-apple-darwin|x86_64-apple-darwin)
-      DEF_LINK="${BINARIES_DIR}/filemind-sidecar"
-      # 清掉旧链接或旧目录：`rm -f` 遇同名真实目录会报错，配合 set -e 直接中断
-      # （实测过：手工把产物放在默认名下再跑构建即触发）。真实产物已在
-      # ${DST_DIR}，故此处删除默认名下的旧目录是安全的。
-      if [[ -d "${DEF_LINK}" && ! -L "${DEF_LINK}" ]]; then
-        rm -rf "${DEF_LINK}"
-      else
-        rm -f "${DEF_LINK}"
-      fi
+    x86_64-pc-windows-msvc)
+      cp -R "${DST_DIR}" "${DEF_LINK}"
+      echo "[build] 默认路径目录副本 → ${DEF_LINK}/（Windows 无特权软链接）"
+      ;;
+    *)
       ln -s "${DST_NAME}" "${DEF_LINK}"
       echo "[build] 默认路径软链接 → ${DEF_LINK} -> ${DST_NAME}"
       ;;
