@@ -37,7 +37,10 @@ jobs:
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           # macOS Intel：x64 runner 原生构建（PyInstaller 无法跨 mac 架构，必须 x64 机器）
-          - os: macos-13
+          # ⚠️ 原用 macos-13，该镜像已于 2025-12-04 退役——job 会永远排队不被调度
+          # （2026-09-13 实测：macos-14 / windows 都跑完了，x64 一直是 queued）。
+          # 标准 runner 的 Intel 标签现为 macos-15-intel。
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             label: macos-x64
             bundles: app,dmg
