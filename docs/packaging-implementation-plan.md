@@ -242,6 +242,10 @@
      资源校验让 `Generate IPC types`（整条链路里第一次 cargo 调用）直接失败（macOS arm64
      同轮已成功）。改为三平台都提供默认名：macOS/Linux 软链接，Windows 用目录副本
      （软链接需管理员/开发者模式，副本无特权坑）
+  8. **mac x64 runner 标签退役**（同轮排查发现）：merge-build 的 mac x64 job 用 `macos-13`，
+     而该镜像已于 **2025-12-04 退役**，job 永远排队不被调度（实测 macos-14 与 windows 都跑完了，
+     x64 一直 `queued`）。标准 runner 的 Intel 标签现为 `macos-15-intel`，已替换
+     （PR Check 的 `macos-latest` 是 arm64，不受影响）
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按
