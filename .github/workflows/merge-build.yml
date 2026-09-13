@@ -12,6 +12,9 @@ concurrency:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    # 保险阀：历史成功 run 每平台 5-9min（含 PyInstaller + release LTO），冷缓存更久，
+    # 取 120min 留足余量；避免偶发卡死一直耗到默认 6h 上限
+    timeout-minutes: 120
     strategy:
       fail-fast: false      # 单平台失败不取消其余平台，便于并排查错
       matrix:

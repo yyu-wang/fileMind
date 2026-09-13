@@ -26,8 +26,16 @@ if [[ -e "${DST_DIR}" || -L "${DST_DIR}" ]]; then
 fi
 
 mkdir -p "${DST_DIR}"
-# 主可执行复用 E2E wrapper（自带 +x）：保证 sidecar/ 目录解析（main_exe_in_dir）
-# 能命中，且万一被运行也是合规 stub。非 E2E job 不会执行它。
-cp "${ROOT_DIR}/scripts/e2e-sidecar-wrapper.sh" "${DST_DIR}/filemind-sidecar"
+# 主可执行用**自包含 shim**，不能复用 scripts/e2e-sidecar-wrapper.sh：那个 wrapper 用
+# `$(dirname $0)/../e2e/fixtures/sidecar_stub.py` 定位 stub，复制到本目录后相对路径会
+# 落到不存在的 `filemind/binaries/e2e/…`（曾埋的坑）。占位产物不参与运行（E2E 由
+# FILEMIND_SIDECAR_BINARY 显式注入 scripts/ 下的 wrapper），万一被执行也给出明确原因。
+cat > "${DST_DIR}/filemind-sidecar" <<'SHIM'
+#!/bin/sh
+# FileMind CI 占位产物：仅为满足 tauri-build 对 bundle.resources 的存在性校验，
+# 不是可运行的 sidecar。CI 冒烟用的真 stub 见 scripts/e2e-sidecar-wrapper.sh。
+echo "[stub] FileMind CI 占位产物，非可运行 sidecar" >&2
+exit 1
+SHIM
 chmod +x "${DST_DIR}/filemind-sidecar"
 echo "[stub] 占位产物 → ${DST_DIR}/"

@@ -204,9 +204,10 @@
   （缺则 `cargo build/clippy/test` 直接 exit 101）。该路径已 gitignore，而 frontend-check / rust-check /
   build-check / e2e-smoke 都**不需要真实 sidecar**（E2E 运行时由 `FILEMIND_SIDECAR_BINARY` 指向 wrapper），
   为省 5-10min 均不跑 PyInstaller。故抽出 `scripts/stub-sidecar-product.sh` 统一造**最小占位产物目录**
-  （把 wrapper stub 复制为 `filemind/binaries/filemind-sidecar/filemind-sidecar`，幂等、已有真实产物则跳过），
+  （在 `filemind/binaries/filemind-sidecar/` 下放一个自包含 shim 作主可执行，幂等、已有真实产物则跳过），
   四个 job 在**首次 cargo 调用前**调用它；`build-check` 同时补 `gen:ipc`（beforeBuildCommand 的 tsc
-  依赖 gitignored 的 `src/types/ipc.ts`，与 merge-build.yml 同理）。
+  依赖 gitignored 的 `src/types/ipc.ts`，与 merge-build.yml 同理）。占位主可执行是**自包含 shim**
+  （不用 `scripts/e2e-sidecar-wrapper.sh` 的副本——它的 `$(dirname $0)` 相对定位复制后会失效）。
   本地已实测复现：移走产物 → `resource path ... doesn't exist`；跑脚本后 `cargo check` 通过。
 - CI 连带修复（同一次排查暴露的两处**既有**缺陷）：
   1. `rust-check` 从未装过 Linux 系统库——先前卡在更早的 build.rs 资源校验，修好后 clippy 才
