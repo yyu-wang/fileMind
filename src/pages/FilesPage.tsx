@@ -3,7 +3,7 @@
 // 结构：main-header(h1 + subtitle + header-actions) → main-content(file-toolbar + file-table)
 // 筛选/排序为页面级 state（不污染 store）；选中与文件数据走 fileStore。
 
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
@@ -31,10 +31,39 @@ interface SortState {
   dir: SortDir;
 }
 
+/**
+ * 空态文案：区分「从未扫描 / 扫描中 / 列表加载中 / 已索引但列表未取回」四种情况。
+ *
+ * 此前只看 `files.length === 0` 就说「尚未扫描目录」，会出现「状态栏 47 文件 +
+ * 已扫描目录 1 个」与主区「尚未扫描目录」同时成立的语义矛盾。
+ */
+function emptyStateCopy(args: {
+  isScanning: boolean;
+  isLoadingList: boolean;
+  hasScanPath: boolean;
+  totalFiles: number;
+}): { title: string; sub: string | null } {
+  if (args.isScanning) {
+    return { title: args.isLoadingList ? '正在加载文件列表…' : '正在扫描…', sub: null };
+  }
+  if (args.hasScanPath) {
+    return { title: '当前目录暂无文件', sub: '点击「扫描目录」重新扫描' };
+  }
+  if (args.totalFiles > 0) {
+    // 兜底出口：正常路径下自动加载即可填满列表，这里只服务「自动加载失败」的情况
+    return { title: '文件列表尚未加载', sub: `已索引 ${args.totalFiles} 个文件，点击「刷新」加载` };
+  }
+  return { title: '尚未扫描目录', sub: '点击「扫描目录」选择要管理的文件夹' };
+}
+
 export function FilesPage() {
   const files = useFileStore((s) => s.files);
+  // 已索引文件总数（stats 来源）：用于判断是否需要挂载兜底补拉列表
+  const totalFiles = useFileStore((s) => s.total);
   const scanPath = useFileStore((s) => s.scanPath);
   const isScanning = useFileStore((s) => s.isScanning);
+  // 区分「扫描目录」与「加载列表」——两者共用 isScanning 防抖，空态文案需要分辨
+  const isLoadingList = useFileStore((s) => s.isLoadingList);
   const selectedIds = useFileStore((s) => s.selectedIds);
   const error = useFileStore((s) => s.error);
   const scanFiles = useFileStore((s) => s.scanFiles);
@@ -54,6 +83,23 @@ export function FilesPage() {
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // 挂载兜底加载：启动时只取了 stats（main.tsx）与已扫描目录（面板自身 effect），
+  // 文件列表却要等用户点「刷新」——于是「状态栏 47 文件 + 已扫描目录 1 个」会和主区
+  // 「尚未扫描目录」同时出现。这里在确有已索引文件时补拉一次全量列表
+  // （list_all_files 明确为虚拟滚动表「一次取回全部」而设计，表侧也是虚拟滚动）。
+  // 门闩防重入：loadAllFiles 会翻转 isScanning，不锁会让 effect 反复触发
+  // （ChatPage 同款门闩，真实翻车表现是 IPC 刷屏 + 页面反复重渲染）。
+  const bootstrappedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrappedRef.current || isScanning || files.length > 0) return;
+    if (totalFiles === 0) return;
+    bootstrappedRef.current = true;
+    void loadAllFiles().catch(() => {
+      // 失败解除门闩：错误已由 store 写入顶部横幅，用户仍可点「刷新」重试
+      bootstrappedRef.current = false;
+    });
+  }, [totalFiles, isScanning, files.length, loadAllFiles]);
 
   // T6.10 快捷键：Space 预览选中的第一个文件（无修饰键，输入框内自动跳过）
   useHotkeys([
@@ -138,6 +184,17 @@ export function FilesPage() {
     useClassifyStore.getState().reset();
     navigate('/classify');
   };
+
+  /** 列表为空时的空态文案（非空时为 null，直接渲染表格） */
+  const emptyCopy =
+    files.length === 0
+      ? emptyStateCopy({
+          isScanning,
+          isLoadingList,
+          hasScanPath: scanPath !== null,
+          totalFiles,
+        })
+      : null;
 
   /** 确认删除：调用 store 移入系统回收站，结束后清空整批选中（错误经 store.error 提示）。 */
   const handleConfirmDelete = async () => {
@@ -283,16 +340,10 @@ export function FilesPage() {
           </label>
         </div>
 
-        {files.length === 0 ? (
+        {emptyCopy !== null ? (
           <div className="files-page__empty">
-            <p className="files-page__empty-title">
-              {isScanning ? '正在扫描…' : scanPath ? '当前目录暂无文件' : '尚未扫描目录'}
-            </p>
-            {!isScanning && (
-              <p className="files-page__empty-sub">
-                {scanPath ? '点击「扫描目录」重新扫描' : '点击「扫描目录」选择要管理的文件夹'}
-              </p>
-            )}
+            <p className="files-page__empty-title">{emptyCopy.title}</p>
+            {emptyCopy.sub !== null && <p className="files-page__empty-sub">{emptyCopy.sub}</p>}
           </div>
         ) : (
           <div className="files-page__table">

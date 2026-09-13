@@ -63,6 +63,7 @@ function seed(overrides: Partial<Parameters<typeof useFileStore.setState>[0]> = 
     files: [],
     scanPath: null,
     isScanning: false,
+    isLoadingList: false,
     selectedIds: [],
     error: null,
     total: 0,
@@ -88,6 +89,47 @@ describe('FilesPage', () => {
     renderPage();
     expect(screen.getByText('尚未扫描目录')).toBeInTheDocument();
     expect(screen.getByTestId('files-scan')).toBeInTheDocument();
+    // 无已索引文件（total=0）时不触发挂载兜底加载
+    expect(mocks.listAllFiles).not.toHaveBeenCalled();
+  });
+
+  it('已索引文件时挂载自动补拉列表（修「状态栏 47 文件 vs 尚未扫描目录」矛盾）', async () => {
+    seed({ total: 47 });
+    mocks.listAllFiles.mockResolvedValue({ status: 'ok', data: [file()] });
+    renderPage();
+    expect(await screen.findByText('f1.pdf')).toBeInTheDocument();
+    expect(mocks.listAllFiles).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('尚未扫描目录')).toBeNull();
+  });
+
+  it('自动加载进行中显示「正在加载文件列表…」（区别于「正在扫描…」）', async () => {
+    seed({ total: 47 });
+    // loadAllFiles 内部会重新拉 stats——若仍返回 0，"已索引" 前提会被自己抹掉
+    mocks.getFileStats.mockResolvedValue({ status: 'ok', data: { total_files: 47 } });
+    let release: (value: unknown) => void = () => {};
+    mocks.listAllFiles.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    renderPage();
+    expect(screen.getByText('正在加载文件列表…')).toBeInTheDocument();
+    release({ status: 'ok', data: [] });
+    // 空列表 + 有已索引文件 → 落到兜底出口（不会退回「尚未扫描目录」）
+    expect(await screen.findByText('文件列表尚未加载')).toBeInTheDocument();
+    expect(screen.getByText(/已索引 47 个文件/)).toBeInTheDocument();
+  });
+
+  it('自动加载失败时给出兜底出口（不退回「尚未扫描目录」）', async () => {
+    seed({ total: 47 });
+    // specta 的 typedError 把失败包成 {status:'error'}（不抛异常），按真实形态模拟
+    mocks.listAllFiles.mockResolvedValue({ status: 'error', error: 'ipc down' });
+    renderPage();
+    expect(await screen.findByText('文件列表尚未加载')).toBeInTheDocument();
+    expect(screen.getByText(/已索引 47 个文件/)).toBeInTheDocument();
+    expect(screen.queryByText('尚未扫描目录')).toBeNull();
+    // 失败后仍可手动重试
+    expect(screen.getByRole('button', { name: '刷新' })).not.toBeDisabled();
   });
 
   it('shows scan path and file rows when files exist', () => {
