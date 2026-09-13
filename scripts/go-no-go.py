@@ -891,13 +891,20 @@ TEST_FUNCTIONS = {
 def _cleanup_any_sidecar() -> None:
     """在脚本退出前扫一遍残留进程：
     - dev 模式 = ``uvicorn`` 且 ``--port 8765``
-    - 打包模式 = ``binaries/filemind-sidecar(-xxxx)`` 可执行文件名匹配
+    - 打包模式 = 本次实测产物（``--binary`` 指向的主可执行）或
+      ``binaries/filemind-sidecar(-xxxx)`` 可执行文件名匹配
     """
+    # ⚠️ 必须包含「本次 --binary 指向的那个可执行」：指向 .app 内 bundled 路径时
+    # cmdline 里没有 `binaries` 字样，只按旧模式匹配会漏清，导致 T5 回退 dev 模式时
+    # 撞端口（2026-09-13 实测 6 PASS / 1 FAIL）。只按精确路径匹配，不放宽到
+    # 「任何名为 filemind-sidecar 的进程」——那会误杀用户正在运行的应用自带 sidecar。
+    active_exe = str(ACTIVE_BINARY) if ACTIVE_BINARY is not None else None
     for p in psutil.process_iter(["pid", "cmdline"]):
         try:
             cmd = " ".join(p.info["cmdline"] or [])
             cmd0 = (p.info["cmdline"] or [""])[0]
             if (f"--port {SIDECAR_PORT}" in cmd and "uvicorn" in cmd.lower()) or \
+               (active_exe is not None and cmd0 == active_exe) or \
                ("binaries/filemind-sidecar" in cmd0) or \
                ("binaries" in cmd0 and "filemind-sidecar" in os.path.basename(cmd0)):
                 print(f"[cleanup] kill residual sidecar pid={p.info['pid']}")
