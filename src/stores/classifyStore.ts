@@ -168,6 +168,17 @@ function isSafeTargetDir(targetDir: string): boolean {
   return !targetDir.includes('..') && !targetDir.startsWith('/') && !/^[A-Za-z]:/.test(targetDir);
 }
 
+/**
+ * 把 invoke 层抛出的任意值归一化成可展示的消息（与 fileStore 同款兜底）。
+ *
+ * specta 的 typedError 会把命令失败包成 `{status:'error'}`，异常路径理论上不可达；
+ * 但 preview/execute 一旦抛出且不复位状态，status 会永久停在 Previewing/Running——
+ * 既有重入守卫会让分类页彻底不可用（按钮禁用、后续预览/执行全被拒绝）。
+ */
+function ipcErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export const useClassifyStore = create<ClassifyState>()((set, get) => ({
   status: ClassifyStatus.Idle,
   preview: null,
@@ -189,38 +200,54 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     if (get().status === ClassifyStatus.Previewing) return;
     const seq = ++previewSeq;
     set({ status: ClassifyStatus.Previewing, error: null, preview: null, execSummary: null });
-    const result = await fileIpc.classifyPreview(fileIds, scanPath);
-    // FE-M9：期间有新请求发起或 reset 被调用，本次响应已过期，丢弃
-    if (seq !== previewSeq) return;
-    if (result.status === 'ok') {
-      const pendingIds = result.data.items
-        .filter((item) => item.category_name == null)
-        .map((item) => item.file_id);
-      set({ status: ClassifyStatus.Idle, preview: result.data, pendingIds });
-      // T6.12：加载分类列表供手动分类下拉使用（幂等，失败不影响预览）
-      void get().loadCategories();
-    } else {
-      set({ status: ClassifyStatus.Idle, error: result.error });
+    try {
+      const result = await fileIpc.classifyPreview(fileIds, scanPath);
+      // FE-M9：期间有新请求发起或 reset 被调用，本次响应已过期，丢弃
+      if (seq !== previewSeq) return;
+      if (result.status === 'ok') {
+        const pendingIds = result.data.items
+          .filter((item) => item.category_name == null)
+          .map((item) => item.file_id);
+        set({ status: ClassifyStatus.Idle, preview: result.data, pendingIds });
+        // T6.12：加载分类列表供手动分类下拉使用（幂等，失败不影响预览）
+        void get().loadCategories();
+      } else {
+        set({ status: ClassifyStatus.Idle, error: result.error });
+      }
+    } catch (err) {
+      // 必须复位：status 卡在 Previewing 会让上面的重入守卫永久拒绝后续预览，
+      // 分类页彻底不可用（按钮一直显示生成中）
+      if (seq === previewSeq) set({ status: ClassifyStatus.Idle, error: ipcErrorMessage(err) });
     }
   },
 
   loadCategories: async () => {
     // 幂等：已有缓存不重复拉取（进入预览时调用一次即可）
     if (get().categories.length > 0) return;
-    const result = await fileIpc.listCategories();
-    if (result.status === 'ok') {
-      set({ categories: result.data });
-    } else {
-      set({ error: result.error });
+    try {
+      const result = await fileIpc.listCategories();
+      if (result.status === 'ok') {
+        set({ categories: result.data });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (err) {
+      // 调用方是 `void get().loadCategories()`，抛出去只会变成 unhandled rejection
+      set({ error: ipcErrorMessage(err) });
     }
   },
 
   refreshCategories: async () => {
     // 绕过幂等缓存强制重拉。失败保持旧缓存静默返回：调用方（规则页增删分类）
     // 已有自己的成功/失败提示，此处再 set error 会把规则页操作误报为分类页错误。
-    const result = await fileIpc.listCategories();
-    if (result.status === 'ok') {
-      set({ categories: result.data });
+    try {
+      const result = await fileIpc.listCategories();
+      if (result.status === 'ok') {
+        set({ categories: result.data });
+      }
+    } catch (err) {
+      // 同「静默返回」契约：只记日志，不污染分类页错误横幅
+      console.warn('[classify] 刷新分类缓存失败:', err);
     }
   },
 
@@ -370,62 +397,77 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
     /** 当前执行是否仍持有令牌（reset 会作废在途执行的写状态权利）。 */
     const stillHolds = () => token === execToken;
 
-    for (let i = 0; i < plan.length; i += CHUNK_SIZE) {
-      if (await waitWhilePaused()) break;
-      // 每个 await 恢复点先校验令牌：已被 reset 作废则静默退出，不写任何状态。
-      if (!stillHolds()) return;
-      const chunk = plan.slice(i, i + CHUNK_SIZE);
-      const result = await fileIpc.executeOperations({
-        batch_id: preview.batch_id,
-        plan: chunk,
-        exclude_file_ids: [],
-        resolve_conflicts: resolveConflicts,
-      });
-      if (!stillHolds()) return;
-      if (result.status === 'error') {
-        failed += chunk.length;
-        set({ error: result.error });
-        break;
-      }
-      // chunk 内打标限并发（LABEL_CONCURRENCY）：原逐项串行 await 最多 50 次
-      // 顺序 IPC 往返；结果统计在并发完成后按同序汇总，语义与串行版一致。
-      const outcomes = await mapWithConcurrency(
-        result.data.results,
-        LABEL_CONCURRENCY,
-        async (r) => {
-          if (!r.success) return false;
-          const execItem = execItems.find((item) => item.file_id === r.file_id);
-          // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
-          // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
-          if (execItem?.category_name) {
-            const label = await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
-            // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
-            // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
-            if (label.status === 'error') {
-              set({ error: `文件已移动但分类标签写入失败：${label.error}` });
-              return false;
-            }
-          }
-          return true;
-        },
-      );
-      for (const ok of outcomes) {
-        if (ok) {
-          success += 1;
-        } else {
-          failed += 1;
+    try {
+      for (let i = 0; i < plan.length; i += CHUNK_SIZE) {
+        if (await waitWhilePaused()) break;
+        // 每个 await 恢复点先校验令牌：已被 reset 作废则静默退出，不写任何状态。
+        if (!stillHolds()) return;
+        const chunk = plan.slice(i, i + CHUNK_SIZE);
+        const result = await fileIpc.executeOperations({
+          batch_id: preview.batch_id,
+          plan: chunk,
+          exclude_file_ids: [],
+          resolve_conflicts: resolveConflicts,
+        });
+        if (!stillHolds()) return;
+        if (result.status === 'error') {
+          failed += chunk.length;
+          set({ error: result.error });
+          break;
         }
+        // chunk 内打标限并发（LABEL_CONCURRENCY）：原逐项串行 await 最多 50 次
+        // 顺序 IPC 往返；结果统计在并发完成后按同序汇总，语义与串行版一致。
+        const outcomes = await mapWithConcurrency(
+          result.data.results,
+          LABEL_CONCURRENCY,
+          async (r) => {
+            if (!r.success) return false;
+            const execItem = execItems.find((item) => item.file_id === r.file_id);
+            // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
+            // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
+            if (execItem?.category_name) {
+              const label = await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
+              // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
+              // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
+              if (label.status === 'error') {
+                set({ error: `文件已移动但分类标签写入失败：${label.error}` });
+                return false;
+              }
+            }
+            return true;
+          },
+        );
+        for (const ok of outcomes) {
+          if (ok) {
+            success += 1;
+          } else {
+            failed += 1;
+          }
+        }
+        lastBatchId = result.data.batch_id;
+        if (!stillHolds()) return;
+        set({ progress: { done: success + failed, total: plan.length }, lastBatchId });
       }
-      lastBatchId = result.data.batch_id;
-      if (!stillHolds()) return;
-      set({ progress: { done: success + failed, total: plan.length }, lastBatchId });
-    }
 
-    if (!stillHolds()) return;
-    const nextStatus = control.cancelled ? ClassifyStatus.Cancelled : ClassifyStatus.Done;
-    set({ status: nextStatus, execSummary: buildSummary(preview, success, failed) });
+      if (!stillHolds()) return;
+      const nextStatus = control.cancelled ? ClassifyStatus.Cancelled : ClassifyStatus.Done;
+      set({ status: nextStatus, execSummary: buildSummary(preview, success, failed) });
+    } catch (err) {
+      // 异常中断若不收尾：status 永远停在 Running——按钮禁用的同时，
+      // 上面的重入守卫还会永久拒绝再次执行，只能重启应用。
+      // 按「取消」语义收尾：保留已完成块与整批撤销入口，并用 execSummary
+      // 呈现真实的部分结果（而非 0/0）。
+      if (!stillHolds()) return;
+      control.cancelled = true;
+      set({
+        status: ClassifyStatus.Cancelled,
+        execSummary: buildSummary(preview, success, failed),
+        error: ipcErrorMessage(err),
+      });
+    }
     // 移动/打标已落库：只刷新轻量统计，不拉全量文件列表——
     // 文件库可达数十万级，全量刷新（loadAllFiles）会卡死 UI；列表由用户手动「刷新」。
+    // 异常中断同样可能已移动部分文件，故与正常路径一致地刷新。
     void useFileStore.getState().loadStats();
   },
 
@@ -459,13 +501,18 @@ export const useClassifyStore = create<ClassifyState>()((set, get) => ({
       set({ error: '无最近批次可撤销' });
       return;
     }
-    const result = await fileIpc.undoBatch(batchId);
-    if (result.status === 'ok') {
-      set({ status: ClassifyStatus.Idle, lastBatchId: null, progress: INITIAL_PROGRESS });
-      // 同 execute：撤销后只刷统计，避免数十万级全量刷新卡 UI
-      void useFileStore.getState().loadStats();
-    } else {
-      set({ error: result.error });
+    try {
+      const result = await fileIpc.undoBatch(batchId);
+      if (result.status === 'ok') {
+        set({ status: ClassifyStatus.Idle, lastBatchId: null, progress: INITIAL_PROGRESS });
+        // 同 execute：撤销后只刷统计，避免数十万级全量刷新卡 UI
+        void useFileStore.getState().loadStats();
+      } else {
+        set({ error: result.error });
+      }
+    } catch (err) {
+      // 调用方是 `void undoLastBatch()`：抛出会变成 unhandled rejection 且界面无提示
+      set({ error: ipcErrorMessage(err) });
     }
   },
 
