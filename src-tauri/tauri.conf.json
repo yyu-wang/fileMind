@@ -58,7 +58,16 @@
     "resources": {
       "../filemind/binaries/filemind-sidecar/": "sidecar"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      }
+    }
   },
   "plugins": {
     "updater": {
