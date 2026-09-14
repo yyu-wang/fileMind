@@ -1,7 +1,7 @@
 //! `sidecar::bootstrap` 单元测试（子模块 `super::*` 可访问私有函数）。
 //!
 //! 独立文件拆分原因：`bootstrap.rs` 主实现内嵌 tests 模块会超 Rust 模块 300 行阈值
-//! （与 `manager.rs` / `manager_tests.rs` 的拆分口径一致）。
+//! （与 `manager_tests/` 目录的拆分口径一致）。
 
 #![allow(clippy::expect_used)]
 // 测试代码允许 expect：表达「这条路径必须成功，否则测试直接挂掉」是最直观的语义。

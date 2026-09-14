@@ -1,7 +1,7 @@
 //! `cloud_proxy` 单元测试（`use super::*` 可访问父模块私有项）。
 //!
 //! 独立文件拆分原因：父模块内嵌 tests 会超 Rust 模块行数阈值（rules/complexity.md），
-//! 与本仓既有约定一致（见 `sidecar/manager_tests.rs`）。
+//! 与本仓既有约定一致（见 `sidecar/manager_tests/` 目录）。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

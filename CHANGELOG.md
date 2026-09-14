@@ -7,6 +7,8 @@
 
 ## \[Unreleased]
 
+## \[1.0.0-rc.1] - 2026-09-14
+
 ### Added
 
 - **Office 文档预览** docx/xlsx/pptx 经 Sidecar `doc_extract` 抽取为纯文本展示（与 RAG 索引同款抽取器；表格/分页排版会失真，属预期降级）。

@@ -8,9 +8,8 @@
 # ⚠️ 禁止为了「让新代码过关」而在本文件新增条目——新增条目必须能在评审里
 #    说明为何无法拆分（例如生成物/单文件协议常量表），否则应改为拆分文件。
 
-src-tauri/src/commands/file_ops.rs 2572
-src-tauri/src/db/file_repo.rs 902
+src-tauri/src/commands/file_ops.rs 1392
+src-tauri/src/db/file_repo.rs 638
 src-tauri/src/main.rs 702
 src-tauri/src/sidecar/manager.rs 1086
-src-tauri/src/sidecar/manager_tests.rs 899
 src/styles/globals.css 4680

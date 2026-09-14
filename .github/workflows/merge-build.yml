@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:        # 手动触发：合并到 main 前验证（PR 不会触发 merge-build）
+  workflow_call:            # 供 release.yml 复用：tag 发布时在同一 run 内构建，
+                            # publish job 可直接 download-artifact 取到本 workflow 的产物
+                            # （调用方需 secrets: inherit 才能读到 TAURI_SIGNING_PRIVATE_KEY）
 
 concurrency:
   group: merge-build-${{ github.ref }}
@@ -24,9 +27,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows-x64
             bundles: msi nsis
+            # W1：updater 资产（.sig）必须与安装包一起上传 —— latest.json 的 signature
+            # 字段直接取自这些 .sig，缺失则发布环节只能拿手工构建的产物凑
+            # （见 docs/auto-update-setup.md §4）
             artifacts: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.sig
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig
           # macOS Apple Silicon（arm64 runner 原生构建）
           # app,dmg：app 目标产出 updater 用的 .tar.gz + .sig（对齐 docs/auto-update-setup.md 发布命令），
           # 同时避免 dmg-only 打包后 .app 被清理导致冒烟检查扑空
@@ -34,8 +42,11 @@ jobs:
             target: aarch64-apple-darwin
             label: macos-arm64
             bundles: app,dmg
+            # W1：同 Windows，.app.tar.gz + .sig 是 darwin-aarch64 的更新资产，必须上传
             artifacts: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.sig
           # macOS Intel（x64）job 已移除（2026-09-13）：
           #   1. 原先用的 macos-13 镜像已于 2025-12-04 退役，job 永远排队不被调度；
           #      换成 macos-15-intel 后能调度了，但暴露第 2 点——

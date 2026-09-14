@@ -2,7 +2,7 @@
 
 > 本应用端已接入 updater：设置页「检查更新」→ 发现新版 → 下载安装 → 重启。
 > 本文档说明**发布侧**如何产出签名安装包并让更新清单生效。应用内代码已完成，
-> CI 发布流水线（自动上传 GitHub Release + latest.json）为后续任务，按本文手工/脚本执行。
+> 发布已由 `.github/workflows/release.yml` 自动化（推 tag 即发布，见第 5 节）。
 
 ## 1. 前置条件
 
@@ -48,29 +48,11 @@ npm run build:tauri -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 
 ## 4. 生成/维护更新清单 latest.json
 
-```json
-{
-  "version": "1.0.0",
-  "notes": "修复 xxx / 新增 xxx",
-  "pub_date": "2026-09-06T10:00:00Z",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "<FileMind_1.0.0_aarch64.app.tar.gz.sig 内容>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_aarch64.app.tar.gz"
-    },
-    "darwin-x86_64": {
-      "signature": "<...>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_x64.app.tar.gz"
-    },
-    "windows-x86_64": {
-      "signature": "<FileMind_1.0.0_x64-setup.exe.sig 内容>",
-      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_x64-setup.exe"
-    }
-  }
-}
-```
+模板见 [`docs/latest.json.template`](latest.json.template)：复制为 `latest.json`，把 `<...>` 占位符全部替换为真实值即可（产物文件名以 `tauri build` 实际输出为准）。
 
 要点：
+
+- `platforms` 只列**实际分发的平台**（当前为 `darwin-aarch64` + `windows-x86_64`；macOS Intel / Linux 不分发，不要列进去）
 
 - `signature` 必须与对应安装包一一对应（.sig 文件内容是纯文本，可直接复制）
 
@@ -78,11 +60,32 @@ npm run build:tauri -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 
 - `pub_date` 用 UTC RFC3339
 
+- `version` / URL 里的版本号 / `pub_date` / 各 `signature` 必须与同一次构建的产物一致（构建两次签名会变）
+
 ## 5. 发布步骤
+
+### 方式 A：CI 自动发布（推荐）
+
+推 tag 触发 `.github/workflows/release.yml`：复用 merge-build 构建两平台 → 下载全部
+artifact → `scripts/gen-latest-json.py` 生成 `latest.json` 与 Release 正文 → `gh release create`
+上传安装包 / `.sig` / `latest.json`。
+
+```bash
+git tag -a v1.0.0 -m "Release 1.0.0"
+git push origin v1.0.0
+```
+
+- 版本号必须与 tag 一致（`--check-version` 会在发布前卡住 package.json /
+  tauri.conf.json / Cargo.toml 的不一致）
+- tag 含 `-`（如 `v1.0.0-rc.1`）会发成 pre-release，不计入 `releases/latest`
+- ⚠️ W4 接入 SignPath 后：签名步骤必须插在「生成 latest.json」之前，并用
+  `tauri signer sign` 重签受影响安装包的 `.sig`（签名会改变字节，旧 `.sig` 立即失效）
+
+### 方式 B：手工发布（CI 不可用时的兜底）
 
 1. `release.md` 流程发版（版本号同步：package.json / Cargo.toml / tauri.conf.json / python main.py / routes_health.py + 前端 StatusBar / Sidebar / AboutSection）
 2. 构建（第 3 节）→ 校验产物与 `.sig`
-3. 填好 `latest.json`，签名内容取自 `.sig` 文件
+3. 按第 4 节生成 `latest.json`，签名内容取自 `.sig` 文件
 4. GitHub Release：tag `v1.0.0`，上传全部安装包 + 各自 `.sig` + `latest.json`
 5. 用户端点「检查更新」验证：桌面环境建议先装上一版再发新版实测一次
 

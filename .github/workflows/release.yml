@@ -1,0 +1,87 @@
+name: Release
+
+# 发版入口：推 tag 即发布（release.md 流程 —— 先合并到 main，再打 tag）
+# 版本号一致性由 scripts/gen-latest-json.py --check-version 在发布前卡住。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# 发版不自动取消：中途被取消会留下"半发布"的 tag 状态
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 复用 merge-build.yml 的构建配方（同 runner、同顺序、同冒烟检查），
+    # 避免两处维护同一套构建步骤而漂移。
+    # 被调 workflow 的 job 与本 run 同属一次运行 → 下面的 publish job 能直接
+    # download-artifact 拿到它的产物；若改用 workflow_run 跨 run 取产物，
+    # 可能拿到 main 上另一次构建的包（与 tag 指向的 commit 不符）。
+    uses: ./.github/workflows/merge-build.yml
+    secrets: inherit
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # 保险阀：实测为下载产物 + 生成清单，分钟级
+    timeout-minutes: 30
+    permissions:
+      contents: write # 创建 Release 并上传资产
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # 不带 name 下载本次运行的全部 artifact → dist/filemind-{windows-x64,macos-arm64}/
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+
+      # ⚠️ W4（SignPath 签名）插入点：签名步骤必须放在本步骤**之前**，并在签名后
+      #    用 `tauri signer sign` 重新生成受影响安装包的 .sig —— 签名会改变安装包
+      #    字节，构建阶段产出的旧 .sig 会立即失效（用户端更新报「签名不匹配」）。
+      #    门控约定：`if: vars.SIGNPATH_ENABLED == 'true'`。
+      - name: Generate latest.json + release notes
+        run: |
+          set -euo pipefail
+          python3 scripts/gen-latest-json.py \
+            --dist dist \
+            --out-dir release \
+            --version "${GITHUB_REF_NAME#v}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --check-version
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 资产 = 安装包 / 更新包 + 各自 .sig + latest.json（.sig 是 latest.json 里
+          # signature 的来源，必须随 Release 一起留档，便于复核与重放）
+          mapfile -t assets < <(find dist -type f \
+            \( -name '*.msi' -o -name '*.exe' -o -name '*.dmg' \
+               -o -name '*.app.tar.gz' -o -name '*.sig' \) | sort)
+          assets+=(release/latest.json)
+          printf '将上传：\n%s\n' "${assets[@]}"
+
+          # 预发布（v1.0.0-rc.1 等）标记为 prerelease：updater 端点用的是
+          # releases/latest/download/latest.json，而 latest 不计入预发布
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease=(--prerelease)
+          else
+            prerelease=()
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "FileMind ${GITHUB_REF_NAME#v}" \
+            --notes-file release/release-notes.md \
+            "${prerelease[@]}" \
+            "${assets[@]}"

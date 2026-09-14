@@ -1077,10 +1077,10 @@ pub fn cleanup_orphan_sidecar(port: u16) {
     }
 }
 
+// 测试模块树见 manager_tests/（原 899 行单文件按关注点拆分）；必须写 #[path]——
+// manager.rs 非 mod.rs 文件，`mod x;` 默认找 `manager/x.rs` 而非同级目录。
 #[cfg(test)]
-// 测试场景下 `expect()` 表达「这条路径必须成功，否则测试直接挂掉」是合理语义。
-#[allow(clippy::expect_used)]
-#[path = "manager_tests.rs"]
-mod tests;
+#[path = "manager_tests/mod.rs"]
+mod manager_tests;
 
 // lint fix notes: doc_markdown (GenericCloudProvider / ProviderFactory / Ollama 反引号)
