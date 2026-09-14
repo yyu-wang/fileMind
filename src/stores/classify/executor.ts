@@ -6,8 +6,8 @@
 
 import { mapWithConcurrency } from '@/lib/concurrency';
 import { fileIpc } from '@/lib/ipc';
+import { ipcErrorMessage } from '@/lib/ipcError';
 import type { ClassifyPlanItem, ClassifyPreview, PlanItem } from '@/types/ipc';
-import { ipcErrorMessage } from './errors';
 import type { ClassifyExecMode, ClassifyExecSummary } from './types';
 
 /** 单块执行的文件数上限（分批调用避免单次 IPC 过久）。 */

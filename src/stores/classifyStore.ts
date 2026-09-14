@@ -19,8 +19,8 @@
 
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
+import { ipcErrorMessage } from '../lib/ipcError';
 import { ClassifyStatus } from '../types/models';
-import { ipcErrorMessage } from './classify/errors';
 import {
   buildSummary,
   runBatchedExecution,

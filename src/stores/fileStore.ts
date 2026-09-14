@@ -8,6 +8,7 @@
 
 import { create } from 'zustand';
 import { fileIpc } from '../lib/ipc';
+import { ipcErrorMessage } from '../lib/ipcError';
 import type { FileInfo, FileStats, ScannedDirectory } from '../types/ipc';
 import { useClassifyStore } from './classifyStore';
 
@@ -15,17 +16,6 @@ import { useClassifyStore } from './classifyStore';
 // 慢请求（大目录扫描）后发起的快请求先返回时，旧响应到达后序号失配被丢弃，
 // 防止「A 目录晚回覆盖 B 目录」导致 files 与 scanPath 不一致。
 let listReqId = 0;
-
-/**
- * 把 invoke 层抛出的任意值归一化成可展示的消息。
- *
- * specta 的 typedError 会把命令失败包成 `{status:'error'}`，所以异常路径理论上不可达；
- * 但一旦真的抛出（IPC 通道断开、序列化失败等），若不兜住就会让 `isScanning` 永久为
- * true——按钮全部禁用，用户只能重启应用。
- */
-function ipcErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 interface FileState {
   /** 当前文件列表 */
