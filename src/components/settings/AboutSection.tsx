@@ -11,7 +11,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 
 /** 应用版本：与 package.json 的 version 字段保持一致。 */
-const APP_VERSION = 'v1.0.0-rc.1';
+const APP_VERSION = 'v1.0.0-1';
 
 /** 检查接口返回的更新对象类型（避免手写 any）。 */
 type UpdateInfo = NonNullable<Awaited<ReturnType<typeof check>>>;

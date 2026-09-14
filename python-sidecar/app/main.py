@@ -135,7 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="FileMind Sidecar",
-    version="1.0.0-rc.1",
+    version="1.0.0-1",
     description="Python Sidecar for FileMind — classification + RAG + embedding",
     lifespan=lifespan,
 )
