@@ -77,7 +77,7 @@ git push origin v1.0.0
 
 - 版本号必须与 tag 一致（`--check-version` 会在发布前卡住 package.json /
   tauri.conf.json / Cargo.toml 的不一致）
-- tag 含 `-`（如 `v1.0.0-rc.1`）会发成 pre-release，不计入 `releases/latest`
+- tag 含 `-`（如 `v1.0.0-1`）会发成 pre-release，不计入 `releases/latest`
 - ⚠️ W4 接入 SignPath 后：签名步骤必须插在「生成 latest.json」之前，并用
   `tauri signer sign` 重签受影响安装包的 `.sig`（签名会改变字节，旧 `.sig` 立即失效）
 
