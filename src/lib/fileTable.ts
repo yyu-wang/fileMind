@@ -8,6 +8,12 @@ export type FileStatus = 'categorized' | 'uncategorized';
 export type SortKey = 'name' | 'size' | 'time';
 export type SortDir = 'asc' | 'desc';
 
+/** 排序状态（表头点击切换维度/方向）。 */
+export interface SortState {
+  key: SortKey;
+  dir: SortDir;
+}
+
 export interface FilterOptions {
   category: string | null;
   status: FileStatus | null;

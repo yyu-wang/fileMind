@@ -15,6 +15,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # 文件行数门禁（rules/complexity.md §硬性阈值）：纯 bash + find/awk，无任何依赖，
+      # 放在最前以便最快失败。历史欠账（超强制阈值文件）登记在 scripts/file-size-baseline.txt，
+      # 允许存在但禁止继续增长；新增超限文件直接 FAIL。
+      - name: Check file size limits
+        run: bash scripts/check-file-size.sh
       - uses: actions/setup-node@v7
         with:
           node-version: 24
