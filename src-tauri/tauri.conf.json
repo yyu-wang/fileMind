@@ -58,7 +58,12 @@
     "resources": {
       "../filemind/binaries/filemind-sidecar/": "sidecar"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "wix": {
+        "version": "1.0.0"
+      }
+    }
   },
   "plugins": {
     "updater": {
