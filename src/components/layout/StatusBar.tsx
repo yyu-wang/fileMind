@@ -105,7 +105,7 @@ export function StatusBar() {
           </>
         )}
         <span className="status-item" title="版本号">
-          v1.0.0
+          v1.0.0-rc.1
         </span>
       </div>
     </footer>

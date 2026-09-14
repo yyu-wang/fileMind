@@ -59,7 +59,7 @@ describe('StatusBar', () => {
     render(<StatusBar />);
     expect(screen.getByText('本地模式')).toBeInTheDocument();
     expect(screen.getByText('qwen2.5:7b')).toBeInTheDocument();
-    expect(screen.getByText('v1.0.0')).toBeInTheDocument();
+    expect(screen.getByText('v1.0.0-rc.1')).toBeInTheDocument();
   });
 
   it('云端模式展示云端模型与对应徽标样式', () => {
