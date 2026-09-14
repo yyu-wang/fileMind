@@ -14,6 +14,25 @@ import { sel } from '../utils/selectors';
 
 const SIDEBAR_RULES = `${sel.sidebarItem}[title*="规则编辑"]`;
 
+/**
+ * 浏览器上下文回调：把首个 value 非空的 option 设为选中并派发 change。
+ *
+ * 说明：不用 wdio 的 `selectByAttribute`——其实现无条件 `value.trim()`，
+ * 遇到正则/动态值必抛异常。回调放在模块级而非 `it` 内联，既避免
+ * `describe → it → execute → find` 四层嵌套（max-nested-callbacks），
+ * 也让「页面上下文里做了什么」有名字可循。
+ *
+ * @param selector 目标 `<select>` 的 CSS 选择器
+ */
+function selectFirstNonEmptyOption(selector: string): void {
+  const select = document.querySelector<HTMLSelectElement>(selector);
+  const option = select ? Array.from(select.options).find((o) => o.value) : undefined;
+  if (select && option) {
+    select.value = option.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
 describe('E2E-004 规则编辑', () => {
   it('空态 → 新建规则 → 列表展示', async () => {
     await $(sel.filesTitle).waitForExist({ timeout: 120000 });
@@ -30,15 +49,7 @@ describe('E2E-004 规则编辑', () => {
     await $(sel.ruleNameInput).setValue('PDF 文档');
     await $(sel.rulePatternInput).setValue('pdf');
     // 目标分类：内置分类列表动态生成（listCategories IPC），取第一个非空 value。
-    // 不用 selectByAttribute —— wdio 该实现无条件 value.trim()，正则/动态值必抛异常。
-    await browser.execute(() => {
-      const select = document.querySelector<HTMLSelectElement>('#rule-category');
-      const option = select ? Array.from(select.options).find((o) => o.value) : undefined;
-      if (select && option) {
-        select.value = option.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    });
+    await browser.execute(selectFirstNonEmptyOption, '#rule-category');
     await $(sel.ruleSave).click();
 
     // 保存后 store 重新拉取 → 列表出现该规则

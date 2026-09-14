@@ -112,6 +112,10 @@ export default [
       // 圈复杂度（rules/complexity.md §函数复杂度限制）：超限请拆函数，不要靠
       // 拆条件表达式糊弄——阈值针对的就是分支数量本身
       complexity: ['error', COMPLEXITY_LIMIT],
+      // 参数个数 / 嵌套深度 / 嵌套回调（同表）：启用时全仓零违规，纯预防性门禁
+      'max-params': ['error', 4],
+      'max-depth': ['error', 4],
+      'max-nested-callbacks': ['error', 3],
     },
     settings: {
       react: { version: 'detect' },
