@@ -22,6 +22,11 @@ PATCH: 向下兼容的 Bug 修复
 > `optional pre-release identifier in app version must be numeric-only`）。
 > 因此预发布统一写作 `1.1.0-1`、`1.1.0-2`；阶段（Alpha/Beta/RC）由 Release 的
 > prerelease 标记与发布说明体现，不再编码进版本号。
+>
+> 数字标识正好落在 MSI 的第四段：`1.1.0-1` → MSI ProductVersion `1.1.0.1`，各次预发布
+> 之间可区分。若确实要用字母标识，唯一出路是在 `bundle.windows.wix.version` 显式写死
+> `major.minor.patch.build`，代价是各次预发布的 MSI ProductVersion 相同、同机升级会被判
+> 「已安装同版本」——不推荐。
 
 | 阶段         | 版本号    | 说明                 | 门控                     |
 | ------------ | --------- | -------------------- | ------------------------ |
