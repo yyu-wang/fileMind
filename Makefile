@@ -25,6 +25,7 @@ sidecar:
 
 lint:
 	npm run lint
+	bash scripts/check-file-size.sh
 	cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 	cd python-sidecar && source ../.venv/bin/activate && ruff check . && mypy app/
 

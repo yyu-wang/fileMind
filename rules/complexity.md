@@ -6,35 +6,35 @@
 
 ### 文件行数限制
 
-| 文件类型 | 警告阈值 | 强制拆分阈值 | 检查方式 |
-|----------|----------|--------------|----------|
-| React 组件 (.tsx) | 200 行 | 300 行 | CI `max-lines` 规则 |
-| React 页面 (.tsx) | 300 行 | 400 行 | CI `max-lines` 规则 |
-| Rust 模块 (.rs) | 300 行 | 500 行 | Clippy + CI 脚本 |
-| Python 模块 (.py) | 300 行 | 500 行 | Ruff + CI 脚本 |
-| TypeScript 工具 (.ts) | 150 行 | 250 行 | CI `max-lines` 规则 |
-| CSS 文件 (.css) | 200 行 | 400 行 | CI 脚本 |
-| 测试文件 | 400 行 | 600 行 | CI 脚本 |
+| 文件类型              | 警告阈值 | 强制拆分阈值 | 检查方式            |
+| --------------------- | -------- | ------------ | ------------------- |
+| React 组件 (.tsx)     | 200 行   | 300 行       | CI `max-lines` 规则 |
+| React 页面 (.tsx)     | 300 行   | 400 行       | CI `max-lines` 规则 |
+| Rust 模块 (.rs)       | 300 行   | 500 行       | Clippy + CI 脚本    |
+| Python 模块 (.py)     | 300 行   | 500 行       | Ruff + CI 脚本      |
+| TypeScript 工具 (.ts) | 150 行   | 250 行       | CI `max-lines` 规则 |
+| CSS 文件 (.css)       | 200 行   | 400 行       | CI 脚本             |
+| 测试文件              | 400 行   | 600 行       | CI 脚本             |
 
 ### 函数复杂度限制
 
-| 指标 | 警告阈值 | 强制重构阈值 | 检查方式 |
-|------|----------|--------------|----------|
-| 函数行数 | 40 行 | 60 行 | ESLint `max-lines-per-function` / Ruff `PLR0915` |
-| 圈复杂度 | 10 | 15 | ESLint `complexity` / Clippy `cognitive-complexity-threshold` |
-| 参数个数 | 4 个 | 6 个 | ESLint `max-params` / Clippy `too-many-arguments-threshold` |
-| 嵌套深度 | 3 层 | 4 层 | ESLint `max-depth` |
-| 回调/Promise 链 | 2 层 | 3 层 | Code Review |
+| 指标            | 警告阈值 | 强制重构阈值 | 检查方式                                                      |
+| --------------- | -------- | ------------ | ------------------------------------------------------------- |
+| 函数行数        | 40 行    | 60 行        | ESLint `max-lines-per-function` / Ruff `PLR0915`              |
+| 圈复杂度        | 10       | 15           | ESLint `complexity` / Clippy `cognitive-complexity-threshold` |
+| 参数个数        | 4 个     | 6 个         | ESLint `max-params` / Clippy `too-many-arguments-threshold`   |
+| 嵌套深度        | 3 层     | 4 层         | ESLint `max-depth`                                            |
+| 回调/Promise 链 | 2 层     | 3 层         | Code Review                                                   |
 
 ### React 组件复杂度限制
 
-| 指标 | 警告阈值 | 强制拆分阈值 | 说明 |
-|------|----------|--------------|------|
-| useState/useReducer 数量 | 5 个 | 7 个 | 超限拆分为自定义 Hook |
-| useEffect 数量 | 3 个 | 5 个 | 超限合并或拆分 Hook |
-| props 数量 | 5 个 | 8 个 | 超限合并为对象 props |
-| 条件渲染分支 | 3 个 | 5 个 | 超限拆分子组件 |
-| JSX 元素数量 | 50 个 | 80 个 | 超限拆分子组件 |
+| 指标                     | 警告阈值 | 强制拆分阈值 | 说明                  |
+| ------------------------ | -------- | ------------ | --------------------- |
+| useState/useReducer 数量 | 5 个     | 7 个         | 超限拆分为自定义 Hook |
+| useEffect 数量           | 3 个     | 5 个         | 超限合并或拆分 Hook   |
+| props 数量               | 5 个     | 8 个         | 超限合并为对象 props  |
+| 条件渲染分支             | 3 个     | 5 个         | 超限拆分子组件        |
+| JSX 元素数量             | 50 个    | 80 个        | 超限拆分子组件        |
 
 ## 拆分策略
 
@@ -72,7 +72,7 @@ export function FileListTable({ files }: FileListTableProps) {
 
 // ✅ 正确：提取自定义 Hook
 export function FileListTable({ files }: FileListTableProps) {
-  const table = useFileTableLogic(files);  // 状态 + 逻辑全在 Hook 里
+  const table = useFileTableLogic(files); // 状态 + 逻辑全在 Hook 里
   return <FileTableView {...table} />;
 }
 
@@ -81,7 +81,7 @@ export function useFileTableLogic(files: FileInfo[]) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [sortColumn, setSortColumn] = useState<string>('name');
   // ... 状态和逻辑
-  return { selectedIds, sortedFiles, toggleSelect, /* ... */ };
+  return { selectedIds, sortedFiles, toggleSelect /* ... */ };
 }
 ```
 
@@ -124,27 +124,32 @@ class Classifier:
 ## CI 强制检查
 
 ### 文件行数检查脚本
-```bash
-# scripts/check-file-size.sh
-MAX_TSX=300; MAX_TS=250; MAX_RS=500; MAX_PY=500
 
-find src -name "*.tsx" -exec wc -l {} + | awk -v max=$MAX_TSX '
-  $1 > max && $2 != "total" { print "FAIL: " $2 " has " $1 " lines (max " max ")" }
-'
-find src -name "*.ts" -exec wc -l {} + | awk -v max=$MAX_TS '
-  $1 > max && $2 != "total" { print "FAIL: " $2 " has " $1 " lines (max " max ")" }
-'
-find src-tauri/src -name "*.rs" -exec wc -l {} + | awk -v max=$MAX_RS '
-  $1 > max && $2 != "total" { print "FAIL: " $2 " has " $1 " lines (max " max ")" }
-'
-find python-sidecar/app -name "*.py" -exec wc -l {} + | awk -v max=$MAX_PY '
-  $1 > max && $2 != "total" { print "FAIL: " $2 " has " $1 " lines (max " max ")" }
-'
+已落地为 **`scripts/check-file-size.sh`**（CI `frontend-check` 的第一步，也挂在 `make lint`）：
+
+```bash
+bash scripts/check-file-size.sh
 ```
 
+行为（阈值分组与上文「文件行数限制」一一对应）：
+
+| 情形                             | 结果                                       |
+| -------------------------------- | ------------------------------------------ |
+| 超过**强制拆分阈值**且未登记基线 | **FAIL**（禁止新增超限文件）               |
+| 已登记基线，但行数超过基线记录值 | **FAIL**（超限文件只允许拆分，不允许增长） |
+| 已登记基线且未增长               | PASS，计入「待消账」清单                   |
+| 超过警告阈值但未达强制阈值       | WARN（不阻断）                             |
+
+历史欠账登记在 `scripts/file-size-baseline.txt`（当前 16 个文件）；拆分到阈值内后删除对应行即完成消账。
+统计口径为**原始行数**（等价 `wc -l`，不剔除空行/注释）；生成物（`src/types/ipc.ts` 由 tauri-specta 生成、禁止手改）与 `node_modules` / `target` / `dist` / `.venv` / `__pycache__` / `gen` 不在管控范围。
+
 ### ESLint 复杂度规则
+
+⚠️ 本节规则**尚未启用**（`eslint.config.js` 当前未配置 `max-lines` / `complexity` / `max-params` / `max-depth`）：
+文件行数已由 `scripts/check-file-size.sh` 兜底，但「函数行数 / 圈复杂度 / 参数个数 / 嵌套深度」目前仍只靠 Code Review 把关，未接入自动门禁。
+
 ```javascript
-// eslint.config.js 补充
+// eslint.config.js 待补充
 rules: {
   'max-lines-per-function': ['error', { max: 60, skipComments: true }],
   'max-lines': ['warn', { max: 300, skipBlankLines: true, skipComments: true }],
@@ -156,6 +161,7 @@ rules: {
 ```
 
 ### Clippy 复杂度规则
+
 ```toml
 # clippy.toml
 cognitive-complexity-threshold = 15
