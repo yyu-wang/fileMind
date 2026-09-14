@@ -145,20 +145,30 @@ bash scripts/check-file-size.sh
 
 ### ESLint 复杂度规则
 
-⚠️ 本节规则**尚未启用**（`eslint.config.js` 当前未配置 `max-lines` / `complexity` / `max-params` / `max-depth`）：
-文件行数已由 `scripts/check-file-size.sh` 兜底，但「函数行数 / 圈复杂度 / 参数个数 / 嵌套深度」目前仍只靠 Code Review 把关，未接入自动门禁。
+**已启用**（`eslint.config.js`，CI 以 `--max-warnings 0` 运行，故一律按 error 拦截）：
 
-```javascript
-// eslint.config.js 待补充
-rules: {
-  'max-lines-per-function': ['error', { max: 60, skipComments: true }],
-  'max-lines': ['warn', { max: 300, skipBlankLines: true, skipComments: true }],
-  'complexity': ['error', 15],
-  'max-params': ['error', 4],
-  'max-depth': ['error', 4],
-  'max-nested-callbacks': ['error', 3],
-}
-```
+| 规则         | 阈值                                       | 说明                                                                                                                                                                                                |
+| ------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max-lines`  | 组件 300 / 页面 400 / `.ts` 250 / 测试 600 | 与 `scripts/check-file-size.sh` **同口径**（不跳过空行与注释，计原始行数），并**共用** `scripts/file-size-baseline.txt` 作为历史欠账白名单——两套门禁读同一份基线，避免「脚本说通过、ESLint 说超限」 |
+| `complexity` | 15                                         | 函数圈复杂度强制阈值；超限请拆函数                                                                                                                                                                  |
+
+圈复杂度历史欠账（登记在 `eslint.config.js`，登记值 = 该文件当前最大复杂度，**只允许降不允许升**）：
+
+| 文件                                                | 当前上限 | 超限函数（ESLint 报点）      |
+| --------------------------------------------------- | -------- | ---------------------------- |
+| `src/pages/ClassifyPage.tsx`                        | 38       | `ClassifyPage`               |
+| `src/components/settings/CloudProviderFormCard.tsx` | 30       | `CloudProviderFormCard`      |
+| `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`            |
+| `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`                   |
+| `src/pages/ChatPage.tsx`                            | 19       | 行 109 的匿名 async 箭头函数 |
+| `src/stores/settingsStore.ts`                       | 18       | `updateConfig`               |
+| `src/stores/chatStore.ts`                           | 16       | `handleChatEvent`            |
+
+消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
+
+**尚未启用**：`max-lines-per-function`（60）、`max-params`（4）、`max-depth`（4）、`max-nested-callbacks`（3）——这几项目前仍靠 Code Review 把关；接入前需先盘一遍现存违规量（`max-depth` 在现有代码里预计命中较多）。
+
+需注意：本节的「警告阈值」（函数 40 行 / 复杂度 10 / 参数 4 个）**没有**对应 ESLint 规则——CI 只拦强制阈值，警告档需靠 review 判断。
 
 ### Clippy 复杂度规则
 

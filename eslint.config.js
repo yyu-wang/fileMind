@@ -1,8 +1,55 @@
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import js from '@eslint/js';
 import tsParser from '@typescript-eslint/parser';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
+
+const CONFIG_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/** 文件行数阈值（与 rules/complexity.md §文件行数限制、scripts/check-file-size.sh 保持一致）。 */
+const FILE_LIMITS = {
+  /** React 组件 .tsx */
+  component: 300,
+  /** React 页面 .tsx */
+  page: 400,
+  /** TypeScript 工具 .ts */
+  ts: 250,
+  /** 测试文件 */
+  test: 600,
+};
+
+/** 圈复杂度强制阈值（rules/complexity.md §函数复杂度限制：警告 10 / 强制 15）。 */
+const COMPLEXITY_LIMIT = 15;
+
+/**
+ * 读取文件行数基线（scripts/file-size-baseline.txt）。
+ *
+ * 与 `scripts/check-file-size.sh` 读**同一份**基线而非在 ESLint 里另抄一份：
+ * 两套门禁的口径必须一致，否则会出现「脚本说通过、ESLint 说超限」的矛盾。
+ * 基线文件缺失时返回空数组（此时标准阈值生效，超限文件会直接报错，问题可见）。
+ */
+function loadSizeBaseline() {
+  const baselineFile = path.join(CONFIG_DIR, 'scripts/file-size-baseline.txt');
+  if (!existsSync(baselineFile)) return [];
+  return readFileSync(baselineFile, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+    .map((line) => {
+      const [target, max] = line.split(/\s+/);
+      return { target, max: Number(max) };
+    })
+    .filter((entry) => entry.target !== undefined && Number.isFinite(entry.max));
+}
+
+const SIZE_BASELINE = loadSizeBaseline()
+  // 只挑 .ts/.tsx：其余（.rs/.py/.css）ESLint 不解析，行数由 scripts/check-file-size.sh 管控；
+  // 若把 .css 条目也转成 files 模式，ESLint 会把 globals.css 当成待 lint 文件 → 解析报错
+  .filter(({ target }) => /\.(?:ts|tsx)$/.test(target));
 
 export default [
   js.configs.recommended,
@@ -61,11 +108,57 @@ export default [
       'no-duplicate-imports': 'error',
       'no-unreachable': 'error',
       'prefer-const': 'error',
+
+      // 圈复杂度（rules/complexity.md §函数复杂度限制）：超限请拆函数，不要靠
+      // 拆条件表达式糊弄——阈值针对的就是分支数量本身
+      complexity: ['error', COMPLEXITY_LIMIT],
     },
     settings: {
       react: { version: 'detect' },
     },
   },
+  // ---- 文件行数（rules/complexity.md §文件行数限制）----
+  // 与 scripts/check-file-size.sh 同口径：max-lines 不传 skipBlankLines/skipComments，
+  // 计原始行数（等价 `wc -l`），避免「靠多写注释绕过管控」。
+  {
+    files: ['src/**/*.tsx'],
+    rules: { 'max-lines': ['error', FILE_LIMITS.component] },
+  },
+  {
+    // 页面阈值更宽，须排在通用 .tsx 之后——flat config 中后匹配的块覆盖先前的规则值
+    files: ['src/pages/**/*.tsx'],
+    rules: { 'max-lines': ['error', FILE_LIMITS.page] },
+  },
+  {
+    files: ['src/**/*.ts'],
+    rules: { 'max-lines': ['error', FILE_LIMITS.ts] },
+  },
+  {
+    files: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    rules: { 'max-lines': ['error', FILE_LIMITS.test] },
+  },
+  // ---- 历史欠账：文件行数 ----
+  // 来源 scripts/file-size-baseline.txt（与 scripts/check-file-size.sh 共用同一份）：
+  // 允许保持到登记行数，但不得增长；拆分到阈值内后从该文件删行即消账。
+  // 须放在上面的分类块之后才算「覆盖」。
+  ...SIZE_BASELINE.map(({ target, max }) => ({
+    files: [target],
+    rules: { 'max-lines': ['error', max] },
+  })),
+  // ---- 历史欠账：圈复杂度 ----
+  // 登记值为该文件当前最大复杂度 = 现状上限：只允许下降，不允许上升。
+  // 消账方式：把函数拆到 15 以内后删除对应行。
+  { files: ['src/pages/ClassifyPage.tsx'], rules: { complexity: ['error', 38] } },
+  {
+    files: ['src/components/settings/CloudProviderFormCard.tsx'],
+    rules: { complexity: ['error', 30] },
+  },
+  { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
+  { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
+  { files: ['src/pages/ChatPage.tsx'], rules: { complexity: ['error', 19] } },
+  // settingsStore.ts 同时命中上面的行数基线条目——两块规则不同，互不覆盖
+  { files: ['src/stores/settingsStore.ts'], rules: { complexity: ['error', 18] } },
+  { files: ['src/stores/chatStore.ts'], rules: { complexity: ['error', 16] } },
   // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
   // 不需要也不能显式 import；仅声明防止 no-undef 误报）。
   {
