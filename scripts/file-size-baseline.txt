@@ -9,14 +9,9 @@
 #    说明为何无法拆分（例如生成物/单文件协议常量表），否则应改为拆分文件。
 
 python-sidecar/tests/test_chat_stream.py 611
-src-tauri/src/commands/cloud_providers.rs 528
 src-tauri/src/commands/file_ops.rs 2572
-src-tauri/src/commands/file_query.rs 507
 src-tauri/src/db/file_repo.rs 902
-src-tauri/src/db/operation_repo.rs 551
 src-tauri/src/main.rs 702
-src-tauri/src/security/cloud_proxy.rs 542
-src-tauri/src/security/keychain.rs 530
 src-tauri/src/sidecar/manager.rs 1086
 src-tauri/src/sidecar/manager_tests.rs 899
 src/components/common/FilePreviewDrawer.tsx 326
