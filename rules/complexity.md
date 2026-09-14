@@ -166,7 +166,19 @@ bash scripts/check-file-size.sh
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 
-**尚未启用**：`max-lines-per-function`（60）、`max-params`（4）、`max-depth`（4）、`max-nested-callbacks`（3）——这几项目前仍靠 Code Review 把关；接入前需先盘一遍现存违规量（`max-depth` 在现有代码里预计命中较多）。
+**本轮已启用**（启用时全仓零违规，属预防性门禁）：`max-params`(4)、`max-depth`(4)、`max-nested-callbacks`(3)。
+唯一命中是 `e2e/specs/004-rules.e2e.ts` 里 `describe → it → browser.execute → find` 的四层嵌套，已把浏览器上下文回调提为模块级具名函数（`selectFirstNonEmptyOption`）解决。
+
+**尚未启用：`max-lines-per-function`（60）**——实测数据（2026-09-13，`skipComments: true`）：
+
+| 维度                    | 实测                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 违规总量                | **72 处**，散落在 **65 个文件**（生产 41 / 测试 31）                                                                     |
+| 生产侧分档              | `>200` 行 7 处、`120–200` 行 10 处、`90–119` 行 10 处、`75–89` 行 6 处、`61–74` 行 8 处                                  |
+| 最长函数                | `settingsStore.ts` 283 行、`ClassifyPage.tsx` 267 行、`CloudProviderManager.tsx` 250 行；测试侧最长是单个 `it` 块 308 行 |
+| `skipComments` 开关差异 | 关掉后 78 处（仅 +6）——说明这些长函数是实打实的逻辑量，不是注释堆出来的                                                  |
+
+接入路径（建议）：先拆生产侧 7 个 `>200` 行的函数，再带基线开启；测试侧 31 处需另行决定豁免口径——本表的函数行数阈值**没有**测试豁免行（只有文件行数才有 400/600 的测试档）。
 
 需注意：本节的「警告阈值」（函数 40 行 / 复杂度 10 / 参数 4 个）**没有**对应 ESLint 规则——CI 只拦强制阈值，警告档需靠 review 判断。
 
