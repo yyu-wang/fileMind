@@ -140,7 +140,7 @@ bash scripts/check-file-size.sh
 | 已登记基线且未增长               | PASS，计入「待消账」清单                   |
 | 超过警告阈值但未达强制阈值       | WARN（不阻断）                             |
 
-历史欠账登记在 `scripts/file-size-baseline.txt`（当前 11 个文件，已由 16 消账至 11）；拆分到阈值内后删除对应行即完成消账。
+历史欠账登记在 `scripts/file-size-baseline.txt`（当前 8 个文件，已由 16 消账至 8）；拆分到阈值内后删除对应行即完成消账。
 统计口径为**原始行数**（等价 `wc -l`，不剔除空行/注释）；生成物（`src/types/ipc.ts` 由 tauri-specta 生成、禁止手改）与 `node_modules` / `target` / `dist` / `.venv` / `__pycache__` / `gen` 不在管控范围。
 
 ### ESLint 复杂度规则
