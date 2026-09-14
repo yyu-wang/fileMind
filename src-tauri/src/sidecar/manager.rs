@@ -928,12 +928,6 @@ impl Drop for SidecarManager {
 
 // ---------- 孤儿 Sidecar 清理（BE-M3） ----------
 
-/// Sidecar 主可执行的进程名（打包 / onedir 形态）。
-const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
-
-/// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
-const LINUX_COMM_MAX_LEN: usize = 15;
-
 /// `ps -o comm=` 取到的进程名是否就是 Sidecar 主可执行。
 ///
 /// ⚠️ Linux 的 `comm` 由内核按 `TASK_COMM_LEN - 1 = 15` 字符截断，而
@@ -944,6 +938,12 @@ const LINUX_COMM_MAX_LEN: usize = 15;
 #[cfg(unix)]
 #[must_use]
 pub(crate) fn matches_sidecar_comm(comm: &str) -> bool {
+    // 常量就近声明：放模块级时非 unix 平台无引用点，会被 dead_code 记为未使用。
+    /// Sidecar 主可执行的进程名（打包 / onedir 形态）。
+    const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
+    /// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
+    const LINUX_COMM_MAX_LEN: usize = 15;
+
     if comm.contains(SIDECAR_COMM_NAME) {
         return true;
     }
