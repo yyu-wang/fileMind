@@ -140,7 +140,7 @@ bash scripts/check-file-size.sh
 | 已登记基线且未增长               | PASS，计入「待消账」清单                   |
 | 超过警告阈值但未达强制阈值       | WARN（不阻断）                             |
 
-历史欠账登记在 `scripts/file-size-baseline.txt`（当前 8 个文件，已由 16 消账至 8）；拆分到阈值内后删除对应行即完成消账。
+历史欠账登记在 `scripts/file-size-baseline.txt`（当前 6 个文件，已由 16 消账至 6）；拆分到阈值内后删除对应行即完成消账。
 统计口径为**原始行数**（等价 `wc -l`，不剔除空行/注释）；生成物（`src/types/ipc.ts` 由 tauri-specta 生成、禁止手改）与 `node_modules` / `target` / `dist` / `.venv` / `__pycache__` / `gen` 不在管控范围。
 
 ### ESLint 复杂度规则
@@ -161,8 +161,8 @@ bash scripts/check-file-size.sh
 | `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`            |
 | `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`                   |
 | `src/pages/ChatPage.tsx`                            | 19       | 行 109 的匿名 async 箭头函数 |
-| `src/stores/settingsStore.ts`                       | 18       | `updateConfig`               |
-| `src/stores/chatStore.ts`                           | 16       | `handleChatEvent`            |
+
+（`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 
