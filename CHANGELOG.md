@@ -7,15 +7,6 @@
 
 ## \[Unreleased]
 
-### Changed
-
-- **版本号** 预发布标识统一为纯数字（`1.0.0-rc.1` → `1.0.0-1`）：MSI 的 `ProductVersion` 不接受字母标识，约束与第四段映射记入 `rules/release.md`。
-
-### Fixed
-
-- **Windows MSI 打包失败** 移除写死的 `bundle.windows.wix.version`，改由数字预发布自动派生第四段（`1.0.0-1` → MSI `1.0.0.1`）；移除后各次预发布的 MSI 版本仍可区分。
-- **Windows 构建警告** Sidecar 进程名常量就近声明，随 `#[cfg(unix)]` 一并裁掉，非 unix 平台不再报 `constant is never used`。
-
 ## \[1.0.0-1] - 2026-09-14
 
 ### Added
