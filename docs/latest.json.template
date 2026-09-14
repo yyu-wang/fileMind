@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "notes": "<本版更新说明，取自 CHANGELOG.md 对应版本小节，可多行>",
+  "pub_date": "2026-09-14T00:00:00Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "<FileMind_1.0.0_aarch64.app.tar.gz.sig 全文>",
+      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_aarch64.app.tar.gz"
+    },
+    "windows-x86_64": {
+      "signature": "<FileMind_1.0.0_x64-setup.exe.sig 全文>",
+      "url": "https://github.com/yyu-wang/fileMind/releases/download/v1.0.0/FileMind_1.0.0_x64-setup.exe"
+    }
+  }
+}

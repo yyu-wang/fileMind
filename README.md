@@ -188,8 +188,12 @@ Husky + lint-staged + 自检脚本在每次提交时运行：
 
 ### CI/CD
 
-- **PR 检查**：lint + type-check + 单元测试 + 构建检查（3 平台）
-- **合并构建**：4 个目标平台的完整构建（macOS arm64/x64、Windows x64、Linux x64）
+- **PR 检查**：lint + type-check + 单元测试 + 构建检查（macOS / Windows 两平台）
+- **合并构建**：正式分发两平台的完整构建 —— macOS（Apple Silicon）+ Windows x64，均含 Sidecar 打包与打包态冒烟校验
+
+> **分发范围**：当前只发布 macOS（Apple Silicon）与 Windows x64 安装包。macOS Intel 因上游依赖
+> （lancedb / torch）已停发 x86_64 wheel，Linux 因打包态 Sidecar 解析暂只支持 macOS/Windows，
+> 两者本期均不提供分发。
 
 ---
 
