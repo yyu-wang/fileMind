@@ -13,6 +13,4 @@ src-tauri/src/db/file_repo.rs 902
 src-tauri/src/main.rs 702
 src-tauri/src/sidecar/manager.rs 1086
 src-tauri/src/sidecar/manager_tests.rs 899
-src/stores/chatStore.ts 443
-src/stores/settingsStore.ts 503
 src/styles/globals.css 4680

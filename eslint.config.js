@@ -160,9 +160,9 @@ export default [
   { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
   { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
   { files: ['src/pages/ChatPage.tsx'], rules: { complexity: ['error', 19] } },
-  // settingsStore.ts 同时命中上面的行数基线条目——两块规则不同，互不覆盖
-  { files: ['src/stores/settingsStore.ts'], rules: { complexity: ['error', 18] } },
-  { files: ['src/stores/chatStore.ts'], rules: { complexity: ['error', 16] } },
+  // 注：settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
+  // updateConfig 的字段合并抽成 mergeAppConfig、handleChatEvent 的事件分发抽成
+  // dispatchChatEvent，两者各自的复杂度都回到 15 以内，故覆盖块一并删除
   // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
   // 不需要也不能显式 import；仅声明防止 no-undef 误报）。
   {
