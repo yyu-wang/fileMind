@@ -11,17 +11,12 @@ import {
   categoryTagClass,
   deriveFileStatus,
   isOrganized,
-  type SortDir,
   type SortKey,
+  type SortState,
 } from '@/lib/fileTable';
 import type { FileInfo } from '@/types/ipc';
 
 import { StatusBadge } from './StatusBadge';
-
-interface SortState {
-  key: SortKey;
-  dir: SortDir;
-}
 
 interface FileListTableProps {
   files: FileInfo[];

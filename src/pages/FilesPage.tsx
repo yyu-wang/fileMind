@@ -1,35 +1,25 @@
 // 文件管理主页：虚拟滚动列表 + 筛选排序 + 预览抽屉（设计稿 05_交互原型 §文件管理）。
 //
 // 结构：main-header(h1 + subtitle + header-actions) → main-content(file-toolbar + file-table)
-// 筛选/排序为页面级 state（不污染 store）；选中与文件数据走 fileStore。
+// 选中与文件数据走 fileStore；搜索/筛选/排序在 useFilesPageFilters（页面级，不进 store）；
+// 工具栏抽到 components/file/FileToolbar。
 
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 
 import { FileListTable } from '@/components/file/FileListTable';
+import { FileToolbar } from '@/components/file/FileToolbar';
 import { ScannedDirectoriesPanel } from '@/components/file/ScannedDirectoriesPanel';
 import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { useFilesPageFilters } from '@/hooks/useFilesPageFilters';
 import { useHotkeys } from '@/hooks/useHotkeys';
 import { getE2eTestDir } from '@/lib/e2e';
-import {
-  filterByName,
-  filterFiles,
-  sortFiles,
-  type FileStatus,
-  type SortDir,
-  type SortKey,
-} from '@/lib/fileTable';
 import { useClassifyStore } from '@/stores/classifyStore';
 import { useFileStore } from '@/stores/fileStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { FileInfo } from '@/types/ipc';
-
-interface SortState {
-  key: SortKey;
-  dir: SortDir;
-}
 
 /**
  * 空态文案：区分「从未扫描 / 扫描中 / 列表加载中 / 已索引但列表未取回」四种情况。
@@ -76,10 +66,7 @@ export function FilesPage() {
   const dataDirectory = useSettingsStore((s) => s.dataDirectory);
   const navigate = useNavigate();
 
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'' | FileStatus>('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sort, setSort] = useState<SortState>({ key: 'name', dir: 'asc' });
+  const filters = useFilesPageFilters(files);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -115,29 +102,6 @@ export function FilesPage() {
     },
   ]);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const file of files) {
-      if (file.category) {
-        set.add(file.category);
-      }
-    }
-    return Array.from(set).sort();
-  }, [files]);
-
-  // 搜索用 deferred 值驱动列表重算：输入框更新（高优先级）不被
-  // 全量 O(N log N) 过滤+排序（低优先级）阻塞，万级文件下逐字输入不再卡顿
-  const deferredQuery = useDeferredValue(searchQuery);
-
-  const visibleFiles = useMemo(() => {
-    const filtered = filterFiles(files, {
-      category: categoryFilter || null,
-      status: statusFilter || null,
-    });
-    // 客户端搜索（对齐交互原型搜索框，数据全量在内存）
-    return sortFiles(filterByName(filtered, deferredQuery), sort.key, sort.dir);
-  }, [files, categoryFilter, statusFilter, deferredQuery, sort]);
-
   // T9.5 E2E：测试目录存在时跳过原生对话框（原生 open() 无法被 WebDriver 点击）。
   const handleScan = async () => {
     const testDir = await getE2eTestDir();
@@ -157,13 +121,6 @@ export function FilesPage() {
     if (typeof selected === 'string') {
       await scanFiles(selected);
     }
-  };
-
-  const handleSortChange = (key: SortKey) => {
-    setSort((prev) => ({
-      key,
-      dir: prev.key === key ? (prev.dir === 'asc' ? 'desc' : 'asc') : 'asc',
-    }));
   };
 
   const handleSelectAll = (ids: string[] | null) => {
@@ -259,87 +216,13 @@ export function FilesPage() {
       {/* 文件页主体：虚拟滚动自带滚动容器，不用 main-content 的 overflow */}
       <div className="files-page__body">
         <ScannedDirectoriesPanel onRemoved={() => void loadAllFiles()} />
-        <div className="file-toolbar">
-          {/* 工具栏顺序对齐文档：整理选中 → 搜索框 → 筛选 */}
-          <button
-            type="button"
-            className="btn btn--sm"
-            onClick={handleClassifySelected}
-            disabled={selectedIds.length === 0}
-          >
-            整理选中 ({selectedIds.length})
-          </button>
-          {selectedIds.length > 0 && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={handleClearSelection}
-              data-testid="files-clear-selection"
-            >
-              清除选中
-            </button>
-          )}
-          {selectedIds.length > 0 && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              style={{ color: 'var(--warn)' }}
-              onClick={() => setPendingDelete(true)}
-              data-testid="files-delete-selected"
-            >
-              删除选中 ({selectedIds.length})
-            </button>
-          )}
-          <div className="search-box">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <circle cx="11" cy="11" r="8" />
-              <path d="m21 21-4.3-4.3" />
-            </svg>
-            <input
-              type="text"
-              placeholder="搜索文件名..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
-          <label className="filter-field">
-            <span>分类</span>
-            <select
-              className="files-toolbar__select"
-              aria-label="按分类筛选"
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-            >
-              <option value="">全部分类</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="filter-field">
-            <span>状态</span>
-            <select
-              className="files-toolbar__select"
-              aria-label="按状态筛选"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as '' | FileStatus)}
-            >
-              <option value="">全部状态</option>
-              <option value="categorized">已分类</option>
-              <option value="uncategorized">未分类</option>
-            </select>
-          </label>
-        </div>
+        <FileToolbar
+          selectedCount={selectedIds.length}
+          filters={filters}
+          onClassifySelected={handleClassifySelected}
+          onClearSelection={handleClearSelection}
+          onRequestDelete={() => setPendingDelete(true)}
+        />
 
         {emptyCopy !== null ? (
           <div className="files-page__empty">
@@ -349,13 +232,13 @@ export function FilesPage() {
         ) : (
           <div className="files-page__table">
             <FileListTable
-              files={visibleFiles}
+              files={filters.visibleFiles}
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
               onSelectAll={handleSelectAll}
               onOpenPreview={setPreviewFile}
-              sort={sort}
-              onSortChange={handleSortChange}
+              sort={filters.sort}
+              onSortChange={filters.toggleSort}
             />
           </div>
         )}
