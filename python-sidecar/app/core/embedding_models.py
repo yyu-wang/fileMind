@@ -49,6 +49,12 @@ MODEL_REGISTRY: dict[str, EmbeddingModelInfo] = {
     "bge-large-zh-v1.5": EmbeddingModelInfo(
         name="bge-large-zh-v1.5",
         dim=1024,
+        # 版本保持 1：向量后端由「Ollama GGUF」换为「进程内 ONNX int8」后，曾评估
+        # 升版本（新表 documents_*_v2）以避免两套向量混用；但实测旧库里不存在
+        # bge-large 的旧后端向量（历史配置为 bge-small，其表名与归一闪开后不同），
+        # 归一闪开本身即触发全量重嵌，升版本只会让所有用户多跑一次全量重建。
+        # 若未来确需升版本，注意三处表名构造必须同步（Rust 侧已统一走
+        # commands::embedding_table::resolve_vector_table，不再硬编码 v1）。
         default_version=1,
         hf_repo="Xenova/bge-large-zh-v1.5",
         onnx_file="onnx/model_quantized.onnx",

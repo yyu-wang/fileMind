@@ -56,11 +56,11 @@ os.environ.setdefault("OMP_NUM_THREADS", str(max(1, (os.cpu_count() or 1) - 1)))
 
 logger = getLogger()
 
-# 默认 Embedding 模型：bge-large-zh-v1.5（1024 维，中文场景下语义向量 SOTA）
-# 与 E2 后续任务 T2.6（模型切换流程）的"初始默认表"保持一致
-DEFAULT_EMBEDDING_MODEL = "bge-large-zh-v1.5"
-DEFAULT_EMBEDDING_DIM = 1024
-DEFAULT_EMBEDDING_VERSION = 1
+# 默认 Embedding 模型及其维度/版本全部派生自注册表（唯一事实来源），
+# 避免在 main 里出现第二份硬编码（历史上这里的 version=1 与注册表各写一份）。
+DEFAULT_EMBEDDING_MODEL = embedding_models.DEFAULT_MODEL
+DEFAULT_EMBEDDING_DIM = embedding_models.get_model_dim(DEFAULT_EMBEDDING_MODEL)
+DEFAULT_EMBEDDING_VERSION = embedding_models.get_model_info(DEFAULT_EMBEDDING_MODEL).default_version
 
 # 数据根目录：与 SQLite (~/.filemind/data/filemind.db) 同层
 DATA_HOME = Path(os.environ.get("FILEMIND_DATA_HOME", str(Path.home() / ".filemind")))

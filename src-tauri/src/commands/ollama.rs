@@ -86,7 +86,18 @@ async fn ollama_status_inner(state: &AppState) -> AppResult<OllamaStatus> {
         .request_seq
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let body = proxy::forward_post(SIDECAR_INFERENCE_TEST_PATH, "{}", &psk, seq).await?;
+    probe_inference(&psk, seq).await
+}
+
+/// 探测 Sidecar 推理环境的按部件入口（PSK + 序号）。
+///
+/// 供无法持有 `&AppState` 的调用点复用（如后台 best-effort 任务里的向量表名解析）。
+///
+/// # Errors
+///
+/// Sidecar 请求失败或响应解析失败时返回错误。
+pub(crate) async fn probe_inference(psk: &[u8], seq: u64) -> AppResult<OllamaStatus> {
+    let body = proxy::forward_post(SIDECAR_INFERENCE_TEST_PATH, "{}", psk, seq).await?;
     parse_ollama_status(&body)
 }
 

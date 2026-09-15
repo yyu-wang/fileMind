@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::commands::embedding_table;
 use crate::db::file_search::FileSearch;
 use crate::db::{ConfigRepo, FileRepo};
 use crate::error::{AppError, AppResult};
@@ -78,17 +79,14 @@ pub async fn build_index(state: State<'_, AppState>) -> Result<IndexBuildRespons
 
 /// 建索引纯逻辑入口（便于单元测试，不依赖 `tauri::State`）。
 async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
-    // 1. 读取配置：embedding 模型 + 目标表名（对齐问答 `documents_{model}_v1`）
-    let (embedding_model, table_name) = {
+    // 1. 读取配置：当前 Embedding 模型（表名留到拿到 PSK 后再解析——版本号来自
+    //    Sidecar 注册表，见 `commands::embedding_table`，此处不再拼表名）
+    let embedding_model = {
         let guard = state
             .db
             .lock()
             .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        let config = ConfigRepo::get(guard.conn())?;
-        let model = config.embedding_model;
-        let table = format!("documents_{model}_v1");
-        drop(guard);
-        (model, table)
+        ConfigRepo::get(guard.conn())?.embedding_model
     };
 
     // 2. 只取「待向量化」文件：未建过 / 换模型 / 内容变更才入选（增量核心）。
@@ -123,9 +121,16 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
         .map_err(|e| AppError::InvalidInput(format!("PSK 锁中毒: {e}")))?
         .clone()
         .ok_or_else(|| AppError::SidecarUnavailable("sidecar 未就绪".to_string()))?;
+    // 表名解析自身要发一次探测请求（消耗一个序号），索引请求另取一个——
+    // Sidecar 中间件要求序号严格递增，复用同一序号会被判重放。
+    let seq_probe = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let seq = state
         .request_seq
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let table_name =
+        embedding_table::resolve_vector_table_parts(&state.db, &psk, seq_probe).await?;
 
     let request = SidecarIndexBuildRequest {
         files: files
