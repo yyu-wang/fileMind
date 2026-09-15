@@ -10,6 +10,7 @@ import type {
   CloudProviderUpsertInput,
   EmbeddingModelAvailability,
   InferenceMode,
+  ModelDownloadStatus,
   OllamaModelInfo,
   OllamaStatus,
 } from '@/types/ipc';
@@ -60,7 +61,7 @@ export interface SettingsState {
   lastOllamaProbeAt: number;
   /** 可选的 LLM 模型列表（来自 Ollama 探测） */
   llmModelOptions: OllamaModelInfo[];
-  /** Embedding 模型可用性列表（来自 Ollama 探测） */
+  /** Embedding 模型状态列表（来自探测；`available` 表示本地模型文件是否就绪） */
   embeddingModelOptions: EmbeddingModelAvailability[];
   /** 主题模式（跟随系统 / 亮色 / 暗色） */
   theme: ThemeMode;
@@ -70,9 +71,11 @@ export interface SettingsState {
   cloudModel: string;
   /** 云端推理 Temperature（0-1，0.2 为通用默认） */
   temperature: number;
-  /** 正在安装的 Embedding 模型名（null 表示无安装任务） */
-  installingModel: string | null;
-  /** 模型安装错误信息（null 表示无错误） */
+  /** 正在下载的 Embedding 模型名（null 表示无下载任务） */
+  downloadingModel: string | null;
+  /** 模型下载状态（null 表示尚未查询） */
+  modelDownload: ModelDownloadStatus | null;
+  /** 下载相关错误信息（启动失败 / 查询失败；null 表示无错误） */
   installError: string | null;
   /** P-07：用户自定义云提供商列表（来自 DB cloud_providers 表，设置页表单直接操作） */
   cloudProviders: CloudProviderRecord[];
@@ -113,8 +116,10 @@ export interface SettingsState {
   setTheme: (mode: ThemeMode) => void;
   /** 清除错误 */
   clearError: () => void;
-  /** 安装指定 Embedding 模型（从 Ollama 拉取） */
-  installModel: (modelName: string) => Promise<void>;
+  /** 启动（或手动重试）Embedding 模型下载：模型由 Sidecar 从 HF 镜像下载 */
+  startModelDownload: (modelName: string) => Promise<void>;
+  /** 查询 Embedding 模型下载状态（设置页轮询用；失败只记录错误，不抛） */
+  refreshModelDownload: (modelName: string) => Promise<void>;
   /** P-07：从 DB 拉取全部云提供商（覆盖 store） */
   loadCloudProviders: () => Promise<void>;
   /** P-07：新建或更新提供商（成功后自动刷新列表 + API Key 状态） */

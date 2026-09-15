@@ -24,6 +24,8 @@ pub mod file_query;
 pub mod index;
 /// 推理模式管理与转发命令。
 pub mod inference;
+/// Embedding 模型下载命令（Sidecar `/models/download*` 代理）。
+pub mod model;
 /// Ollama 推理环境探测命令（Sidecar `/inference/test` 代理）。
 pub mod ollama;
 /// 规则编辑命令（规则 CRUD + 优先级拖拽排序）。
