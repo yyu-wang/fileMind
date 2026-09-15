@@ -338,16 +338,22 @@ class _OllamaTagsResponse(BaseModel):
     models: list[_OllamaTagModel] = Field(default_factory=list)
 
 
-class ModelInstallRequest(BaseModel):
-    """POST /inference/install-model 请求体：从 Ollama 拉取指定模型。"""
+class ModelDownloadRequest(BaseModel):
+    """POST /models/download 请求体：下载指定模型的 ONNX 权重与 tokenizer 文件。"""
 
-    model_name: str = Field(description="注册表模型名（如 bge-small-zh-v1.5）")
+    model_name: str = Field(description="注册表模型名（如 bge-large-zh-v1.5）")
 
 
-class ModelInstallResponse(BaseModel):
-    """POST /inference/install-model 响应体。"""
+class ModelDownloadStatusResponse(BaseModel):
+    """模型下载状态：供设置页展示进度条与「未下载不可用」引导。"""
 
-    success: bool
     model_name: str
-    ollama_name: str
-    message: str = ""
+    status: str = Field(description="idle（未开始）/ downloading / ready / failed")
+    mirror: str | None = Field(default=None, description="当前使用的镜像地址；未开始为 None")
+    attempt: int = Field(default=0, description="已尝试次数（含当前这次）")
+    downloaded_bytes: int = Field(default=0, description="已下载字节数")
+    total_bytes: int | None = Field(
+        default=None, description="全部文件总字节数；无法探测时为 None（前端显示不确定进度）"
+    )
+    error: str | None = Field(default=None, description="失败原因（status=failed 时非空）")
+    updated_at: str = Field(default="", description="状态最后更新时间（ISO 8601）")

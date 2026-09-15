@@ -1,0 +1,24 @@
+/* 组件级样式补充（在 globals.css 之外新增，避免继续增长已超阈值的主样式表）。
+ *
+ * 背景：`scripts/check-file-size.sh` 门禁规定「超阈值文件只允许拆分，不允许增长」，
+ * globals.css 已在基线之上，故新增组件样式统一落在此文件。
+ * 理想终态是按页面/区块拆分 globals.css（见 rules/complexity.md §拆分策略），
+ * 属独立任务；在此之前本文件用于承接增量。
+ *
+ * 颜色/间距/圆角一律引用 globals.css 的设计令牌（原型 05_交互原型），不硬编码。
+ */
+
+/* Embedding 模型下载进度条（设置页）：宽度按百分比内联设置 */
+.model-progress {
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.model-progress__bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s var(--ease-out, var(--ease));
+}

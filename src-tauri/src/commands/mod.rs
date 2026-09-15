@@ -12,6 +12,8 @@ pub mod cloud_providers;
 pub mod config;
 /// (T9.5) E2E 测试专用命令（函数常编译；注册在 main.rs 仅 debug，release 不可调用）。
 pub mod e2e;
+/// 向量表名解析（模型来自配置、版本来自 Sidecar 注册表，避免硬编码 `_v1`）。
+pub mod embedding_table;
 /// 文件扫描与批量文件操作命令。
 pub mod file_ops;
 /// 文件内容预览命令（文本 / 图片 / PDF）。
@@ -22,6 +24,8 @@ pub mod file_query;
 pub mod index;
 /// 推理模式管理与转发命令。
 pub mod inference;
+/// Embedding 模型下载命令（Sidecar `/models/download*` 代理）。
+pub mod model;
 /// Ollama 推理环境探测命令（Sidecar `/inference/test` 代理）。
 pub mod ollama;
 /// 规则编辑命令（规则 CRUD + 优先级拖拽排序）。

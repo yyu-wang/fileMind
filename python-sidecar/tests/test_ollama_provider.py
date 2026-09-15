@@ -134,53 +134,16 @@ async def test_generate_stream_error_before_first_delta(client: mock.AsyncMock) 
 
 
 # ------------------------------------------------------------------
-# embed
+# embed（显式不支持：向量化已统一为进程内 ONNX，见 embedding_service）
 # ------------------------------------------------------------------
 
 
-async def test_embed_returns_vectors(client: mock.AsyncMock) -> None:
-    """向量化返回与输入等长。"""
-    client.embed.return_value = SimpleNamespace(embeddings=[[0.1, 0.2], [0.3, 0.4]])
+async def test_embed_explicitly_unsupported(client: mock.AsyncMock) -> None:
+    """embed 恒定抛 EmbeddingUnavailableError，且不触达 Ollama。
+
+    回归保护：避免有人误以为 Ollama 仍是向量化后端而接错调用点。
+    """
     provider = OllamaProvider()
-    assert await provider.embed(["a", "b"]) == [[0.1, 0.2], [0.3, 0.4]]
-
-
-async def test_embed_empty_short_circuits(client: mock.AsyncMock) -> None:
-    """空输入不调后端，直接返回空列表。"""
-    provider = OllamaProvider()
-    assert await provider.embed([]) == []
-    client.embed.assert_not_awaited()
-
-
-async def test_embed_resolves_model_alias(client: mock.AsyncMock) -> None:
-    """注册表标识解析为 Ollama 实际模型名（bge → qllama 命名空间）。"""
-    client.embed.return_value = SimpleNamespace(embeddings=[[1.0]])
-    provider = OllamaProvider(embed_model="bge-large-zh-v1.5")
-    await provider.embed(["x"])
-    kwargs = client.embed.await_args.kwargs
-    assert kwargs["model"] == "qllama/bge-large-zh-v1.5"
-    assert kwargs["keep_alive"] == "30m"
-
-
-async def test_embed_404_maps_model_not_pulled(client: mock.AsyncMock) -> None:
-    """404 → 明确「模型未拉取」提示。"""
-    client.embed.side_effect = ResponseError("model not found", status_code=404)
-    provider = OllamaProvider()
-    with pytest.raises(EmbeddingUnavailableError, match="模型未拉取"):
+    with pytest.raises(EmbeddingUnavailableError, match="不再提供向量化"):
         await provider.embed(["x"])
-
-
-async def test_embed_http_error_maps(client: mock.AsyncMock) -> None:
-    """HTTP 错误 → EmbeddingUnavailableError。"""
-    client.embed.side_effect = httpx.ConnectError("refused")
-    provider = OllamaProvider()
-    with pytest.raises(EmbeddingUnavailableError):
-        await provider.embed(["x"])
-
-
-async def test_embed_count_mismatch_raises(client: mock.AsyncMock) -> None:
-    """返回数量与输入不一致 → 明确报错。"""
-    client.embed.return_value = SimpleNamespace(embeddings=[[1.0]])
-    provider = OllamaProvider()
-    with pytest.raises(EmbeddingUnavailableError, match="数量异常"):
-        await provider.embed(["a", "b"])
+    client.embed.assert_not_called()

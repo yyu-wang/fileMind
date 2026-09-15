@@ -12,11 +12,19 @@ FileMind 的性能验收基准：一条命令产出 `docs/e10-bench-report.json`
 | `scan_incremental_unchanged_ms` | `scan_perf.rs`                        | 二次扫描（内容未变，跳过哈希/写库）耗时 | 显著低于全量 |
 | `rag_ttft_ms`                   | `rag_bench.py`                        | 问答请求发出到首个 token 的耗时         | <3s          |
 | `rag_retrieve_ms`               | `rag_bench.py`                        | 检索阶段耗时（改写 → 向量/FTS → 重排）  | —            |
-| `sidecar_rss_mb`                | `rag_bench.py`                        | Sidecar 冷启动 RSS（`/metrics`）        | <500MB       |
+| `sidecar_rss_mb`                | `rag_bench.py`                        | Sidecar 冷启动 RSS（`/metrics`）        | <2048MB      |
 
-`rag_ttft_ms`/`rag_retrieve_ms`/`sidecar_rss_mb` 需要本机 Ollama + 预缓存
-embedding 模型；不可用时 `rag_bench.py` 将 RAG 指标置 `null` 并注明
+`rag_ttft_ms`/`rag_retrieve_ms`/`sidecar_rss_mb` 需要本机 Ollama（本地生成模型）
+与 embedding ONNX 模型文件；不可用时 `rag_bench.py` 将 RAG 指标置 `null` 并注明
 `rag_skipped` 原因（仅 RSS 仍照常产出）。
+
+> **内存门控修订（2026-09-15）**：`sidecar_rss_mb` 验收线由 `<500MB` 上调为
+> `<2048MB`。原因：Embedding 从 Ollama 改为 Sidecar 进程内 ONNX int8 推理后，
+> 实测（`onnx_embedding_mem_probe.py`，关内存池）模型加载后 0.55GB、稳态推理
+> 0.85GB（300 字分块）~~1.18GB（500 字生产分块，峰值 1.31GB），叠加 Sidecar
+> 基线 161MB 后约 1.0~~1.4GB。门控口径仍为冷启动（模型惰性加载），2048MB 用于
+> 卡住运行期回归。同批实测：index 吞吐 202.6 分块/分钟（500 字分块），
+> `EST_FILES_PER_MINUTE` 据此由 500 校准为 100。
 
 ## M1 Pro 实测结论（2026-09-01，qwen2.5:7b 门控基准）
 

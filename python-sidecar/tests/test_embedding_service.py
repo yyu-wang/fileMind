@@ -1,150 +1,190 @@
 """T5.1 — services.embedding_service 单元测试。
 
-覆盖：批量/单条向量生成、空输入、连接失败、模型未拉取（404）、HTTP 错误、
-超时（mock 网络，不走真实 Ollama 请求）。pyproject 配 asyncio_mode=auto，
-async 测试函数自动运行。
+覆盖：批量/单条向量生成、空输入、模型未下载、加载失败、推理异常、超时、
+返回数量异常、CLS 池化与 L2 归一化、分批、单例复用、模型路径解析、
+未注册模型。
+
+全部用例 mock ``_load``（返回 fake 会话/tokenizer）或用临时空目录触发
+「未下载」，不加载真实 311MB 权重。pyproject 配 asyncio_mode=auto。
 """
 
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
-import httpx
 import pytest
-from ollama import ResponseError
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
+from app.services import embedding_service  # noqa: E402
 from app.services.embedding_service import (  # noqa: E402
     EMBEDDING_MODEL,
     EmbeddingUnavailableError,
-    _ollama_model_name,
     embed_text,
     embed_texts,
-    reset_clients,
+    model_dir,
+    models_root,
+    onnx_path,
+    reset_model,
 )
 
 
+class _FakeEncoding:
+    """模拟 tokenizers.Encoding（只用 ids / attention_mask）。"""
+
+    def __init__(self, ids: list[int], attention: list[int]) -> None:
+        self.ids = ids
+        self.attention_mask = attention
+
+
+class _FakeTokenizer:
+    """模拟 Tokenizer：记录批大小，返回等长方块。"""
+
+    def __init__(self, seq_len: int = 3) -> None:
+        self._seq_len = seq_len
+        self.batches: list[int] = []
+
+    def encode_batch(self, texts: list[str]) -> list[_FakeEncoding]:
+        self.batches.append(len(texts))
+        return [
+            _FakeEncoding(ids=list(range(self._seq_len)), attention=[1] * self._seq_len)
+            for _ in texts
+        ]
+
+
+class _FakeSession:
+    """模拟 onnxruntime.InferenceSession：按输入批大小返回 last_hidden_state。
+
+    ``hidden`` 为三维张量 [batch, seq, dim]；pooling 取 ``[:, 0, :]``。
+    """
+
+    def __init__(self, hidden: list[list[list[float]]] | None = None) -> None:
+        self._hidden = hidden
+        self.runs = 0
+
+    def run(self, output_names: object, feed: dict[str, object]) -> list[object]:
+        self.runs += 1
+        if self._hidden is not None:
+            return [self._hidden]
+        # 默认：CLS 向量 = [1, 0]，其余 token 为 [0, 1]（便于断言 CLS 池化）
+        batch = len(feed["input_ids"])  # type: ignore[arg-type]
+        return [[[[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]] for _ in range(batch)]]
+
+
+def _fake_load(
+    hidden: list[list[list[float]]] | None = None,
+) -> tuple[_FakeSession, _FakeTokenizer]:
+    """构造 ``_load`` 的返回值（fake 会话 + fake tokenizer）。"""
+    return _FakeSession(hidden), _FakeTokenizer()
+
+
 @pytest.fixture(autouse=True)
-def _reset_clients() -> Generator[None, None, None]:
-    """每个用例前后重置模块级客户端单例（避免跨用例复用上例的 fake）。"""
-    reset_clients()
+def _reset_singleton() -> Generator[None, None, None]:
+    """每个用例前后重置模块级单例（避免跨用例复用上例的 fake）。"""
+    reset_model()
     yield
-    reset_clients()
+    reset_model()
 
 
-class _FakeEmbedResponse:
-    """模拟 ollama EmbedResponse（只带 .embeddings 字段）。"""
-
-    def __init__(self, embeddings: list[list[float]]) -> None:
-        self.embeddings = embeddings
-
-
-def _fake_client(embeddings: list[list[float]]) -> mock.MagicMock:
-    """构造返回固定向量的 fake AsyncClient。"""
-
-    async def fake_embed(**kwargs: object) -> _FakeEmbedResponse:
-        return _FakeEmbedResponse(embeddings)
-
-    client = mock.MagicMock()
-    client.embed = fake_embed
-    return client
-
-
-async def test_embed_texts_returns_vectors() -> None:
-    """批量输入 → 等长向量列表，维度透传。"""
-    embeddings = [[1.0, 2.0], [3.0, 4.0]]
-    with mock.patch(
-        "app.services.embedding_service.AsyncClient",
-        return_value=_fake_client(embeddings),
-    ):
+async def test_embed_texts_returns_normalized_cls_vectors() -> None:
+    """批量输入 → 等长向量；取 CLS（首 token）并 L2 归一化。"""
+    session = _FakeSession()
+    tokenizer = _FakeTokenizer()
+    with mock.patch.object(embedding_service, "_load", return_value=(session, tokenizer)):
         result = await embed_texts(["a", "b"])
-    assert result == [[1.0, 2.0], [3.0, 4.0]]
+    assert result == [[1.0, 0.0], [1.0, 0.0]]
+    assert tokenizer.batches == [2]
+
+
+async def test_embed_texts_normalizes_non_unit_vectors() -> None:
+    """非单位向量被 L2 归一化（保证与查询侧归一化同一尺度）。"""
+    hidden = [[[3.0, 4.0], [0.0, 1.0]]]  # CLS = [3,4] → 归一化 [0.6, 0.8]
+    with mock.patch.object(embedding_service, "_load", return_value=_fake_load(hidden)):
+        result = await embed_texts(["a"])
+    assert result[0] == pytest.approx([0.6, 0.8])
 
 
 async def test_embed_text_single() -> None:
     """单条文本 → 单个向量。"""
-    embeddings = [[0.1, 0.2, 0.3]]
-    with mock.patch(
-        "app.services.embedding_service.AsyncClient",
-        return_value=_fake_client(embeddings),
-    ):
+    hidden = [[[0.0, 5.0], [1.0, 0.0]]]
+    with mock.patch.object(embedding_service, "_load", return_value=_fake_load(hidden)):
         result = await embed_text("hello")
-    assert result == [0.1, 0.2, 0.3]
+    assert result == pytest.approx([0.0, 1.0])
 
 
 async def test_embed_texts_empty_input() -> None:
-    """空列表 → 空列表，不发起请求。"""
-    with mock.patch(
-        "app.services.embedding_service.AsyncClient",
-        return_value=_fake_client([]),
-    ) as patched:
+    """空列表 → 空列表，不加载模型。"""
+    with mock.patch.object(embedding_service, "_load") as patched:
         result = await embed_texts([])
     assert result == []
     patched.assert_not_called()
 
 
-async def test_embed_conn_error_raises_unavailable() -> None:
-    """连接失败（httpx.ConnectError）→ EmbeddingUnavailableError。"""
+async def test_embed_texts_batches_by_encode_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """超过 ENCODE_BATCH_SIZE 时按批切分（避免整批 padding 到最长序列）。"""
+    monkeypatch.setattr(embedding_service, "ENCODE_BATCH_SIZE", 2)
+    tokenizer = _FakeTokenizer()
+    with mock.patch.object(embedding_service, "_load", return_value=(_FakeSession(), tokenizer)):
+        result = await embed_texts(["a", "b", "c", "d", "e"])
+    assert len(result) == 5
+    assert tokenizer.batches == [2, 2, 1]
 
-    async def raise_conn(**kwargs: object) -> object:
-        raise httpx.ConnectError("connection refused")
 
-    client = mock.MagicMock()
-    client.embed = raise_conn
+async def test_embed_model_not_downloaded_hints_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型文件缺失 → EmbeddingUnavailableError 且消息引导去设置页下载。"""
+    monkeypatch.setenv("FILEMIND_MODEL_DIR", str(tmp_path))
+    with pytest.raises(EmbeddingUnavailableError, match="未下载"):
+        await embed_texts(["x"])
+
+
+async def test_embed_load_failure_wrapped() -> None:
+    """加载抛非预期异常 → 统一包装为 EmbeddingUnavailableError。"""
     with (
-        mock.patch("app.services.embedding_service.AsyncClient", return_value=client),
+        mock.patch.object(
+            embedding_service,
+            "_load",
+            side_effect=EmbeddingUnavailableError("Embedding 模型加载失败: boom"),
+        ),
+        pytest.raises(EmbeddingUnavailableError, match="加载失败"),
+    ):
+        await embed_texts(["x"])
+
+
+async def test_embed_encode_error_raises_unavailable() -> None:
+    """推理异常 → 统一 EmbeddingUnavailableError（消息含「调用失败」）。"""
+    session = mock.MagicMock()
+    session.run.side_effect = RuntimeError("ort boom")
+    with (
+        mock.patch.object(embedding_service, "_load", return_value=(session, _FakeTokenizer())),
         pytest.raises(EmbeddingUnavailableError, match="Embedding 调用失败"),
     ):
         await embed_texts(["x"])
 
 
-async def test_embed_model_not_pulled_404() -> None:
-    """模型未拉取（Ollama 404）→ 消息提示 ollama pull。"""
+async def test_embed_timeout_raises_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """超时 → EmbeddingUnavailableError 含超时提示（超时窗口压到 10ms，编码耗 200ms）。"""
+    monkeypatch.setattr(embedding_service, "EMBED_TIMEOUT", 0.01)
 
-    async def raise_404(**kwargs: object) -> object:
-        raise ResponseError("model not found", status_code=404)
+    def _slow_encode(*args: object, **kwargs: object) -> list[list[float]]:
+        time.sleep(0.2)
+        return [[1.0]]
 
-    client = mock.MagicMock()
-    client.embed = raise_404
     with (
-        mock.patch("app.services.embedding_service.AsyncClient", return_value=client),
-        pytest.raises(EmbeddingUnavailableError, match="ollama pull"),
-    ):
-        await embed_texts(["x"])
-
-
-async def test_embed_http_error_non_404() -> None:
-    """非 404 的 Response 错误 → 统一 EmbeddingUnavailableError。"""
-
-    async def raise_500(**kwargs: object) -> object:
-        raise ResponseError("internal error", status_code=500)
-
-    client = mock.MagicMock()
-    client.embed = raise_500
-    with (
-        mock.patch("app.services.embedding_service.AsyncClient", return_value=client),
-        pytest.raises(EmbeddingUnavailableError, match="Embedding 调用失败"),
-    ):
-        await embed_texts(["x"])
-
-
-async def test_embed_timeout_raises_unavailable() -> None:
-    """超时 → EmbeddingUnavailableError 含超时提示。"""
-
-    async def slow(**kwargs: object) -> object:
-        raise TimeoutError
-
-    client = mock.MagicMock()
-    client.embed = slow
-    with (
-        mock.patch("app.services.embedding_service.AsyncClient", return_value=client),
+        mock.patch.object(embedding_service, "_load", return_value=_fake_load()),
+        mock.patch.object(embedding_service, "_encode", _slow_encode),
         pytest.raises(EmbeddingUnavailableError, match="超时"),
     ):
         await embed_texts(["x"])
@@ -152,47 +192,51 @@ async def test_embed_timeout_raises_unavailable() -> None:
 
 async def test_embed_count_mismatch_raises() -> None:
     """返回向量数量与输入不一致 → EmbeddingUnavailableError。"""
-    embeddings = [[1.0]]
     with (
-        mock.patch(
-            "app.services.embedding_service.AsyncClient",
-            return_value=_fake_client(embeddings),
+        mock.patch.object(
+            embedding_service,
+            "_load",
+            return_value=(_FakeSession(), _FakeTokenizer()),
+        ),
+        mock.patch.object(
+            embedding_service,
+            "_encode_batch",
+            return_value=[[1.0]],
         ),
         pytest.raises(EmbeddingUnavailableError, match="数量异常"),
     ):
         await embed_texts(["a", "b"])
 
 
-def test_ollama_model_alias_resolution() -> None:
-    """注册表标识 → 社区命名空间；未知模型原样返回（支持 env 覆盖）。"""
-    assert _ollama_model_name("bge-large-zh-v1.5") == "qllama/bge-large-zh-v1.5"
-    assert _ollama_model_name("custom-model") == "custom-model"
-    assert EMBEDDING_MODEL == "bge-large-zh-v1.5"
-
-
-async def test_embed_sends_keep_alive() -> None:
-    """embed 调用携带 keep_alive（模型常驻，避免重复问句二次冷加载）。"""
-    captured: dict[str, object] = {}
-
-    async def fake_embed(**kwargs: object) -> _FakeEmbedResponse:
-        captured.update(kwargs)
-        return _FakeEmbedResponse([[1.0]])
-
-    client = mock.MagicMock()
-    client.embed = fake_embed
-    with mock.patch("app.services.embedding_service.AsyncClient", return_value=client):
-        await embed_texts(["x"])
-
-    assert captured["keep_alive"] == "30m"
-
-
-async def test_embed_texts_reuses_single_client() -> None:
-    """模块级单例：多次调用只构造一次 AsyncClient（httpx 连接池复用）。"""
-    embeddings = [[1.0]]
-    with mock.patch(
-        "app.services.embedding_service.AsyncClient",
-        return_value=_fake_client(embeddings),
-    ) as patched:
+async def test_embed_reuses_single_model() -> None:
+    """模块级单例：多次调用只加载一次会话（避免重复加载 311MB 权重）。"""
+    with mock.patch.object(embedding_service, "_load", return_value=_fake_load()) as patched:
         await embed_texts(["a"])
         await embed_texts(["b"])
     assert patched.call_count == 1
+
+
+def test_models_root_env_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FILEMIND_MODEL_DIR 优先于 FILEMIND_DATA_HOME/models。"""
+    monkeypatch.delenv("FILEMIND_MODEL_DIR", raising=False)
+    monkeypatch.setenv("FILEMIND_DATA_HOME", str(tmp_path / "data"))
+    assert models_root() == tmp_path / "data" / "models"
+    monkeypatch.setenv("FILEMIND_MODEL_DIR", str(tmp_path / "custom"))
+    assert models_root() == tmp_path / "custom"
+
+
+def test_model_and_onnx_path_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """本地布局：{models_root}/{model}/{onnx_file}。"""
+    monkeypatch.setenv("FILEMIND_MODEL_DIR", str(tmp_path))
+    assert model_dir("bge-large-zh-v1.5") == tmp_path / "bge-large-zh-v1.5"
+    assert onnx_path("bge-large-zh-v1.5") == (
+        tmp_path / "bge-large-zh-v1.5" / "onnx" / "model_quantized.onnx"
+    )
+    assert EMBEDDING_MODEL == "bge-large-zh-v1.5"
+
+
+def test_unregistered_model_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """未注册模型（含 env 指向自定义仓库的场景）→ EmbeddingUnavailableError。"""
+    monkeypatch.setenv("FILEMIND_MODEL_DIR", str(tmp_path))
+    with pytest.raises(EmbeddingUnavailableError, match="未知 Embedding 模型"):
+        model_dir("not-registered")
