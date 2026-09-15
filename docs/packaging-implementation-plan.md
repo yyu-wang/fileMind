@@ -270,6 +270,27 @@
 
 ---
 
+### W3：Windows 安装包配置补齐（2026-09-14）
+
+- 背景：发版链路（W1/W2）打通后，`bundle.windows` 段仍为空 —— WebView2 安装方式、NSIS
+  安装模式与语言都取框架默认值，属发布前必须显式拍板的三项。
+- 决策：
+  1. **`webviewInstallMode`：先试 `offlineInstaller`，实测后回退为 `downloadBootstrapper`**。
+     实测（merge-build Windows job）：artifact 压缩包 **653.9MB → 1082.4MB（+428MB）**，
+     按 v1.0.0-1 资产尺寸反推即每个安装器 +214MB（NSIS 273→~487MB、MSI 382→~596MB），
+     官方文档「约 127MB」偏乐观。而 **updater 下载的就是 NSIS 那个 exe**，等于每次自动更新
+     也要多下 214MB；反观 WebView2 在 Windows 11 已内置、Windows 10 由 Windows Update
+     推送，真正缺它的机器极少，故不值得。现显式写出 `downloadBootstrapper` 固定该默认值，
+     避免将来框架默认值变动带来体积突变。
+  2. **`nsis.installMode`：显式固定为 `currentUser`**（也是框架默认）：装到用户目录、只写
+     `HKCU`、全程不要管理员权限，updater 静默替换文件也不需要提权。
+  3. **`nsis.languages`：`["SimpChinese", "English"]`**：中文系统显示中文安装界面，系统
+     语言不在列表时回落第一项（即中文）。
+- 验证：merge-build Windows job 全绿，`light`（MSI）与 `makensis`（NSIS）均正常产出，
+  4 个产物（msi / nsis.exe / 两个 .sig）齐备。
+- 备注：安装器体积即更新下载体积（`latest.json` 的 `windows-x86_64` 指向 NSIS exe），
+  后续若要压缩更新体积，应优先考虑 sidecar 产物体积（onedir 源产物 915MB）而非安装器格式。
+
 ## 3. 验收门控汇总
 
 | 门控                                    | 判定                                                    | 位置        |

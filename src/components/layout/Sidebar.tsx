@@ -134,7 +134,7 @@ export function Sidebar() {
         <div className="logo">{LOGO_ICON}</div>
         <div>
           <div className="name">FileMind</div>
-          <div className="ver">v1.0.0-rc.1</div>
+          <div className="ver">v1.0.0-1</div>
         </div>
       </div>
 

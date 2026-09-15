@@ -128,6 +128,30 @@ jobs:
           fi
           echo "Sidecar bundled OK"
 
+      # 运行时门控（2026-09-15 补）：上面的结构层校验只确认「文件在包里」，抓不到
+      # 「文件在、但装不起来」——实机缺陷：包内构建机版 ucrtbase.dll 让 python312.dll 加载
+      # 失败（[PYI-1628] Failed to load Python DLL），strip 又破坏了 libssl-3.dll
+      # （`import _ssl` 报 Win32 998 内存位置访问无效）→ 侧车 100% 起不来，而当时两平台
+      # 冒烟全绿。这里真跑一遍 bundle 内的 sidecar，要求 /health 返回 200
+      # （scripts/go-no-go.py T1；打包态超时 15s，冷启动足够；FAIL 即步骤失败）。
+      - name: Smoke check Sidecar runtime (/health)
+        shell: bash
+        run: |
+          set -e
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # Windows 资源收集目录（安装器据此打包），已由上面的步骤确认存在
+            SIDECAR_DIR="src-tauri/target/${{ matrix.target }}/release/sidecar"
+            PY=".venv/Scripts/python.exe"
+          else
+            APP="$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+            test -n "${APP}"
+            SIDECAR_DIR="${APP}/Contents/Resources/sidecar"
+            PY=".venv/bin/python"
+          fi
+          test -d "${SIDECAR_DIR}"
+          echo "运行 bundle 内 Sidecar 并探活: ${SIDECAR_DIR}"
+          "${PY}" scripts/go-no-go.py --test 1 --binary "${SIDECAR_DIR}"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:

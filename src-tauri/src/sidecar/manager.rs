@@ -221,6 +221,9 @@ impl SidecarManager {
         // httpx 同时检查 NO_PROXY 与 no_proxy，双写最稳妥（不同系统读法不一）。
         cmd.env("NO_PROXY", "127.0.0.1,localhost,::1");
         cmd.env("no_proxy", "127.0.0.1,localhost,::1");
+        // Windows：抑制控制台黑框 + 子进程输出落盘（实现在 sidecar/platform.rs）
+        #[cfg(windows)]
+        crate::sidecar::platform::apply_spawn_flags(&mut cmd);
         cmd.stdin(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| {
             AppError::SidecarUnavailable(format!(
@@ -262,12 +265,25 @@ impl SidecarManager {
 
     /// 轮询 /health 直到 Sidecar 就绪或超时。
     ///
+    /// 每轮先探一次子进程是否已退出：打包态启动失败（DLL 装载失败等）时进程会**秒退**，
+    /// 不做这步前端要盲等满 `MAX_READY_ATTEMPTS`（60s）才看到「失败」——实测侧车倒在
+    /// `PyInstaller` bootloader 报错时 0.2s 就退出（2026-09-15 实机排障）。
+    ///
     /// # Errors
     ///
-    /// 超过最大尝试次数仍未就绪时返回 `SidecarUnavailable`。
-    pub async fn wait_ready(&self) -> AppResult<()> {
+    /// 子进程提前退出（附退出状态，便于前端展示）或超过最大尝试次数仍未就绪时
+    /// 返回 `SidecarUnavailable`。
+    pub async fn wait_ready(&mut self) -> AppResult<()> {
         let url = format!("http://127.0.0.1:{}/health", self.port);
         for attempt in 0..MAX_READY_ATTEMPTS {
+            // 子进程已退出 → 立即失败（不再空等）：错误信息带退出状态，前端「引擎启动失败」
+            // 提示与日志可直接看到原因，而不是「启动超时」这种无信息量的兜底文案。
+            // 注：`try_wait` 会回收子进程，`stop_hard` 已改为容忍「已退出」状态。
+            if let Some(status) = self.try_wait() {
+                return Err(AppError::SidecarUnavailable(format!(
+                    "Sidecar 进程已退出（{status}），未能就绪"
+                )));
+            }
             // 用 3s 超时的探活 client：Sidecar「接受连接但不响应」的挂死态
             // 下，无超时的请求会无限挂起，导致整个启动流程卡死（BE-C4）
             let ready = proxy::probe_client()
@@ -525,22 +541,31 @@ impl SidecarManager {
     /// 以及 `stop_graceful` 的兜底分支。`stopped` 标志位不会被 set（主流程
     /// 的 `stop_graceful` 负责设置，崩溃重启场景无需置位）。
     ///
+    /// P1-1（2026-09-15）：进程可能**已经退出**（`wait_ready` 的提前退出检测、
+    /// watchdog 的 `try_wait` 都已回收它）。此时 `kill()` 在 Windows 上会以
+    /// `ERROR_ACCESS_DENIED` 失败；若把它当错误返回，`process` 字段会残留 `Some`，
+    /// watchdog 的「尚未启动」守卫（`process.is_none() && psk.is_none()`）随之失效
+    /// → 空转重启。故先探一次 `try_wait`，已退出则跳过 kill，仅 `wait` 收尾
+    /// （std 会返回 `try_wait` 已缓存的状态，不会阻塞）。
+    ///
     /// # Errors
     ///
     /// `kill` 发送信号失败（非「进程不存在」）或 `wait` 系统调用失败时返回错误。
     pub fn stop_hard(&mut self) -> AppResult<()> {
         if let Some(ref mut child) = self.process {
-            // kill 本身可能返回 "进程已不存在"，这对我们是 OK 的
-            let kill_result = child.kill();
-            match kill_result {
-                Ok(()) => {}
-                Err(ref e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                    // 某些平台下 pid 0/不存在返回 InvalidInput（无此进程）；忽略
-                }
-                Err(e) => {
-                    return Err(AppError::SidecarUnavailable(format!(
-                        "Sidecar 停止失败: {e}"
-                    )));
+            let already_exited = child.try_wait().ok().flatten().is_some();
+            if !already_exited {
+                // kill 本身可能返回 "进程已不存在"，这对我们是 OK 的
+                match child.kill() {
+                    Ok(()) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                        // 某些平台下 pid 0/不存在返回 InvalidInput（无此进程）；忽略
+                    }
+                    Err(e) => {
+                        return Err(AppError::SidecarUnavailable(format!(
+                            "Sidecar 停止失败: {e}"
+                        )));
+                    }
                 }
             }
             child
@@ -928,12 +953,6 @@ impl Drop for SidecarManager {
 
 // ---------- 孤儿 Sidecar 清理（BE-M3） ----------
 
-/// Sidecar 主可执行的进程名（打包 / onedir 形态）。
-const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
-
-/// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
-const LINUX_COMM_MAX_LEN: usize = 15;
-
 /// `ps -o comm=` 取到的进程名是否就是 Sidecar 主可执行。
 ///
 /// ⚠️ Linux 的 `comm` 由内核按 `TASK_COMM_LEN - 1 = 15` 字符截断，而
@@ -944,6 +963,12 @@ const LINUX_COMM_MAX_LEN: usize = 15;
 #[cfg(unix)]
 #[must_use]
 pub(crate) fn matches_sidecar_comm(comm: &str) -> bool {
+    // 常量就近声明：放模块级时非 unix 平台无引用点，会被 dead_code 记为未使用。
+    /// Sidecar 主可执行的进程名（打包 / onedir 形态）。
+    const SIDECAR_COMM_NAME: &str = "filemind-sidecar";
+    /// Linux `/proc/<pid>/comm` 的截断长度（内核 `TASK_COMM_LEN - 1`）。
+    const LINUX_COMM_MAX_LEN: usize = 15;
+
     if comm.contains(SIDECAR_COMM_NAME) {
         return true;
     }

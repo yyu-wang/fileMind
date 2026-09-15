@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath Artifact Configuration（W4 草案）
+
+  用途：交给 SignPath 对 Windows 安装器做 Authenticode 签名。
+  数据流：release.yml 的 publish job 上传安装器目录为 GitHub artifact
+  （GitHub artifact 本质是 zip，安装器位于 zip 根）→ 本配置用最外层 <zip-file> 容器
+  一次提交两个安装器 → 一个签名请求同时拿回签名后的 msi 与 setup.exe。
+
+  ⚠️ 维护要点
+
+  1. 本文件是 SignPath 控制台里 artifact configuration 的**副本**：两者的 slug 与内容
+     必须一致，实际生效的是控制台里的那份，改动后记得同步（配置里的 slug 见
+     release.yml 的 `SIGNPATH_ARTIFACT_CONFIG_SLUG`）。
+  2. 路径用通配符 `*` 避开版本号，否则每次发版都要改配置。
+  3. NSIS 安装器（*-setup.exe）只能作为 PE 文件**整体**签名：SignPath 的容器元素支持
+     MSI/CAB/MSIX/ZIP 等，但没有 NSIS，而 Tauri 的 NSIS 是压缩单文件、拆不开重打。
+     因此装完落盘的 filemind.exe 仍未签名 —— 影响的是企业策略/杀软误报，
+     不影响 SmartScreen（它看的是用户下载的那个安装器）。
+  4. MSI 是容器、可深签：先签内层 filemind.exe，再重新打包并签 MSI 整体。
+     内层路径以「上传产物样本自动生成」的结果为准（Tauri 的 WiX 模板把主程序放在
+     安装根目录、随包资源放在 sidecar/ 子目录）。
+  5. 首次配置建议：在控制台「Upload an artifact sample」直接传 v1.0.0-1 的
+     FileMind_1.0.0-1_x64_en-US.msi 或 ..._x64-setup.exe，用自动生成结果校正本文件。
+
+  已知待确认项（申请签约时一并问）：
+  - 单次签名请求的产物体积上限（当前 msi 约 382MB + setup.exe 约 274MB = 约 656MB）。
+  - 签名策略是否强制人工审批（若强制，CI 会在此步骤等待审批）。
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <!-- NSIS 安装器：只能整体签 -->
+    <pe-file path="FileMind_*-setup.exe">
+      <authenticode-sign />
+    </pe-file>
+
+    <!-- MSI：深签（内层主程序 + 容器本体） -->
+    <msi-file path="FileMind_*.msi">
+      <pe-file path="filemind.exe">
+        <authenticode-sign />
+      </pe-file>
+      <!--
+        可选：内嵌的 Python 引擎（PyInstaller 产物，约 300MB）。
+        当前按「只签 Tauri 默认产物」的范围**未启用**；如需加签，取消注释后
+        仍需单独评估单次请求体积与 _internal/ 下大量未签名依赖的一致性。
+      -->
+      <!-- <pe-file path="sidecar/filemind-sidecar.exe"><authenticode-sign /></pe-file> -->
+      <authenticode-sign />
+    </msi-file>
+  </zip-file>
+</artifact-configuration>

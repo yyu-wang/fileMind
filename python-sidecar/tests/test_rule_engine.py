@@ -103,6 +103,20 @@ def test_match_project_directory() -> None:
     assert match.category == "项目文件"
 
 
+def test_match_project_directory_windows_separator() -> None:
+    """directory 规则：Windows 原生反斜杠路径同样命中（跨平台回归）。
+
+    2026-09-15 修复：preset 正则原写作 POSIX 分隔符 ``/(projects|…)/[^/]+``，而
+    ``_get_directory`` 返回平台原生路径 —— Windows 上该内置规则永不命中（本用例在
+    POSIX 上同样有效：字符类同时接受两种分隔符）。
+    """
+    file = make_file("notes.bkp", parent=r"C:\Users\me\projects\myapp")
+    match = make_engine().match_file(file)
+    assert match is not None
+    assert match.rule_id == "preset_dir_project_001"
+    assert match.category == "项目文件"
+
+
 def test_no_match_returns_none() -> None:
     """无规则命中 → None。"""
     match = make_engine().match_file(make_file("weird.zzzz", parent="/tmp"))
