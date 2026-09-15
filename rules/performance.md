@@ -6,34 +6,40 @@
 
 ### 前端性能指标
 
-| 指标 | 预算 | 测量方式 | 检查时机 |
-|------|------|----------|----------|
-| 首屏加载 (FCP) | < 1.5s | Lighthouse | 每次 PR |
-| 可交互时间 (TTI) | < 3s | Lighthouse | 每次 PR |
-| JS bundle (gzip) | < 200KB | vite-bundle-analyzer | 每次 PR |
-| CSS bundle (gzip) | < 30KB | vite-bundle-analyzer | 每次 PR |
-| 内存占用 | < 200MB | DevTools Memory | 每周 |
-| 组件渲染时间 | < 16ms (60fps) | React Profiler | Code Review |
+| 指标              | 预算           | 测量方式             | 检查时机    |
+| ----------------- | -------------- | -------------------- | ----------- |
+| 首屏加载 (FCP)    | < 1.5s         | Lighthouse           | 每次 PR     |
+| 可交互时间 (TTI)  | < 3s           | Lighthouse           | 每次 PR     |
+| JS bundle (gzip)  | < 200KB        | vite-bundle-analyzer | 每次 PR     |
+| CSS bundle (gzip) | < 30KB         | vite-bundle-analyzer | 每次 PR     |
+| 内存占用          | < 200MB        | DevTools Memory      | 每周        |
+| 组件渲染时间      | < 16ms (60fps) | React Profiler       | Code Review |
 
 ### Rust 性能指标
 
-| 指标 | 预算 | 测量方式 | 检查时机 |
-|------|------|----------|----------|
-| IPC 命令响应 | < 50ms（不含 IO） | tracing | Code Review |
-| 文件扫描 10K 文件 | < 10s | bench 测试 | 每个 Epic |
-| 文件扫描 100K 文件 | < 30s | bench 测试 | 发布前 |
-| Sidecar 启动 | < 2s | 集成测试 | 每个 Epic |
-| DB 查询（单表） | < 10ms | bench 测试 | Code Review |
+| 指标               | 预算              | 测量方式   | 检查时机    |
+| ------------------ | ----------------- | ---------- | ----------- |
+| IPC 命令响应       | < 50ms（不含 IO） | tracing    | Code Review |
+| 文件扫描 10K 文件  | < 10s             | bench 测试 | 每个 Epic   |
+| 文件扫描 100K 文件 | < 30s             | bench 测试 | 发布前      |
+| Sidecar 启动       | < 2s              | 集成测试   | 每个 Epic   |
+| DB 查询（单表）    | < 10ms            | bench 测试 | Code Review |
 
 ### Python 性能指标
 
-| 指标 | 预算 | 测量方式 | 检查时机 |
-|------|------|----------|----------|
-| API 响应（不含 LLM） | < 100ms | pytest-benchmark | Code Review |
-| 分类单文件 | < 500ms | bench 测试 | 每个 Epic |
-| Embedding 批量 100 文件 | < 30s | bench 测试 | 每个 Epic |
-| RAG 首 token 延迟 | < 3s | 集成测试 | 发布前 |
-| 内存占用 | < 500MB | psutil | 每周 |
+| 指标                    | 预算     | 测量方式                 | 检查时机    |
+| ----------------------- | -------- | ------------------------ | ----------- |
+| API 响应（不含 LLM）    | < 100ms  | pytest-benchmark         | Code Review |
+| 分类单文件              | < 500ms  | bench 测试               | 每个 Epic   |
+| Embedding 批量 100 文件 | < 30s    | bench 测试               | 每个 Epic   |
+| RAG 首 token 延迟       | < 3s     | 集成测试                 | 发布前      |
+| 内存占用                | < 2048MB | psutil（`GET /metrics`） | 每周        |
+
+> **内存预算说明（2026-09-15 修订，原值 500MB）**：Embedding 从 Ollama 改为
+> Sidecar 进程内 ONNX int8 推理（`BAAI/bge-large-zh-v1.5`，1024 维）后，模型
+> 加载 + 推理稳态 RSS 实测 0.82~~1.20GB（`benchmarks/onnx_embedding_mem_probe.py`），
+> 叠加 Sidecar 基线 161MB 后约 0.93~~1.31GB。门控口径仍为**冷启动**（模型惰性加载，
+> 冷启动不触碰权重），2048MB 作为运行期上限用于卡住后续回归。
 
 ## 前端性能规则
 
@@ -49,8 +55,8 @@ export function FileListTable({ files }: FileListTableProps) {
   const virtualizer = useVirtualizer({
     count: files.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 40,  // 行高
-    overscan: 5,             // 预渲染 5 行
+    estimateSize: () => 40, // 行高
+    overscan: 5, // 预渲染 5 行
   });
 
   return (
@@ -68,7 +74,10 @@ export function FileListTable({ files }: FileListTableProps) {
 export function FileListTable({ files }: FileListTableProps) {
   return (
     <div>
-      {files.map((file) => <FileRow key={file.id} file={file} />)}  // 10K+ 行卡死
+      {files.map((file) => (
+        <FileRow key={file.id} file={file} />
+      ))}{' '}
+      // 10K+ 行卡死
     </div>
   );
 }
@@ -76,14 +85,14 @@ export function FileListTable({ files }: FileListTableProps) {
 
 ### 性能优化清单
 
-| 场景 | 规则 | 检查方式 |
-|------|------|----------|
-| 大列表 (> 100 行) | 必须虚拟滚动 | Code Review |
-| 昂贵计算 | useMemo / useCallback | Code Review |
-| 图片加载 | loading="lazy" | Code Review |
-| 组件卸载 | 清理事件监听/定时器 | Code Review |
-| 重新渲染 | React.memo 纯展示组件 | React Profiler |
-| 深层对象比较 | shallow compare | Code Review |
+| 场景              | 规则                  | 检查方式       |
+| ----------------- | --------------------- | -------------- |
+| 大列表 (> 100 行) | 必须虚拟滚动          | Code Review    |
+| 昂贵计算          | useMemo / useCallback | Code Review    |
+| 图片加载          | loading="lazy"        | Code Review    |
+| 组件卸载          | 清理事件监听/定时器   | Code Review    |
+| 重新渲染          | React.memo 纯展示组件 | React Profiler |
+| 深层对象比较      | shallow compare       | Code Review    |
 
 ## Rust 性能规则
 
@@ -111,11 +120,11 @@ for file in files {
 
 ### 内存规则
 
-| 规则 | 说明 |
-|------|------|
-| 大文件哈希 | 流式读取（8KB buffer），不一次性读入内存 |
-| 文件扫描结果 | 分批返回（每批 1000 条），不一次性加载 |
-| Embedding 向量 | 用 f32 不用 f64，省一半内存 |
+| 规则           | 说明                                     |
+| -------------- | ---------------------------------------- |
+| 大文件哈希     | 流式读取（8KB buffer），不一次性读入内存 |
+| 文件扫描结果   | 分批返回（每批 1000 条），不一次性加载   |
+| Embedding 向量 | 用 f32 不用 f64，省一半内存              |
 
 ## Python 性能规则
 
@@ -145,30 +154,31 @@ def batch_embed(texts: list[str]) -> list[list[float]]:
 
 ```yaml
 # .github/workflows/pr-check.yml 补充
-  performance-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
+performance-check:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with: { node-version: 20, cache: npm }
+    - run: npm ci
 
-      # Bundle size 检查
-      - run: npm run build
-      - name: Check bundle size
-        run: |
-          JS_SIZE=$(gzip -c dist/assets/*.js | wc -c)
-          CSS_SIZE=$(gzip -c dist/assets/*.css | wc -c)
-          echo "JS bundle (gzip): $JS_SIZE bytes"
-          echo "CSS bundle (gzip): $CSS_SIZE bytes"
-          if [ $JS_SIZE -gt 204800 ]; then
-            echo "FAIL: JS bundle exceeds 200KB budget"
-            exit 1
-          fi
-          if [ $CSS_SIZE -gt 30720 ]; then
-            echo "FAIL: CSS bundle exceeds 30KB budget"
-            exit 1
-          fi
+    # Bundle size 检查
+    - run: npm run build
+    - name: Check bundle size
+      run: |
+        JS_SIZE=$(gzip -c dist/assets/*.js | wc -c)
+        CSS_SIZE=$(gzip -c dist/assets/*.css | wc -c)
+        echo "JS bundle (gzip): $JS_SIZE bytes"
+        echo "CSS bundle (gzip): $CSS_SIZE bytes"
+        if [ $JS_SIZE -gt 204800 ]; then
+          echo "FAIL: JS bundle exceeds 200KB budget"
+          exit 1
+        fi
+        if [ $CSS_SIZE -gt 30720 ]; then
+          echo "FAIL: CSS bundle exceeds 30KB budget"
+          exit 1
+        fi
 
-      # Rust bench
-      - run: cargo bench --manifest-path src-tauri/Cargo.toml
+    # Rust bench
+    - run: cargo bench --manifest-path src-tauri/Cargo.toml
+```
