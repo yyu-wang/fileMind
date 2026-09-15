@@ -121,6 +121,12 @@ def main() -> int:
     parser.add_argument("--onnx-file", default="model_quantized.onnx")
     parser.add_argument("--mode", choices=["light", "hf-tok"], default="light")
     parser.add_argument("--batch", type=int, default=20)
+    parser.add_argument(
+        "--chars",
+        type=int,
+        default=300,
+        help="单个分块字符数（生产分块目标为 500，见 ingest_service.CHUNK_TARGET_CHARS）",
+    )
     parser.add_argument("--threads", type=int, default=0, help="0 = 用 ORT 默认线程数")
     parser.add_argument("--warmup-batches", type=int, default=1)
     parser.add_argument("--timed-batches", type=int, default=3)
@@ -169,7 +175,7 @@ def main() -> int:
     load_ms = int((time.monotonic() - started) * 1000)
     mark(stages, "+session", {"onnx_file": args.onnx_file, "load_ms": load_ms})
 
-    texts = build_texts(args.batch)
+    texts = build_texts(args.batch, chars=args.chars)
     feed = encode_light(tok, texts) if args.mode == "light" else encode_hf(tok, texts)
 
     # 预热批：首轮含 ORT 图优化落地 / 线程池与内存池扩张，不计入稳态耗时

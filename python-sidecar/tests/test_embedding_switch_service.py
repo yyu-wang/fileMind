@@ -10,6 +10,7 @@ ensure_target_table 幂等。
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
+from app.core import embedding_models  # noqa: E402
 from app.core.embedding_models import MODEL_REGISTRY, EmbeddingModelInfo  # noqa: E402
 from app.db.lancedb_repo import LanceDBManager  # noqa: E402
 from app.services import embedding_switch_service  # noqa: E402
@@ -147,8 +149,8 @@ def test_model_diff_diff_dim_is_full_rebuild(extra_model_512: str) -> None:
     assert r.current_dim == 1024
     assert r.new_dim == 512
     assert r.files_to_rebuild == 12847
-    # est_minutes = ceil(12847/500) = 26
-    assert r.est_minutes == 26
+    # est_minutes 由 EST_FILES_PER_MINUTE 推导（避免硬编码速率导致常量校准后脆断）
+    assert r.est_minutes == math.ceil(12847 / embedding_models.EST_FILES_PER_MINUTE)
 
 
 def test_model_same_no_rebuild(ldb: LanceDBManager) -> None:

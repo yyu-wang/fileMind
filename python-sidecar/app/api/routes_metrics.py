@@ -3,9 +3,10 @@
 端点 GET /metrics 返回当前进程 RSS/VMS 字节数换算的 MB 值 + 是否在验收阈值内。
 阈值沿革：
 - 300MB（原始）→ 500MB（T10.3 放宽：容纳 rerank 懒加载模型的冷启动余量）
-- 2048MB（本次放宽）：Embedding 改为进程内 ONNX int8 推理后，模型加载 + 推理
-  稳态 RSS 实测 0.82~1.20GB（见 ``benchmarks/onnx_embedding_mem_probe.py``），
-  叠加 Sidecar 基线（约 161MB）后约 0.93~1.31GB，500MB 无法容纳。
+- 2048MB（本次放宽）：Embedding 改为进程内 ONNX int8 推理后，实测（关内存池）
+  模型加载后 0.55GB、稳态推理 0.85GB（300 字分块）~1.18GB（500 字生产分块，
+  峰值 1.31GB），叠加 Sidecar 基线（约 161MB）后约 1.0~1.4GB，500MB 无法容纳。
+  见 ``benchmarks/onnx_embedding_mem_probe.py``。
 
 口径说明：门控仍按**冷启动**判定——embedding 与 rerank 均为惰性加载，
 冷启动不触碰模型权重；2048MB 是运行期（首次向量化之后）的预算上限，

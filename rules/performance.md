@@ -36,10 +36,11 @@
 | 内存占用                | < 2048MB | psutil（`GET /metrics`） | 每周        |
 
 > **内存预算说明（2026-09-15 修订，原值 500MB）**：Embedding 从 Ollama 改为
-> Sidecar 进程内 ONNX int8 推理（`BAAI/bge-large-zh-v1.5`，1024 维）后，模型
-> 加载 + 推理稳态 RSS 实测 0.82~~1.20GB（`benchmarks/onnx_embedding_mem_probe.py`），
-> 叠加 Sidecar 基线 161MB 后约 0.93~~1.31GB。门控口径仍为**冷启动**（模型惰性加载，
-> 冷启动不触碰权重），2048MB 作为运行期上限用于卡住后续回归。
+> Sidecar 进程内 ONNX int8 推理（`Xenova/bge-large-zh-v1.5` int8，1024 维）后，
+> 实测（`benchmarks/onnx_embedding_mem_probe.py`，M1 Pro + ORT 1.30，关内存池）：
+> 模型加载后 0.55GB；稳态推理 0.85GB（300 字分块）~ **1.18GB（500 字生产分块，
+> 峰值 1.31GB）**。叠加 Sidecar 基线 161MB 后约 1.0~1.4GB。门控口径仍为**冷启动**
+> （模型惰性加载，冷启动不触碰权重），2048MB 作为运行期上限用于卡住后续回归。
 
 ## 前端性能规则
 

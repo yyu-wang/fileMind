@@ -65,12 +65,13 @@ MODEL_REGISTRY: dict[str, EmbeddingModelInfo] = {
 # 启动默认模型：等价于 settings 的 fallback，也被 lifespan 写入 state
 DEFAULT_MODEL: str = "bge-large-zh-v1.5"
 
-# 速度估算：粗估 500 文件/分钟（Ollama 时代的保守值，沿用至 T7）。
-# 进程内 ONNX int8 后端实测 376 chunks/分钟（300 字分块，M1 Pro，
-# 见 benchmarks/onnx_embedding_mem_probe.py）；生产分块为 500 字，
-# T7 用真实分块重测后再校准本常量，避免用过短文本的数据改用户可见的耗时估算。
-# 用于预检查阶段的 est_minutes 估算；真实运行中会按已耗时间重算
-EST_FILES_PER_MINUTE = 500
+# 速度估算：粗估 100 文件/分钟（进程内 ONNX int8 实测标定，用于预检查阶段的
+# est_minutes；真实运行中会按已耗时间重算）。
+# 依据：M1 Pro + ORT 1.30，500 字分块（生产分块尺寸）+ 批 20 实测 202.6 分块/分钟，
+# 按平均 2 分块/文件折算 ≈ 101 文件/分钟（见 benchmarks/onnx_embedding_mem_probe.py）。
+# 注意：批量加大（40/80）无收益（201/198 分块/分钟），故沿用 ingest 的 EMBED_BATCH_SIZE=20。
+# 旧值 500 是 Ollama 时代的粗估，对 CPU int8 ONNX 明显偏乐观（约 5 倍）。
+EST_FILES_PER_MINUTE = 100
 # 预估耗时上限（999 分钟 = 16.65h 足够大文件库）
 EST_MINUTES_CAP = 999
 
