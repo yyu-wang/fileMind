@@ -33,6 +33,7 @@ from app.api import (
     routes_index,
     routes_inference,
     routes_metrics,
+    routes_models,
     routes_preview,
     routes_search,
     routes_shutdown,
@@ -169,4 +170,5 @@ app.include_router(routes_inference.router)
 app.include_router(routes_preview.router)
 app.include_router(routes_chat.router)
 app.include_router(routes_embedding.router)
+app.include_router(routes_models.router)
 app.include_router(routes_search.router)
