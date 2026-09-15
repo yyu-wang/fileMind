@@ -7,9 +7,19 @@
 #
 # ⚠️ 禁止为了「让新代码过关」而在本文件新增条目——新增条目必须能在评审里
 #    说明为何无法拆分（例如生成物/单文件协议常量表），否则应改为拆分文件。
+#
+# 修订记录（2026-09-15，Embedding 进程内 ONNX 改造分支）：
+#   - main.rs 702 → 703、commands/file_ops.rs 1392 → 1395：本分支的必要净增
+#     （main.rs 是 IPC 命令注册清单，移除 1 个命令、新增 2 个下载命令，净 +1；
+#      file_ops.rs 是把 3 处硬编码向量表名收敛为 resolve 调用，净 +3）。
+#     两者均为「清单/调用点」型增量，无法从文件内拆出；真正的解法是拆分这两个
+#     文件本身（file_ops.rs 已达 1395 行），已列为独立任务。
+#   - sidecar/manager.rs 1086 → 1111：**非本分支引入**。来自早先合并的
+#     fix/windows-sidecar-runtime（93bbc81，合并于 15a84f3），该分支未同步更新
+#     基线，属遗留欠账；此处一并消账以免阻塞后续 dev → main 的 PR。
 
-src-tauri/src/commands/file_ops.rs 1392
+src-tauri/src/commands/file_ops.rs 1395
 src-tauri/src/db/file_repo.rs 638
-src-tauri/src/main.rs 702
-src-tauri/src/sidecar/manager.rs 1086
+src-tauri/src/main.rs 703
+src-tauri/src/sidecar/manager.rs 1111
 src/styles/globals.css 4680
