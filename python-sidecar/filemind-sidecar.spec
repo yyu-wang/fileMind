@@ -195,7 +195,9 @@ if sys.platform.startswith("win"):
         if os.path.basename(entry[0]).lower() in _WIN_BIN_EXCLUDES
     )
     if _dropped_bins:
-        print(f"[spec] Windows：剔除构建机自带 UCRT 副本 {sorted(set(_dropped_bins))}")
+        # 必须纯 ASCII：spec 由 PyInstaller 在 Windows runner 上 exec，此时 stdout 是
+        # cp1252（非 UTF-8），打印中文（如全角冒号）会抛 UnicodeEncodeError 中断打包。
+        print(f"[spec] Windows: dropped build-machine UCRT copies {sorted(set(_dropped_bins))}")
     a.binaries = [
         entry for entry in a.binaries if os.path.basename(entry[0]).lower() not in _WIN_BIN_EXCLUDES
     ]
