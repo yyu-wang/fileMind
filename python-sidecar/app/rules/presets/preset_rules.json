@@ -255,7 +255,7 @@
       "condition": {
         "field": "directory",
         "operator": "regex",
-        "value": "/(projects|项目|workspace|工作空间)/[^/]+"
+        "value": "[/\\\\](projects|项目|workspace|工作空间)[/\\\\][^/\\\\]+"
       },
       "action": {
         "category": "项目文件"

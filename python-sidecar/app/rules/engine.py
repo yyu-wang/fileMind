@@ -40,6 +40,12 @@ def _get_file_name(file: FileMeta) -> str:
 
 
 def _get_directory(file: FileMeta) -> str:
+    """取所在目录（规则 ``field: "directory"`` 的取值）。
+
+    刻意返回**平台原生分隔符**的路径（Windows 为 ``\\``）。因此 regex 规则必须写成
+    分隔符无关的字符类（如 ``[/\\\\]``）——内置 ``preset_dir_project_001`` 曾只写 ``/``，
+    在 Windows 上永不命中（2026-09-15 修复）；新增 preset 时请沿用同样写法。
+    """
     return str(file.path.parent)
 
 
