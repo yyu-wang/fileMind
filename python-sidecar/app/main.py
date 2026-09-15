@@ -1,16 +1,18 @@
 """FileMind Sidecar 入口：FastAPI 应用 + 生命周期管理。
 
 启动流程：
-1. ``lifespan`` 启动时拉起父进程死亡看门狗（POSIX）——父进程异常消失时自退
-2. ``lifespan`` 启动时从 stdin 读取 PSK（hex 编码），存入 ``app.state`` 模块
-3. HMAC 中间件对每个非豁免路由验签 + 检查序号防重放
-4. 握手路由 ``/handshake`` 完成 Sidecar 身份验证
+1. ``lifespan`` 启动时安装事件循环断连噪声过滤器（客户端探活断连不再刷 traceback）
+2. ``lifespan`` 启动时拉起父进程死亡看门狗（POSIX）——父进程异常消失时自退
+3. ``lifespan`` 启动时从 stdin 读取 PSK（hex 编码），存入 ``app.state`` 模块
+4. HMAC 中间件对每个非豁免路由验签 + 检查序号防重放
+5. 握手路由 ``/handshake`` 完成 Sidecar 身份验证
 
 安全映射：S-01（Sidecar 端口冒充）、T-01（Sidecar 通信篡改）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import threading
@@ -37,6 +39,7 @@ from app.api import (
 )
 from app.core import embedding_models
 from app.core.logging import getLogger
+from app.core.loop_errors import install_client_disconnect_filter
 from app.core.parent_watchdog import watch_parent
 from app.db.lancedb_repo import LanceDBManager
 from app.middleware.hmac_auth import HMACMiddleware
@@ -68,13 +71,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期钩子。
 
     startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
-        0. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
-        1. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
-        2. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
+        0. 安装事件循环断连噪声过滤器——见 ``app.core.loop_errors``
+        1. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
+        2. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
+        3. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
 
     shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
     """
-    # --- 步骤 0：父进程死亡看门狗 ----------------------------------------
+    # --- 步骤 0：事件循环断连噪声过滤 -------------------------------------
+    # Rust 端每秒探活 /health；连接回收时 Windows proactor 循环会把
+    # ConnectionResetError（WinError 10054）抛进回调，asyncio 默认处理器打成完整
+    # traceback 刷屏（2026-09-15 实机）。这类断连是探活常态，降级为 debug。
+    install_client_disconnect_filter(asyncio.get_running_loop())
+
+    # --- 步骤 1：父进程死亡看门狗 ----------------------------------------
     # macOS ⌘Q（AppKit terminate）直接 exit()，Rust 侧收不到任何退出事件，
     # Sidecar 会被 launchd 收养并继续占用 8765；由 Sidecar 自己识别孤儿身份自退。
     # 仅 POSIX 启用：Windows 无 reparent 语义（孤儿保留已死父进程的 PID），
@@ -86,7 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             daemon=True,
         ).start()
 
-    # --- 步骤 1：PSK 注入 -------------------------------------------------
+    # --- 步骤 2：PSK 注入 -------------------------------------------------
     if (
         os.environ.get("PYINSTALLER_RUNTIME") != "1" or state.get_psk() is None
     ) and not sys.stdin.isatty():
@@ -101,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.error("main.psk_invalid_hex", psk_len=len(psk_hex))
     # dev 模式：PSK 保持 None，中间件跳过验签
 
-    # --- 步骤 2：LanceDB 初始化（T2.2 新增） ------------------------------
+    # --- 步骤 3：LanceDB 初始化（T2.2 新增） ------------------------------
     # 异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过
     try:
         mgr = LanceDBManager(LANCEDB_HOME)
