@@ -169,7 +169,10 @@ class DevSidecar:
         """
         if not binary.is_file():
             raise RuntimeError(f"打包主可执行不存在: {binary}")
-        if not os.access(binary, os.X_OK):
+        # Windows 没有 POSIX 执行位语义（os.access(..., os.X_OK) 在 Windows 上对 .exe
+        # 也可能返回 False），故对 .exe 只要求是常规文件，可执行性交给 CreateProcess
+        # 判定；缺失时会在 Popen 处给出明确报错。（2026-09-15 补 Windows CI 运行时门控）
+        if binary.suffix.lower() != ".exe" and not os.access(binary, os.X_OK):
             raise RuntimeError(f"打包二进制无执行权限: {binary}")
         if not _free_port():
             raise RuntimeError(f"端口 {SIDECAR_PORT} 已被占用，请先释放（可能残留 Sidecar 进程）")
