@@ -4642,21 +4642,6 @@ select.input:disabled {
   background: var(--bg2);
 }
 
-/* Embedding 模型下载进度条（设置页）：宽度按百分比内联设置 */
-.model-progress {
-  height: 6px;
-  border-radius: var(--radius-sm);
-  background: var(--bg2);
-  border: 1px solid var(--rule);
-  overflow: hidden;
-}
-
-.model-progress__bar {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.3s var(--ease-out, var(--ease));
-}
-
 .model-item:hover {
   border-color: var(--muted2);
 }

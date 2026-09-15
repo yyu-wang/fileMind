@@ -9,6 +9,7 @@ import { useFileStore } from './stores/fileStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { useSidecarStore } from './stores/sidecarStore';
 import './styles/globals.css';
+import './styles/components.css';
 
 // T9.5：@wdio/tauri-service 在 macOS 上依赖 `window.__wdio_original_core__` 做每个命令的
 // window-state focus-check。但 tauri-plugin-wdio-webdriver 1.3.0 在 macOS 走原生 DirectEval
