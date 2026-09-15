@@ -2,6 +2,7 @@
 
 pub mod bootstrap;
 pub mod manager;
+pub(crate) mod platform;
 pub mod proxy;
 pub mod sse;
 
