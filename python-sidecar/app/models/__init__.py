@@ -338,21 +338,6 @@ class _OllamaTagsResponse(BaseModel):
     models: list[_OllamaTagModel] = Field(default_factory=list)
 
 
-class ModelInstallRequest(BaseModel):
-    """POST /inference/install-model 请求体：从 Ollama 拉取指定模型。"""
-
-    model_name: str = Field(description="注册表模型名（如 bge-small-zh-v1.5）")
-
-
-class ModelInstallResponse(BaseModel):
-    """POST /inference/install-model 响应体。"""
-
-    success: bool
-    model_name: str
-    ollama_name: str
-    message: str = ""
-
-
 class ModelDownloadRequest(BaseModel):
     """POST /models/download 请求体：下载指定模型的 ONNX 权重与 tokenizer 文件。"""
 

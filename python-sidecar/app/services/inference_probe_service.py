@@ -1,13 +1,16 @@
 """Ollama 推理环境探测服务（T6.7）。
 
-探测本地 Ollama 可用性 + 已安装生成模型列表 + Embedding 模型可用性，
+探测本地 Ollama 可用性 + 已安装生成模型列表 + Embedding 模型文件就绪状态，
 供设置页 / 引导页展示真实环境。对齐 API 规格书 §3.5 ``POST /inference/test``。
 
-与 embedding_service 的区别：本服务只读 ``/api/tags``，不做向量化；即使
-Ollama 不可用也返回结构化结果（``available=false``），不抛异常——探测是
-轻量状态查询，不应让整个应用 5xx。Embedding 已改为进程内 ONNX 推理
-（见 ``embedding_service``），本服务报告的 embedding 可用性仅反映
-「Ollama 里是否装过同名模型」，语义待 T3 统一修正。
+职责边界：
+- Ollama 只负责**本地生成模型**（``llm_models``）；探测只读 ``/api/tags``，
+  不对 Ollama 做任何写操作（历史上此处的 ``ollama pull`` 安装能力已随
+  Embedding 进程内化移除）。
+- Embedding 模型的 ``available`` 表示**本地模型文件是否就绪**，与 Ollama 无关
+  （进程内 ONNX 推理，模型由设置页下载，见 ``model_download_service``）。
+- 即使 Ollama 不可用也返回结构化结果（``available=false``），不抛异常——探测是
+  轻量状态查询，不应让整个应用 5xx。
 """
 
 from __future__ import annotations
@@ -22,12 +25,12 @@ from app.core.logging import getLogger
 from app.models import (
     EmbeddingModelAvailability,
     InferenceTestResponse,
-    ModelInstallResponse,
     OllamaModelInfo,
     _OllamaTagModel,
     _OllamaTagsResponse,
 )
 from app.rules.llm_classify import OLLAMA_HOST
+from app.services import model_download_service
 
 #: /api/tags 探测超时（秒）——轻量查询，快速失败避免设置页卡住
 PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
@@ -35,21 +38,27 @@ PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
 logger = getLogger()
 #: Ollama 模型名尾部标签后缀（比对前剥离，避免 :latest 干扰）
 _LATEST_SUFFIX = ":latest"
-#: 注册表模型标识 → Ollama 实际模型名（bge 系列非官方库，社区命名空间托底）。
-#: 仅用于「Ollama 里是否装过同名模型」的比对——Embedding 已改为 Sidecar 进程内
-#: ONNX 推理（见 ``embedding_service``），本模块的 embedding 可用性语义待 T3
-#: 统一改为「本地模型文件是否就绪」，届时本别名表与 ``install_embedding_model``
-#: 一并移除。
-_OLLAMA_MODEL_ALIASES: dict[str, str] = {
-    "bge-large-zh-v1.5": "qllama/bge-large-zh-v1.5",
-}
+#: Ollama 侧可能残留的 Embedding 模型名（社区命名空间托底的 bge 系列）。
+#: **仅**用于把它们从「生成模型」列表里排除：用户历史上可能用 ``ollama pull``
+#: 装过，它们不是生成模型，不应出现在生成模型下拉里。
+#: （Embedding 本身已改为进程内 ONNX 推理，此处不再参与可用性判定。）
+_OLLAMA_EMBEDDING_NAMES: frozenset[str] = frozenset(
+    {
+        "qllama/bge-large-zh-v1.5",
+        "qllama/bge-small-zh-v1.5",
+        "awenleven/bge-m3:567m",
+    }
+)
 
 
 async def probe_ollama() -> InferenceTestResponse:
-    """探测本地 Ollama：可用性 + 生成模型列表 + Embedding 模型可用性。
+    """探测本地 Ollama：可用性 + 生成模型列表 + Embedding 模型就绪状态。
 
-    Ollama 不可用 / 响应异常时返回 ``available=false``（HTTP 200），不抛异常；
-    单个 Embedding 模型未安装（未 ``ollama pull``）→ 该项 ``available=false``。
+    Ollama 不可用 / 响应异常时返回 ``available=false``（HTTP 200），不抛异常。
+
+    注意：``embedding_models[].available`` 表示**本地模型文件是否就绪**，与 Ollama
+    无关（Embedding 已改为 Sidecar 进程内 ONNX 推理，模型由设置页下载）。
+    Ollama 只决定本地生成模型（``llm_models``）的可用性。
 
     Returns:
         探测结果（available / llm_models / embedding_models / error_code / message）。
@@ -59,14 +68,11 @@ async def probe_ollama() -> InferenceTestResponse:
     except (httpx.HTTPError, ValidationError) as exc:
         return _unavailable(f"Ollama 探测失败: {exc}")
 
-    installed_names = {_strip_tag(model.name) for model in tags}
     return InferenceTestResponse(
         available=True,
         status="ok",
         llm_models=[_to_ollama_model_info(model) for model in tags if _is_llm_model(model)],
-        embedding_models=[
-            _to_embedding_availability(name, installed_names) for name in sorted(MODEL_REGISTRY)
-        ],
+        embedding_models=_embedding_availability_list(),
         error_code=None,
         message=None,
     )
@@ -97,9 +103,9 @@ def _strip_tag(name: str) -> str:
 
 
 def _is_llm_model(model: _OllamaTagModel) -> bool:
-    """判断是否生成（LLM）模型：排除 Embedding 注册表名及其 Ollama 别名。"""
+    """判断是否生成（LLM）模型：排除 Embedding 注册表名与其 Ollama 残留名。"""
     stripped = _strip_tag(model.name)
-    return stripped not in MODEL_REGISTRY and stripped not in _OLLAMA_MODEL_ALIASES.values()
+    return stripped not in MODEL_REGISTRY and stripped not in _OLLAMA_EMBEDDING_NAMES
 
 
 def _to_ollama_model_info(model: _OllamaTagModel) -> OllamaModelInfo:
@@ -112,102 +118,34 @@ def _to_ollama_model_info(model: _OllamaTagModel) -> OllamaModelInfo:
     )
 
 
-def _to_embedding_availability(model_name: str, installed: set[str]) -> EmbeddingModelAvailability:
-    """按注册表模型名检查其 Ollama 模型是否已安装（原名或别名单一命中即可）。
+def _embedding_availability_list() -> list[EmbeddingModelAvailability]:
+    """按注册表列出 Embedding 模型及「本地模型文件是否就绪」。
 
-    注册表名（``bge-small-zh-v1.5``）与社区命名空间别名
-    （``qllama/bge-small-zh-v1.5``）任一安装即视为可用——用户两种拉取
-    方式（官方库原名 / 社区命名空间）都不应被误判为"未安装"。
+    就绪判定与 Ollama 无关：Embedding 由 Sidecar 进程内 ONNX 推理完成，模型文件
+    由设置页触发下载（见 :mod:`app.services.model_download_service`）。
     """
-    info = get_model_info(model_name)
-    candidates = {model_name, _OLLAMA_MODEL_ALIASES.get(model_name, model_name)}
-    return EmbeddingModelAvailability(
-        name=model_name,
-        dim=info.dim,
-        version=info.default_version,
-        available=any(name in installed for name in candidates),
-    )
+    return [
+        EmbeddingModelAvailability(
+            name=name,
+            dim=get_model_info(name).dim,
+            version=get_model_info(name).default_version,
+            available=model_download_service.model_ready(name),
+        )
+        for name in sorted(MODEL_REGISTRY)
+    ]
 
 
 def _unavailable(message: str) -> InferenceTestResponse:
-    """构造 Ollama 不可用时的响应（Embedding 全标记为不可用）。"""
+    """构造 Ollama 不可用时的响应。
+
+    Embedding 可用性与 Ollama 无关（进程内 ONNX 推理），故该项仍按本地模型文件
+    判定，不随 Ollama 一起标为不可用。
+    """
     return InferenceTestResponse(
         available=False,
         status="unavailable",
         llm_models=[],
-        embedding_models=[
-            EmbeddingModelAvailability(
-                name=name,
-                dim=get_model_info(name).dim,
-                version=get_model_info(name).default_version,
-                available=False,
-            )
-            for name in sorted(MODEL_REGISTRY)
-        ],
+        embedding_models=_embedding_availability_list(),
         error_code="OLLAMA_UNAVAILABLE",
         message=message,
     )
-
-
-#: /api/pull 拉取超时（秒）——模型下载可能较慢，给足预算
-PULL_TIMEOUT = float(os.environ.get("FILEMIND_PULL_TIMEOUT", "600"))
-
-
-async def install_embedding_model(model_name: str) -> ModelInstallResponse:
-    """从 Ollama 拉取指定 Embedding 模型。
-
-    Args:
-        model_name: 注册表模型名（如 ``bge-small-zh-v1.5``）。
-
-    Returns:
-        安装结果。
-
-    Raises:
-        ValueError: 模型名不在注册表中。
-        httpx.HTTPError: Ollama 请求失败。
-    """
-    if model_name not in MODEL_REGISTRY:
-        raise ValueError(f"未知 Embedding 模型: {model_name!r}")
-
-    ollama_name = _OLLAMA_MODEL_ALIASES.get(model_name, model_name)
-    logger.info("inference_probe.install_model.start", model=model_name, ollama_name=ollama_name)
-
-    try:
-        async with httpx.AsyncClient(timeout=PULL_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_HOST}/api/pull",
-                json={"name": ollama_name, "stream": False},
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        logger.info(
-            "inference_probe.install_model.done",
-            model=model_name,
-            status=body.get("status", "unknown"),
-        )
-        return ModelInstallResponse(
-            success=True,
-            model_name=model_name,
-            ollama_name=ollama_name,
-            message=body.get("status", "success"),
-        )
-    except httpx.HTTPStatusError as exc:
-        logger.error(
-            "inference_probe.install_model.http_error",
-            model=model_name,
-            status=exc.response.status_code,
-        )
-        return ModelInstallResponse(
-            success=False,
-            model_name=model_name,
-            ollama_name=ollama_name,
-            message=f"Ollama 返回错误: HTTP {exc.response.status_code}",
-        )
-    except httpx.HTTPError as exc:
-        logger.error("inference_probe.install_model.error", model=model_name, error=str(exc))
-        return ModelInstallResponse(
-            success=False,
-            model_name=model_name,
-            ollama_name=ollama_name,
-            message=f"连接 Ollama 失败: {exc}",
-        )
