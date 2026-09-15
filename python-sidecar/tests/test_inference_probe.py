@@ -15,6 +15,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
+from app.core.embedding_models import MODEL_REGISTRY  # noqa: E402
 from app.services.inference_probe_service import probe_ollama  # noqa: E402
 
 
@@ -54,18 +55,16 @@ TAGS_PAYLOAD: dict[str, object] = {
             "modified_at": "2026-08-02T00:00:00Z",
             "details": {"family": "bert"},
         },
-        {
-            "name": "bge-small-zh-v1.5:latest",
-            "size": 90_000_000,
-            "modified_at": "2026-08-03T00:00:00Z",
-            "details": {"family": "bert"},
-        },
     ]
 }
 
 
 async def test_probe_success_filters_llm_and_matches_embeddings() -> None:
-    """可用：LLM 排除 embedding 名/别名，Embedding 按别名匹配可用性。"""
+    """可用：LLM 排除 embedding 名/别名，Embedding 按别名匹配可用性。
+
+    注：注册表已只保留 bge-large；本用例锁定的仍是「按别名（社区命名空间）
+    也判定为已装」这一历史比对逻辑（语义待 T3 改为本地模型文件就绪）。
+    """
     with mock.patch(
         "app.services.inference_probe_service.httpx.AsyncClient",
         return_value=_fake_client(TAGS_PAYLOAD),
@@ -76,16 +75,15 @@ async def test_probe_success_filters_llm_and_matches_embeddings() -> None:
     assert result.status == "ok"
     assert result.error_code is None
 
-    # LLM 列表只含生成模型，embedding 注册表名与别名被排除；:latest 已剥离
+    # LLM 列表只含生成模型，embedding 注册表名与别名被排除
     assert [m.name for m in result.llm_models] == ["qwen3.8-27b"]
     assert result.llm_models[0].size_bytes == 16_000_000_000
     assert result.llm_models[0].family == "qwen3"
 
     # Embedding 可用性：别名安装判定 + 维度/版本透传
     by_name = {m.name: m for m in result.embedding_models}
+    assert list(by_name) == ["bge-large-zh-v1.5"]
     assert by_name["bge-large-zh-v1.5"].available is True
-    assert by_name["bge-small-zh-v1.5"].available is True
-    assert by_name["bge-m3"].available is False
     assert by_name["bge-large-zh-v1.5"].dim == 1024
     assert by_name["bge-large-zh-v1.5"].version == 1
 
@@ -121,7 +119,7 @@ async def test_probe_conn_error_returns_unavailable() -> None:
     assert result.status == "unavailable"
     assert result.error_code == "OLLAMA_UNAVAILABLE"
     assert result.llm_models == []
-    assert len(result.embedding_models) == 3
+    assert len(result.embedding_models) == len(MODEL_REGISTRY)
     assert all(not m.available for m in result.embedding_models)
 
 

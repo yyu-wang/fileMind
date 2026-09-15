@@ -5,7 +5,9 @@
 
 与 embedding_service 的区别：本服务只读 ``/api/tags``，不做向量化；即使
 Ollama 不可用也返回结构化结果（``available=false``），不抛异常——探测是
-轻量状态查询，不应让整个应用 5xx。
+轻量状态查询，不应让整个应用 5xx。Embedding 已改为进程内 ONNX 推理
+（见 ``embedding_service``），本服务报告的 embedding 可用性仅反映
+「Ollama 里是否装过同名模型」，语义待 T3 统一修正。
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from app.models import (
     _OllamaTagModel,
     _OllamaTagsResponse,
 )
-from app.services.embedding_service import _OLLAMA_MODEL_ALIASES, OLLAMA_HOST
+from app.rules.llm_classify import OLLAMA_HOST
 
 #: /api/tags 探测超时（秒）——轻量查询，快速失败避免设置页卡住
 PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
@@ -33,6 +35,14 @@ PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
 logger = getLogger()
 #: Ollama 模型名尾部标签后缀（比对前剥离，避免 :latest 干扰）
 _LATEST_SUFFIX = ":latest"
+#: 注册表模型标识 → Ollama 实际模型名（bge 系列非官方库，社区命名空间托底）。
+#: 仅用于「Ollama 里是否装过同名模型」的比对——Embedding 已改为 Sidecar 进程内
+#: ONNX 推理（见 ``embedding_service``），本模块的 embedding 可用性语义待 T3
+#: 统一改为「本地模型文件是否就绪」，届时本别名表与 ``install_embedding_model``
+#: 一并移除。
+_OLLAMA_MODEL_ALIASES: dict[str, str] = {
+    "bge-large-zh-v1.5": "qllama/bge-large-zh-v1.5",
+}
 
 
 async def probe_ollama() -> InferenceTestResponse:
