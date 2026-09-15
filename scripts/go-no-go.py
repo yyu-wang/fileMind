@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import io
 import json
 import os
 import platform
@@ -27,6 +28,15 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+# Windows CI（GitHub Actions en-US runner）的 stdout 编码是 cp1252，而本脚本输出含大量
+# 中文/emoji，print 时会抛 UnicodeEncodeError 直接中断（2026-09-15 merge-build Windows
+# job 实测：T1 已拿到 /health 200，却在打印汇总结果时崩溃 → 门控假失败）。入口处显式
+# 改用 UTF-8，与运行环境的 locale 解耦；非 TextIOWrapper（测试替换的 mock 等）跳过。
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8")
+if isinstance(sys.stderr, io.TextIOWrapper):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 # 允许在 ``scripts/`` 目录外直接运行，不依赖 ``python-sidecar`` 安装到 venv。
 # psutil / httpx 以 import 方式使用，缺失时给出友好错误提示。
