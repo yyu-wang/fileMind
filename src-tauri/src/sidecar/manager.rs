@@ -267,7 +267,7 @@ impl SidecarManager {
     ///
     /// 每轮先探一次子进程是否已退出：打包态启动失败（DLL 装载失败等）时进程会**秒退**，
     /// 不做这步前端要盲等满 `MAX_READY_ATTEMPTS`（60s）才看到「失败」——实测侧车倒在
-    /// PyInstaller bootloader 报错时 0.2s 就退出（2026-09-15 实机排障）。
+    /// `PyInstaller` bootloader 报错时 0.2s 就退出（2026-09-15 实机排障）。
     ///
     /// # Errors
     ///
