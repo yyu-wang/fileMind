@@ -21,18 +21,20 @@ router = APIRouter(prefix="/models", tags=["模型"])
 
 @router.get("/download/status", response_model=ModelDownloadStatusResponse)
 async def download_status(
-    model_name: str = Query(..., description="注册表模型名（如 bge-large-zh-v1.5）"),
+    model_name: str = Query(
+        ..., description="模型名（Embedding 注册表名如 bge-large-zh-v1.5；或 bge-reranker-v2-m3）"
+    ),
 ) -> ModelDownloadStatusResponse:
     """查询指定模型的下载状态。
 
     Args:
-        model_name: 注册表模型名。
+        model_name: 模型名（Embedding 注册表名，或重排模型名）。
 
     Returns:
         当前状态；未开始且本地文件已齐备时返回 ``status=ready``。
 
     Raises:
-        HTTPException 400: 模型名不在注册表中。
+        HTTPException 400: 模型名不在任一模型来源中。
     """
     try:
         return model_download_service.get_status(model_name)
@@ -51,7 +53,7 @@ async def start_download(body: ModelDownloadRequest) -> ModelDownloadStatusRespo
         启动后的当前状态（``downloading`` / 已就绪则为 ``ready``）。
 
     Raises:
-        HTTPException 400: 模型名不在注册表中。
+        HTTPException 400: 模型名不在任一模型来源中。
     """
     try:
         return await model_download_service.ensure_downloaded(body.model_name)

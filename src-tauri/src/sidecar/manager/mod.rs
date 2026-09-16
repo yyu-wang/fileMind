@@ -63,8 +63,16 @@ const MAX_READY_ATTEMPTS: u32 = 600;
 /// 每次就绪轮询间隔（毫秒）。
 const READY_POLL_INTERVAL_MS: u64 = 100;
 /// 连续 /health 失败阈值：达到后认为 Sidecar 挂了，触发重启。
-/// watchdog 外部 tick=1s × 3 次 = 最多 3s 检测出应用层挂死。
-const HEALTH_FAIL_THRESHOLD: u32 = 3;
+///
+/// 30 次（watchdog tick=1s，每次失败还叠加最高 3s 的健康请求超时，实际容忍窗口 ≥30s）：
+/// **必须容忍长时阻塞**。打包版首次加载 rerank 模型（`import torch` + `CrossEncoder`
+/// 冷构造）期间事件循环可能数十秒无法应答 /health——本机实测冷加载 21.6s，旧阈值
+/// 3（≈3s）必然误判为挂死并杀进程重启。实机回归（2026-09-16）：用户首问 → 加载
+/// rerank → 连续失败 3 次被判挂死 → 杀进程 → 重启失败转 Failed → 8765 再无监听，
+/// 此后所有 AI 请求都是「Sidecar POST 失败: error sending request」，只能手动重试。
+///
+/// 真正的「接受连接但不响应」仍会被检出并重启，只是从 3s 放宽到 30 次。
+const HEALTH_FAIL_THRESHOLD: u32 = 30;
 /// 指数退避初始值（毫秒）：首次重启失败后下一次等待 1s。
 const RESTART_BACKOFF_BASE_MS: u64 = 1000;
 /// 指数退避上限（毫秒）：无论失败多少次，最多等 8s 再试。

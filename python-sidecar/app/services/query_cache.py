@@ -34,7 +34,8 @@ CACHE_CAPACITY = int(os.environ.get("FILEMIND_QUERY_CACHE_SIZE", "64") or "64")
 #: 缓存 TTL（秒，env 可覆盖）
 CACHE_TTL_SECONDS = float(os.environ.get("FILEMIND_QUERY_CACHE_TTL", "60") or "60")
 
-#: 检索管线缓存值：``(rewritten_query, candidates, sources, chunks)``（``_retrieve`` 返回值）。
+#: 检索管线缓存值：``(rewritten_query, candidates, sources, chunks)``
+#: （``_retrieve`` 返回值；降级结果由 ``_retrieve`` 决定不写入）
 _RetrieveValue = tuple[str, int, list[dict[str, object]], list[SourceChunk]]
 
 

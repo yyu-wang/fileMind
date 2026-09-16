@@ -45,10 +45,17 @@ def elapsed_ms(started: float) -> int:
 
 @dataclass(frozen=True)
 class RetrieveSuccess:
-    """检索成功：``degraded`` 表示走了 Embedding 降级（纯 FTS5）路径。"""
+    """检索成功。
+
+    Attributes:
+        value: 检索管线结果（改写查询 / 候选数 / sources / 上下文片段）。
+        degraded: 是否走了 Embedding 降级（纯 FTS5）路径。
+        rerank_degraded: 是否走了重排降级（模型不可用 → 退回 RRF 融合序 Top-K）路径。
+    """
 
     value: RetrieveValue
     degraded: bool = False
+    rerank_degraded: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,9 +155,15 @@ def build_sources(
 
 
 def search_events(request: ChatStreamRequest, outcome: RetrieveSuccess) -> list[RagEvent]:
-    """检索阶段事件：search_warning（降级时）/ search_start / search_result。"""
+    """检索阶段事件：search_start / search_warning（降级时）/ search_result。
+
+    降级提示必须发在 search_start 之后：前端的 search_start 分支会清空 error
+    字段，发在其前会被立刻覆盖，用户看不到降级说明（静默降级）。
+    """
     rewritten_query, candidates, sources, _chunks = outcome.value
-    events: list[RagEvent] = []
+    events: list[RagEvent] = [
+        ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
+    ]
     if outcome.degraded:
         events.append(
             (
@@ -161,9 +174,16 @@ def search_events(request: ChatStreamRequest, outcome: RetrieveSuccess) -> list[
                 },
             )
         )
-    events.append(
-        ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
-    )
+    if outcome.rerank_degraded:
+        events.append(
+            (
+                "search_warning",
+                {
+                    "code": "RERANK_DEGRADED",
+                    "message": "重排模型不可用，已降级为融合排序（结果相关性可能下降）",
+                },
+            )
+        )
     events.append(
         (
             "search_result",

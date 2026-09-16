@@ -9,6 +9,7 @@
 //         <CloudApiKeySection/>         // AI 模型配置 + setting-row
 //         <OllamaStatusCard/>           // Ollama 环境状态
 //         <EmbeddingModelSection/>      // Embedding 模型 + model-item
+//         <RerankModelSection/>         // 重排模型 + model-item（未就绪不中断问答）
 //         <ThemeSection/>               // 主题
 //         <AboutSection/>               // 关于 + setting-row
 //       </div>
@@ -24,6 +25,7 @@ import { CloudProviderManager } from '../components/settings/CloudProviderManage
 import { EmbeddingModelSection } from '../components/settings/EmbeddingModelSection';
 import { InferenceModeSection } from '../components/settings/InferenceModeSection';
 import { OllamaStatusCard } from '../components/settings/OllamaStatusCard';
+import { RerankModelSection } from '../components/settings/RerankModelSection';
 import { ThemeSection } from '../components/settings/ThemeSection';
 import { useSettingsStore } from '../stores/settingsStore';
 
@@ -47,6 +49,7 @@ export function SettingsPage() {
           <CloudApiKeySection />
           <OllamaStatusCard />
           <EmbeddingModelSection />
+          <RerankModelSection />
           <ThemeSection />
           <AboutSection />
         </div>
