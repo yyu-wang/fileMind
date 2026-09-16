@@ -18,6 +18,14 @@ use tauri::{Emitter, Manager};
 /// 与 manager 内部 `HEALTH_POLL_INTERVAL_MS` 同值；集中到这里便于未来调优。
 const WATCHDOG_TICK_MS: u64 = 1000;
 
+/// 单次「需要重启」判定允许的重启尝试次数（含首次）。
+///
+/// 重启失败多为瞬时原因（旧进程尚未释放 8765、75MB 可执行文件正被杀软扫描）；
+/// 旧行为「一次失败即转 Failed 并永久放弃」会让 AI 功能一直不可用（实机回归：
+/// 8765 再无监听，只能手动点重试）。每次尝试都计入 CrashLoop 窗口，因此
+/// 「持续起不来」仍会被暂停保护拦下。
+const RESTART_RETRY_LIMIT: u32 = 3;
+
 /// 重启成功后同步新 PSK / seq / 重启计数到 `AppState`。
 ///
 /// BE-M6：PSK 同步失败必须显式告警——此时实际进程用新 PSK 而 `AppState`
@@ -102,12 +110,33 @@ pub fn spawn(app_handle: tauri::AppHandle) {
                             // 且 release profile 为 panic=abort，整进程直接闪退
                             // （回归：打包版首次提问时 sidecar 加载 rerank 模型
                             // 饥饿事件循环 → /health 连续失败 → watchdog 重启 → 崩溃）。
+                            //
+                            // 有界重试（见 RESTART_RETRY_LIMIT 注释）：瞬时原因导致的
+                            // 重启失败不应让 AI 功能永久不可用。
                             let restart_result: Result<Vec<u8>, AppError> = {
-                                let state = app_handle.state::<AppState>();
-                                let Ok(mut manager) = state.sidecar_manager.lock() else {
-                                    return;
-                                };
-                                manager.restart().await
+                                let mut outcome: Result<Vec<u8>, AppError> = Err(
+                                    AppError::SidecarUnavailable("重启未执行".to_string()),
+                                );
+                                for attempt in 1..=RESTART_RETRY_LIMIT {
+                                    let (result, next_backoff) = {
+                                        let state = app_handle.state::<AppState>();
+                                        let Ok(mut manager) = state.sidecar_manager.lock() else {
+                                            return;
+                                        };
+                                        (manager.restart().await, manager.next_backoff())
+                                    };
+                                    outcome = result;
+                                    if outcome.is_ok() {
+                                        break;
+                                    }
+                                    if attempt < RESTART_RETRY_LIMIT {
+                                        log::warn!(
+                                            "Sidecar 重启失败（第 {attempt}/{RESTART_RETRY_LIMIT} 次），{next_backoff:?} 后重试"
+                                        );
+                                        tokio::time::sleep(next_backoff).await;
+                                    }
+                                }
+                                outcome
                             };
                             match restart_result {
                                 Ok(new_psk) => {
@@ -118,9 +147,11 @@ pub fn spawn(app_handle: tauri::AppHandle) {
                                 }
                                 Err(e) => {
                                     log::error!("Sidecar 重启失败: {e}");
-                                    // P1-1：单次重启失败即转 Failed 交给用户重试，
-                                    // 不再无限退避重试（重启后 process/psk 均为 None，
-                                    // watchdog 守卫会停在 Idle，见 manager.rs）
+                                    // P1-1：重试耗尽仍失败 → 转 Failed 交给用户重试。
+                                    // 此时 process/psk 均为 None，watchdog 守卫会停在
+                                    // Idle（见 sidecar/manager/watchdog.rs），不再无限
+                                    // 重试；前端展示错误与重试入口，全过程可在
+                                    // `~/.filemind/logs/filemind.log` 查。
                                     update_sidecar_status(
                                         &app_handle,
                                         SidecarStatus::Failed(e.to_string()),

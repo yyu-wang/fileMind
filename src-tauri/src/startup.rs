@@ -4,7 +4,6 @@
 //! 这些是安全与可用性的地基（脱敏正则、DB 可打开），带病启动比直接退出更危险。
 //! 调用顺序由 `main` 编排。
 
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -16,16 +15,14 @@ use filemind_lib::security::log_redact;
 /// T7.1：自定义 formatter 在「单一出口」统一脱敏，所有日志经 `log_redact::redact`
 /// 过滤后再输出（安全 I-03）。formatter 经静态路径调用 `redact`，与 `init` 顺序无关。
 ///
+/// 落盘（2026-09-16）：GUI 双击启动时 stderr 被丢弃，watchdog 的「需要重启 /
+/// 重启失败 / CrashLoop」等关键事件必须同时写 `~/.filemind/logs/filemind.log`
+/// 才能事后取证，故实际初始化在 `log_file::init_logger`（含 tee + 轮转 + 降级）。
+///
 /// 正则集合编译失败时直接以非零码退出：此时日志可能明文泄漏敏感信息，不进入无脱敏
 /// 运行状态（该失败日志为编译期常量文本，本身不含敏感信息）。
 pub fn init_logging() {
-    env_logger::Builder::new()
-        .format(|buf, record| {
-            let message = log_redact::redact(&record.args().to_string());
-            writeln!(buf, "[{} {}] {}", record.level(), record.target(), message)
-        })
-        .parse_default_env()
-        .init();
+    filemind_lib::log_file::init_logger();
 
     if let Err(e) = log_redact::init() {
         log::error!("致命错误：日志脱敏正则初始化失败: {e}");

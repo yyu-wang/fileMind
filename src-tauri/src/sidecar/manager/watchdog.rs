@@ -84,6 +84,15 @@ impl SidecarManager {
             return Ok(WatchdogAction::Idle);
         }
         self.recent_health_fails = self.recent_health_fails.saturating_add(1);
+        // 首次失败与每 10 次各记一条：能看到「从何时开始不响应」，又不至于刷屏
+        // （加载模型等长任务期间 /health 无响应属预期，见 HEALTH_FAIL_THRESHOLD 注释）
+        if self.recent_health_fails == 1 || self.recent_health_fails % 10 == 0 {
+            log::warn!(
+                "Sidecar /health 无响应（第 {}/{} 次；加载模型等长任务期间属正常，暂不重启）",
+                self.recent_health_fails,
+                HEALTH_FAIL_THRESHOLD
+            );
+        }
         if self.recent_health_fails >= HEALTH_FAIL_THRESHOLD {
             log::warn!(
                 "Sidecar 健康检查连续失败 {} 次，触发重启",
