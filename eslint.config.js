@@ -154,13 +154,11 @@ export default [
   // ---- 历史欠账：圈复杂度 ----
   // 登记值为该文件当前最大复杂度 = 现状上限：只允许下降，不允许上升。
   // 消账方式：把函数拆到 15 以内后删除对应行。
-  {
-    files: ['src/components/settings/CloudProviderFormCard.tsx'],
-    rules: { complexity: ['error', 30] },
-  },
   { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
   { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
-  // 注：ChatPage.tsx(19) 已消账——引用跳转流程收进 hooks/useCitationPreview，
+  // 注：CloudProviderFormCard.tsx(30) 已消账——表单状态收进 useCloudProviderForm，
+  // 校验规则移入 lib/cloudProviderValidation.ts，五行字段改用 ui/SettingsInputRow，
+  // 卡片本体复杂度回到 7；ChatPage.tsx(19) 已消账——引用跳转流程收进 hooks/useCitationPreview，
   // 头部与输入区拆为 ChatHeader / ChatInputArea，页面本体复杂度回到 7；
   // ClassifyPage.tsx(38) 已消账——页面收敛为编排层，判定收进 lib/classifyView.ts，
   // 各区域拆为 ClassifyHeader / ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection；
