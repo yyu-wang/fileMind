@@ -5,11 +5,15 @@ RAG 流水线检索前置步骤：把多轮对话中的用户查询改写为独�
 并提取 2-5 个检索关键词供 FTS5 补充。改写后查询用于向量检索，关键词用于
 FTS5，两路经 RRF 融合（T5.6 编排）。
 
-失败兜底（对齐 P-01 的退化语义，改写失败不得阻塞检索）：
+失败兜底（改写是可选优化，**任何失败都不得阻塞检索**）：
 - 无对话历史 → 不调 LLM，原样返回（P-02 改写策略第 1 步短路径）
 - LLM 超时 → 原样返回（``need_rewrite=False``，reason 标记超时）
 - JSON 解析失败 / 空 rewritten_query → 原样返回（reason 标记解析失败）
-- Ollama 连接/HTTP 失败 → 抛 :class:`LLMUnavailableError`（调用方决定降级）
+- LLM 不可用（Ollama 连接/HTTP 失败、云端代理不可达）→ 原样返回（reason
+  标记不可用）。此处**不抛异常**：未安装 Ollama 的机器上生成后端本就不可用，
+  若在此抛出会把生成侧的故障传染给检索（检索被迫中断），而这台机器只需
+  离线检索能力也应当能工作。真正的「生成不可用」由随后的 P-03 阶段报错，
+  错误语义落在生成而非检索。
 
 LLM 调用复用 ``llm_classify.call_ollama_json``：P-01/P-02 同为「system + user
 严格 JSON 输出」，无需复制网络/错误处理层。
@@ -23,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.core.logging import getLogger
 from app.rules.llm_classify import (
     LLM_MODEL,
     OLLAMA_TIMEOUT,
@@ -36,6 +41,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from app.services.cloud_provider import LLMProvider, PromptVersion
+
+logger = getLogger("filemind.rewrite")
 
 #: 参与改写的最近对话轮数（P-02 输入变量 conversation_history「最近 3 轮」）
 HISTORY_TURNS = 3
@@ -226,11 +233,7 @@ async def rewrite_query(
             ``generate(json_mode=True)`` 并选用对应 Prompt 版本。
 
     Returns:
-        改写结果；无历史 / 超时 / 解析失败时 ``rewritten_query`` 为原查询。
-
-    Raises:
-        LLMUnavailableError: Ollama 连接/HTTP 失败 / 云端不可用
-            （调用方决定降级）。
+        改写结果；无历史 / 超时 / 解析失败 / LLM 不可用时 ``rewritten_query`` 为原查询。
     """
     if not history:
         return RewriteResult(rewritten_query=query, need_rewrite=False)
@@ -238,12 +241,9 @@ async def rewrite_query(
     system, user = build_rewrite_prompt(query, history, version=version)
     try:
         if provider is not None:
-            try:
-                raw = await provider.generate(
-                    system, user, json_mode=True, temperature=0.0, max_tokens=256
-                )
-            except CloudUnavailableError as exc:
-                raise LLMUnavailableError(f"云端推理不可用: {exc}") from exc
+            raw = await provider.generate(
+                system, user, json_mode=True, temperature=0.0, max_tokens=256
+            )
         else:
             # SC-m9：本地路径传 model 确保改写与生成用同一模型
             raw = await asyncio.wait_for(
@@ -251,4 +251,11 @@ async def rewrite_query(
             )
     except TimeoutError:
         return _fallback(query, f"LLM 超时（>{OLLAMA_TIMEOUT}s）")
+    except (LLMUnavailableError, CloudUnavailableError) as exc:
+        # 生成后端不可用（未装 Ollama / 云端代理不通）→ 降级为原查询，检索照常进行。
+        # 调用方（P-03 生成阶段）会以自己的方式报「生成不可用」，错误语义不串台。
+        # 降级必须留日志：此前这里抛异常 → 路由侧 warning 可见；改为内部兜底后
+        # 若不打日志，「改写被跳过」在生产日志里将完全不可见（可观测性回归）。
+        logger.warning("rewrite.llm_unavailable", error=str(exc))
+        return _fallback(query, f"LLM 不可用: {exc}")
     return parse_rewrite_response(raw, query)

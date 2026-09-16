@@ -192,7 +192,7 @@ async def _retrieve(
         request: 流式请求（含 FTS 命中与对话历史）。
         mgr: LanceDB 管理器（向量检索）。
         provider: 推理 Provider（T8.5）；``None`` 走本地 Ollama（默认）。
-        skip_vector: 跳过向量检索（Embedding 不可用时云端模式降级用）。
+        skip_vector: 跳过向量检索（Embedding 不可用时的降级用）。
 
     Returns:
         - ``value``：``(rewritten_query, candidates, sources, chunks)`` ——
@@ -203,7 +203,10 @@ async def _retrieve(
         - ``rerank_degraded``：重排是否降级（模型不可用时退回融合排序），供调用方发提示。
 
     Raises:
-        LLMUnavailableError / EmbeddingUnavailableError: 推理（改写 / 向量化）不可用。
+        EmbeddingUnavailableError: 查询向量化不可用（模型未下载等）；
+            非 ``skip_vector`` 路径下由调用方转降级检索。
+        LLMUnavailableError: 仅 ``skip_vector=False`` 时可能由改写/检索管线抛出
+            （改写内部已降级，故当前实际不触发；保留声明供后续扩展）。
     """
     # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
     # 降级模式（skip_vector=True）不缓存，以便 embedding 恢复后能重试全向量检索。
@@ -357,12 +360,22 @@ async def _fallback_retrieve(
     provider: LLMProvider | None,
     exc: Exception,
 ) -> RetrieveSuccess | RetrieveFailure:
-    """检索降级：云端模式 Embedding 不可用 → 纯 FTS5 检索；其余 → 错误事件。"""
-    if not isinstance(exc, EmbeddingUnavailableError) or request.inference_mode.lower() != "cloud":
+    """检索降级：Embedding 不可用（任何推理模式）→ 纯 FTS5 检索；其余 → 错误事件。
+
+    不限云端模式：Embedding 模型未下载 / 加载失败是**与推理模式无关**的本地状态，
+    local 模式下同样应以质量降级换取可用性（对齐 rerank 的降级取舍），而不是
+    整条问答中断——未下载模型的机器上用户至少还能拿到关键词命中的结果，并由
+    ``search_warning(EMBEDDING_DEGRADED)`` 得知质量下降与修复入口。
+    """
+    if not isinstance(exc, EmbeddingUnavailableError):
         logger.warning("chat.retrieve_failed", error=str(exc))
         return RetrieveFailure(_error_event(_retrieve_error_code(exc), exc))
 
-    logger.warning("chat.embedding_unavailable_cloud_fallback", error=str(exc))
+    logger.warning(
+        "chat.embedding_unavailable_fallback",
+        error=str(exc),
+        inference_mode=request.inference_mode,
+    )
     try:
         return await _retrieve(request, mgr, provider, skip_vector=True)
     except LLMUnavailableError as fallback_exc:

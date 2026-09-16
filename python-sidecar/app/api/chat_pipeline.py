@@ -170,7 +170,10 @@ def search_events(request: ChatStreamRequest, outcome: RetrieveSuccess) -> list[
                 "search_warning",
                 {
                     "code": "EMBEDDING_DEGRADED",
-                    "message": "Embedding 不可用，已降级为纯关键词检索",
+                    "message": (
+                        "Embedding 模型不可用，已降级为纯关键词检索"
+                        "（可在「设置 → Embedding 模型」下载后恢复完整检索）"
+                    ),
                 },
             )
         )

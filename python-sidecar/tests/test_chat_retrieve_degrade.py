@@ -1,13 +1,19 @@
-"""检索降级兜底：重排模型不可用 → 融合排序 Top-K，问答不中断。
+"""检索降级兜底：模型不可用 → 问答不中断（质量降级）。
 
-从 ``test_chat_stream.py`` 拆出（同 ``test_chat_provider_modes.py`` 的拆分理由：
-rules/complexity.md 的测试文件行数阈值），并把「重排不可用如何兜底」独立为一个关注点。
+两个降级点（同属「检索链路不该被局部模型缺失打断」这一个关注点）：
 
-回归动机：rerank 在 sidecar 进程内用 transformers ``CrossEncoder`` 本地加载
-（embedding/LLM 走 Ollama，无此问题），模型文件只存在于 HuggingFace 缓存
-（``~/.cache/huggingface``）。换机 / 重装系统后缓存为空、镜像又不可达时加载必失败；
-旧行为是整条 /chat/stream 以 ``RERANK_UNAVAILABLE`` 中断（知识问答整体不可用），
-现改为「RRF 融合序 Top-K + search_warning(RERANK_DEGRADED)」。
+1. **重排模型不可用** → 退回 RRF 融合序 Top-K。回归动机：rerank 在 sidecar 进程内用
+   transformers ``CrossEncoder`` 本地加载，模型文件只存在于 HuggingFace 缓存
+   （``~/.cache/huggingface``）。换机 / 重装系统后缓存为空、镜像又不可达时加载必失败；
+   旧行为是整条 /chat/stream 以 ``RERANK_UNAVAILABLE`` 中断（知识问答整体不可用），
+   现改为「RRF 融合序 Top-K + search_warning(RERANK_DEGRADED)」。
+
+2. **Embedding 模型不可用**（未下载 / 加载失败）→ 退回纯 FTS5 关键词检索。回归动机：
+   Embedding 改为进程内 ONNX 后，模型文件成为建索引与问答的硬前置，而未下载是**与推理
+   模式无关**的本地状态；旧行为只在 cloud 模式降级、local 模式直接以
+   ``EMBEDDING_UNAVAILABLE`` 中断，导致未装 Ollama 且未下载模型的部署机器上「检索时报
+   没有对应的模型」且拿不到任何结果。现任何模式都降级，
+   ``search_warning(EMBEDDING_DEGRADED)`` 指明质量下降与修复入口。
 
 请求经 HMAC 中间件签名（对齐 hmac_auth 的 canonical 构造），走真实路由层。
 """
@@ -35,9 +41,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app import state  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.embedding_service import EmbeddingUnavailableError  # noqa: E402
 from app.services.hybrid_search import FusedHit  # noqa: E402
 from app.services.query_cache import reset_query_cache  # noqa: E402
-from app.services.rerank_service import RerankUnavailableError  # noqa: E402
+from app.services.rerank_service import (  # noqa: E402
+    RerankResult,
+    RerankUnavailableError,
+)
 from app.services.rewrite_service import RewriteResult  # noqa: E402
 from app.services.self_correct_service import SelfCorrectResult  # noqa: E402
 
@@ -131,8 +141,17 @@ def _dummy_token_stream() -> object:
     return gen()
 
 
-def _request(client: TestClient, rerank_obj: object, seq: int = 1) -> Response:
-    """在「重排给定行为 + 其余链路 mock」下发起一次 /chat/stream。"""
+def _request(
+    client: TestClient,
+    rerank_obj: object,
+    seq: int = 1,
+    hybrid_obj: object | None = None,
+) -> Response:
+    """在「重排给定行为 + 其余链路 mock」下发起一次 /chat/stream。
+
+    ``hybrid_obj`` 为 ``None`` 时用默认融合命中；Embedding 降级用例传入自定义行为。
+    """
+    hybrid = hybrid_obj if hybrid_obj is not None else mock.AsyncMock(return_value=_fused_hits())
     with contextlib.ExitStack() as stack:
         stack.enter_context(
             mock.patch(
@@ -142,12 +161,7 @@ def _request(client: TestClient, rerank_obj: object, seq: int = 1) -> Response:
                 ),
             )
         )
-        stack.enter_context(
-            mock.patch(
-                "app.api.routes_chat.hybrid_search",
-                new=mock.AsyncMock(return_value=_fused_hits()),
-            )
-        )
+        stack.enter_context(mock.patch("app.api.routes_chat.hybrid_search", new=hybrid))
         stack.enter_context(mock.patch("app.api.routes_chat.rerank", new=rerank_obj))
         stack.enter_context(
             mock.patch(
@@ -199,3 +213,64 @@ def test_rerank_degraded_result_not_cached(client: TestClient) -> None:
     assert _parse_sse(first.text)[-1][0] == "done"
     assert _parse_sse(second.text)[-1][0] == "done"
     assert rerank_mock.await_count == 2
+
+
+# ------------------------------------------------------------------
+# Embedding 模型不可用 → 纯 FTS5 降级（任何推理模式）
+# ------------------------------------------------------------------
+
+
+def _fts_only_hits() -> list[FusedHit]:
+    """降级轮的 FTS-only 命中：无原文，原文由请求体 ``fts_chunks`` 回填。"""
+    return [
+        FusedHit(chunk_id="c1", rrf_score=1.0 / 61),
+        FusedHit(chunk_id="c2", rrf_score=1.0 / 62),
+    ]
+
+
+def _embedding_unavailable_then_fts() -> mock.AsyncMock:
+    """首次（向量路）抛 EmbeddingUnavailableError，降级轮返回 FTS-only 命中。"""
+
+    async def side_effect(*args: object, **kwargs: object) -> list[FusedHit]:
+        if kwargs.get("skip_vector"):
+            return _fts_only_hits()
+        raise EmbeddingUnavailableError("Embedding 模型未下载: bge-large-zh-v1.5")
+
+    return mock.AsyncMock(side_effect=side_effect)
+
+
+def _rerank_scored() -> mock.AsyncMock:
+    """重排正常返回（本用例只关注 Embedding 降级，重排不参与降级）。"""
+    return mock.AsyncMock(
+        return_value=[
+            RerankResult(chunk_id="c1", score=0.9, file_path=_PDF, page=3),
+            RerankResult(chunk_id="c2", score=0.8, file_path=_PDF, page=5),
+        ]
+    )
+
+
+def test_local_mode_embedding_unavailable_degrades_to_fts(client: TestClient) -> None:
+    """local 模式 Embedding 不可用 → FTS 降级检索 + 降级警告，不再整条中断。
+
+    请求体未显式指定推理模式（默认 ``local``）——这正是「未装 Ollama 且未下载
+    Embedding 模型的部署机器」的实际状态。
+    """
+    hybrid = _embedding_unavailable_then_fts()
+    events = _parse_sse(_request(client, _rerank_scored(), hybrid_obj=hybrid).text)
+
+    assert [e[0] for e in events] == [
+        "search_start",
+        "search_warning",
+        "search_result",
+        "token",
+        "done",
+    ]
+    assert events[1][1]["code"] == "EMBEDDING_DEGRADED"
+    # 降级轮确实跳过了向量检索：第二个调用带 skip_vector=True
+    assert hybrid.await_count == 2
+    assert hybrid.await_args_list[1].kwargs["skip_vector"] is True
+    # 关键词命中仍产出可点击引用（原文经请求体 fts_chunks 回填）
+    assert events[2][1]["sources"] == [
+        {"id": 1, "file_name": "2024Q3财务报告.pdf", "page": 3, "score": 0.9},
+        {"id": 2, "file_name": "2024Q3财务报告.pdf", "page": 5, "score": 0.8},
+    ]

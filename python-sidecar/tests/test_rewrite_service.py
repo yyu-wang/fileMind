@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.rules.llm_classify import LLMUnavailableError  # noqa: E402
@@ -200,17 +198,19 @@ async def test_rewrite_timeout_falls_back() -> None:
     assert "超时" in result.reason
 
 
-async def test_rewrite_llm_unavailable_propagates() -> None:
-    """Ollama 不可用 → LLMUnavailableError 冒泡给调用方（T5.6 决定降级）。"""
+async def test_rewrite_llm_unavailable_falls_back() -> None:
+    """Ollama 不可用 → 原查询返回、不抛异常（生成侧故障不得中断检索）。"""
 
     async def fake_call(system: str, user: str, **kwargs: object) -> str:
         raise LLMUnavailableError("Ollama down")
 
-    with (
-        mock.patch("app.services.rewrite_service.call_ollama_json", fake_call),
-        pytest.raises(LLMUnavailableError),
-    ):
-        await rewrite_query("查询", [turn()])
+    with mock.patch("app.services.rewrite_service.call_ollama_json", fake_call):
+        result = await rewrite_query("那利润呢？", [turn()])
+
+    assert result.rewritten_query == "那利润呢？"
+    assert result.need_rewrite is False
+    assert "LLM 不可用" in result.reason
+    assert "Ollama down" in result.reason
 
 
 async def test_rewrite_parse_failure_falls_back() -> None:
@@ -287,5 +287,8 @@ async def test_rewrite_query_cloud_provider_uses_generate() -> None:
         async def generate(self, *args: object, **kwargs: object) -> str:
             raise CloudUnavailableError("proxy down")
 
-    with pytest.raises(LLMUnavailableError):
-        await rewrite_query("查询", [turn()], provider=BoomCloud())  # type: ignore[arg-type]
+    # 云端代理不可达同样降级为原查询（与本地 Ollama 不可用同一语义）
+    fallback = await rewrite_query("查询", [turn()], provider=BoomCloud())  # type: ignore[arg-type]
+    assert fallback.rewritten_query == "查询"
+    assert fallback.need_rewrite is False
+    assert "proxy down" in fallback.reason
