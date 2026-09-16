@@ -20,21 +20,47 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from app.core.logging import getLogger
+from app.services.model_download_service import model_ready
+from app.services.model_specs import RERANK_MODEL_NAME, RERANK_REPO, model_dir_for
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sentence_transformers import CrossEncoder
 
-#: Rerank 模型名（env 可覆盖；BAAI cross-encoder，首次下载后本地缓存）
-RERANK_MODEL = os.environ.get("FILEMIND_RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+logger = getLogger("filemind.rerank")
+
+#: Rerank 仓库 id：模型下载源，也是本地副本缺失时的兜底加载目标
+RERANK_MODEL = RERANK_REPO
 #: HF 主站被墙（curl 000），模型下载走镜像；setdefault 不覆盖用户显式配置
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-#: 默认离线加载（用户可显式置 0 恢复联网）：模型已完整缓存在本地
-#: (~/.cache/huggingface)，而打包后二进制经镜像下载会触发 TLS 握手失败
-#: （SSLV3_ALERT_BAD_RECORD_MAC，主站又不可达）。离线模式直接从缓存加载，
-#: 实测 ~5.8s 就绪；侧车仅此一处用 transformers，不影响 Ollama 链路的 embedding/LLM。
+#: 默认离线加载（用户可显式置 0 恢复联网）：加载目标优先用本应用下载到
+#: ``{models_root}/bge-reranker-v2-m3`` 的本地副本（见 :func:`resolve_load_target`），
+#: 离线开关对它无影响；只有回退到 HF 仓库 id 时才需要 HF 缓存——而打包后经镜像
+#: 下载会触发 TLS 握手失败（SSLV3_ALERT_BAD_RECORD_MAC，主站又不可达）。因此
+#: 「本地副本缺失」的正确解法是在设置页下载模型，而不是指望联网兜底。
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
+def resolve_load_target() -> str:
+    """解析模型的加载目标：env 覆盖 → 本地已下载目录 → HF 仓库 id。
+
+    本地目录优先：全新机器没有 HuggingFace 缓存、hf-mirror 又可能不可达，
+    而模型可由设置页触发下载到 ``{models_root}/bge-reranker-v2-m3``
+    （:mod:`app.services.model_download_service`）。从本地目录加载纯离线，
+    实测冷加载约 20s（torch 导入占大头），不依赖任何远端。
+
+    ``FILEMIND_RERANK_MODEL`` 非空时直接采用（兼容自行准备模型的部署与快速回退）。
+    """
+    override = os.environ.get("FILEMIND_RERANK_MODEL", "").strip()
+    if override:
+        return override
+    if model_ready(RERANK_MODEL_NAME):
+        return str(model_dir_for(RERANK_MODEL_NAME))
+    return RERANK_MODEL
+
 
 #: 单例 pipeline（懒加载；在 to_thread 中构造）
 _pipeline: CrossEncoder | None = None
@@ -112,17 +138,25 @@ async def _get_pipeline(model: str) -> CrossEncoder:
         return _pipeline
     async with _pipeline_lock:
         if _pipeline is None:
+            logger.info("rerank.load.start", target=model)
+            started = time.monotonic()
             try:
                 _pipeline = await asyncio.to_thread(_load_cross_encoder, model)
             except Exception as exc:  # noqa: BLE001
                 raise RerankUnavailableError(f"Rerank 模型加载失败: {model!r}（{exc}）") from exc
+            # 记录耗时：冷加载（torch 导入 + 模型构造）期间事件循环会被拖住，
+            # 该毫秒数与 Rust watchdog 观测到的 /health 无响应窗口相互印证
+            # （阈值含义见 src-tauri/src/sidecar/manager/mod.rs）。
+            logger.info(
+                "rerank.load.done", target=model, ms=int((time.monotonic() - started) * 1000)
+            )
     return _pipeline
 
 
 async def rerank(
     query: str,
     candidates: Sequence[RerankCandidate],
-    model: str = RERANK_MODEL,
+    model: str | None = None,
     top_k: int = 5,
 ) -> list[RerankResult]:
     """对候选执行 cross-encoder 重排序，返回 Top-``top_k``。
@@ -130,7 +164,8 @@ async def rerank(
     Args:
         query: 用户检索查询（自然语言）。
         candidates: 待重排候选（含原文 text；通常来自 RRF 融合 Top-20）。
-        model: Rerank 模型名（默认 ``RERANK_MODEL``）。
+        model: 加载目标；``None``（默认）表示按 :func:`resolve_load_target` 解析，
+            即「env 覆盖 → 本地已下载目录 → HF 仓库 id」。
         top_k: 精选候选数（默认 5，对齐「重排序 → Top-5」）。
 
     Returns:
@@ -142,7 +177,7 @@ async def rerank(
     global _last_used_monotonic
     if not candidates:
         return []
-    pipeline = await _get_pipeline(model)
+    pipeline = await _get_pipeline(model or resolve_load_target())
     pairs = [(query, c.text) for c in candidates]
     try:
         raw_scores = await asyncio.to_thread(pipeline.predict, pairs)

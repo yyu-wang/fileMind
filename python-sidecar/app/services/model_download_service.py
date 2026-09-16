@@ -1,8 +1,16 @@
-"""T2 — Embedding 模型下载服务（HF 镜像轮询 + 自动重试 + 进度上报）。
+"""T2 — 模型下载服务（HF 镜像轮询 + 自动重试 + 进度上报）。
 
-职责：把注册表声明的 ONNX 权重与 tokenizer 文件下载到本地模型目录
-（布局见 :mod:`app.services.embedding_service` 的 ``model_dir``），并向设置页
-暴露可查询的下载状态（进度、当前镜像、尝试次数、失败原因）。
+职责：把「下载规格」（[`resolve_spec`]）声明的权重与 tokenizer/配置文件下载到本地
+模型目录，并向设置页暴露可查询的下载状态（进度、当前镜像、尝试次数、失败原因）。
+
+两类模型共用本模块的下载管线，仅来源与落盘位置不同：
+
+- **Embedding**：来自注册表 ``embedding_models``（``hf_repo`` + ``onnx_file``），
+  落盘 ``{models_root}/{model}/{onnx_file}``；
+- **Rerank**：``BAAI/bge-reranker-v2-m3``（sentence-transformers cross-encoder）。
+  它不在 Embedding 注册表里（无 dim / 表名语义），落盘 ``{models_root}/{model}/``。
+  这是「装到别的机器也能用全部功能」的关键一环：全新机器没有 HF 缓存、镜像又可能
+  不可达，而 ``rerank_service`` 会优先加载这里的本地副本（见 ``resolve_load_target``）。
 
 为什么不用 ``huggingface_hub`` 下载：其 xet 通道与 hf-mirror 不兼容、且 SDK 不给
 逐字节进度。本模块直接用 httpx 流式 GET ``{mirror}/{repo}/resolve/main/{path}``，
@@ -42,10 +50,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from app.core.embedding_models import get_model_info
 from app.core.logging import getLogger
 from app.models import ModelDownloadStatusResponse
-from app.services.embedding_service import EmbeddingUnavailableError, model_dir
+from app.services.embedding_service import EmbeddingUnavailableError
+from app.services.model_specs import resolve_spec, spec_ready
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,14 +78,6 @@ PROGRESS_THROTTLE_SECONDS = float(os.environ.get("FILEMIND_MODEL_PROGRESS_THROTT
 _TLS_MAX_ENV = "FILEMIND_MODEL_TLS_MAX"
 #: 每批读取的字节数（64KB，兼顾流式进度粒度与 syscall 次数）
 _CHUNK_BYTES = 64 * 1024
-#: 权重之外还需的仓库文件（tokenizer 与配置；体积为 KB 级）
-_AUX_FILES: tuple[str, ...] = (
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "vocab.txt",
-    "config.json",
-)
 
 _STATUS_IDLE = "idle"
 _STATUS_DOWNLOADING = "downloading"
@@ -136,29 +136,27 @@ def files_for(model: str) -> tuple[str, ...]:
     """该模型需要下载的仓库文件（权重 + tokenizer/配置）。
 
     Raises:
-        ValueError: 模型未在注册表中（由路由层转 HTTP 400）。
+        ValueError: 模型不在任一来源中（由调用方转 HTTP 400）。
     """
-    info = get_model_info(model)
-    return (info.onnx_file, *_AUX_FILES)
+    return resolve_spec(model).files
 
 
 def weight_file(model: str) -> str:
-    """ONNX 权重文件的仓库内路径（进度统计基准）。
+    """权重文件的仓库内路径（进度统计基准）。
 
     Raises:
-        ValueError: 模型未在注册表中。
+        ValueError: 模型不在任一来源中。
     """
-    return get_model_info(model).onnx_file
+    return resolve_spec(model).weight
 
 
 def model_ready(model: str) -> bool:
     """本地文件是否齐备（所有目标文件存在且非空）；未知模型返回 ``False``。"""
     try:
-        root = model_dir(model)
-        targets = files_for(model)
+        spec = resolve_spec(model)
     except (EmbeddingUnavailableError, ValueError):
         return False
-    return all((root / name).is_file() and (root / name).stat().st_size > 0 for name in targets)
+    return spec_ready(spec)
 
 
 def _now_iso() -> str:
@@ -195,9 +193,9 @@ def get_status(model: str) -> ModelDownloadStatusResponse:
     """查询下载状态（未开始且本地已就绪时返回 ready）。
 
     Raises:
-        ValueError: 模型未在注册表中。
+        ValueError: 模型不在任一来源中。
     """
-    get_model_info(model)  # 未知模型 → ValueError
+    resolve_spec(model)  # 未知模型 → ValueError
     return _state_for(model).as_response()
 
 
@@ -208,9 +206,9 @@ async def ensure_downloaded(model: str) -> ModelDownloadStatusResponse:
     手动重试，会重新计数。
 
     Raises:
-        ValueError: 模型未在注册表中。
+        ValueError: 模型不在任一来源中。
     """
-    get_model_info(model)
+    resolve_spec(model)
     async with _lock:
         state = _state_for(model)
         if state.status == _STATUS_READY:
@@ -234,10 +232,11 @@ async def _download_all(model: str) -> None:
     与探测类接口一致：状态查询不应让调用方 5xx。
     """
     state = _state_for(model)
-    root = model_dir(model)
-    targets = files_for(model)
-    # 进度基准 = ONNX 权重文件（体积占 99.99%，且是唯一能稳定探测到大小的文件）
-    weight = weight_file(model)
+    spec = resolve_spec(model)
+    root = spec.root
+    targets = spec.files
+    # 进度基准 = 权重文件（体积占 99.99%，且是唯一能稳定探测到大小的文件）
+    weight = spec.weight
     last_error: str = "未知错误"
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -251,13 +250,13 @@ async def _download_all(model: str) -> None:
             async with httpx.AsyncClient(
                 follow_redirects=True, timeout=DOWNLOAD_TIMEOUT, verify=_ssl_context()
             ) as client:
-                repo = get_model_info(model).hf_repo
+                repo = spec.repo
                 state.total_bytes = await _probe_size(client, _resolve_url(mirror, repo, weight))
                 for name in targets:
                     await _download_one(
                         client,
                         mirror,
-                        model,
+                        repo,
                         name,
                         root / name,
                         state,
@@ -330,7 +329,7 @@ def _resolve_url(mirror: str, repo: str, path: str) -> str:
 async def _download_one(
     client: httpx.AsyncClient,
     mirror: str,
-    model: str,
+    repo: str,
     name: str,
     dest: Path,
     state: _State,
@@ -342,7 +341,7 @@ async def _download_one(
     Args:
         client: 当前尝试使用的 httpx 客户端。
         mirror: 当前镜像地址。
-        model: 注册表模型名。
+        repo: HuggingFace 仓库 id（来自下载规格）。
         name: 仓库内相对路径。
         dest: 落盘目标路径。
         state: 对应模型的状态对象（进度写入处）。
@@ -354,7 +353,6 @@ async def _download_one(
         OSError: 落盘失败。
         ModelDownloadError: 下载内容为空。
     """
-    repo = get_model_info(model).hf_repo
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(f"{dest.name}.part")
     async with client.stream("GET", _resolve_url(mirror, repo, name)) as resp:
