@@ -55,6 +55,7 @@ fn main() {
             commands::ollama::ollama_status,
             commands::model::model_download_status,
             commands::model::start_model_download,
+            commands::model::import_model_package,
             commands::config::get_config,
             commands::config::update_config,
             commands::config::sign_cloud_consent,

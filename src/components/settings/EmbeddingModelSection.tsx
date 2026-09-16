@@ -5,25 +5,18 @@
 // 不可用**，故此处给出明确的进度与文案。
 // 切换模型需重建全部索引，P1 未支持，不渲染切换占位按钮。
 // 原型 05_交互原型 §设置页 Embedding 管理：.panel 展示当前模型 + .model-item 列表。
+//
+// 下载状态按 model_name 存放在 store 的 modelDownloads 映射里（不再用单槽），
+// 同一页上的 Embedding / Rerank / 本地 GGUF 三张卡片因此互不覆盖。
 
 import { useEffect } from 'react';
 import type { EmbeddingModelAvailability, ModelDownloadStatus } from '@/types/ipc';
+import { formatMb, percentOf } from '@/lib/modelDownloadFormat';
 import { useFileStore } from '../../stores/fileStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 
 /** 下载进度轮询间隔（ms）：Sidecar 侧为后台任务，靠轮询推进度。 */
 export const DOWNLOAD_POLL_MS = 1_000;
-
-/** 字节数 → MB 文案（1 位小数）。 */
-function formatMb(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-/** 下载百分比；总量未知（镜像不返回大小）时返回 null。 */
-function percentOf(download: ModelDownloadStatus): number | null {
-  if (download.total_bytes == null || download.total_bytes <= 0) return null;
-  return Math.floor((download.downloaded_bytes / download.total_bytes) * 100);
-}
 
 /** 下载中：进度条 + 文案（百分比 / 已下载量 / 镜像 / 尝试次数）。 */
 function DownloadProgress({ download }: { download: ModelDownloadStatus }) {
@@ -66,13 +59,15 @@ function DownloadFailure({ download }: { download: ModelDownloadStatus }) {
 interface ModelRowProps {
   model: EmbeddingModelAvailability;
   isCurrent: boolean;
-  isDownloading: boolean;
-  hasFailed: boolean;
+  /** 该模型自己的下载状态（按 model_name 从映射里取；未查询过为 null） */
+  download: ModelDownloadStatus | null;
   onDownload: (name: string) => void;
 }
 
 /** 单个模型行：就绪/未下载徽标 + 下载按钮。 */
-function ModelRow({ model, isCurrent, isDownloading, hasFailed, onDownload }: ModelRowProps) {
+function ModelRow({ model, isCurrent, download, onDownload }: ModelRowProps) {
+  const isDownloading = download?.status === 'downloading';
+  const hasFailed = download?.status === 'failed';
   return (
     <div className={`model-item${isCurrent ? ' model-item--current' : ''}`}>
       <div className="model-info">
@@ -104,15 +99,16 @@ function ModelRow({ model, isCurrent, isDownloading, hasFailed, onDownload }: Mo
 export function EmbeddingModelSection() {
   const embeddingModel = useSettingsStore((s) => s.embeddingModel);
   const embeddingModelOptions = useSettingsStore((s) => s.embeddingModelOptions);
-  const modelDownload = useSettingsStore((s) => s.modelDownload);
-  const installError = useSettingsStore((s) => s.installError);
+  const downloads = useSettingsStore((s) => s.modelDownloads);
+  const installError = useSettingsStore((s) => s.installErrors[embeddingModel] ?? null); // 只读本模型那条
   const startModelDownload = useSettingsStore((s) => s.startModelDownload);
   const refreshModelDownload = useSettingsStore((s) => s.refreshModelDownload);
   const stats = useFileStore((s) => s.stats);
   const loadStats = useFileStore((s) => s.loadStats);
 
   const current = embeddingModelOptions.find((m) => m.name === embeddingModel);
-  const isDownloading = modelDownload?.status === 'downloading';
+  const download = downloads[embeddingModel] ?? null;
+  const isDownloading = download?.status === 'downloading';
 
   useEffect(() => {
     if (!stats) void loadStats();
@@ -168,8 +164,8 @@ export function EmbeddingModelSection() {
             模型文件已就绪，可用于建立索引与知识问答。
           </div>
         )}
-        {isDownloading && modelDownload && <DownloadProgress download={modelDownload} />}
-        {modelDownload?.status === 'failed' && <DownloadFailure download={modelDownload} />}
+        {isDownloading && download && <DownloadProgress download={download} />}
+        {download?.status === 'failed' && <DownloadFailure download={download} />}
       </div>
 
       {installError && (
@@ -194,8 +190,7 @@ export function EmbeddingModelSection() {
             key={model.name}
             model={model}
             isCurrent={model.name === embeddingModel}
-            isDownloading={isDownloading && modelDownload?.model_name === model.name}
-            hasFailed={modelDownload?.status === 'failed'}
+            download={downloads[model.name] ?? null}
             onDownload={(name) => void startModelDownload(name)}
           />
         ))

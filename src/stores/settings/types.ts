@@ -11,6 +11,7 @@ import type {
   EmbeddingModelAvailability,
   InferenceMode,
   ModelDownloadStatus,
+  ModelImportResult,
   OllamaModelInfo,
   OllamaStatus,
 } from '@/types/ipc';
@@ -69,14 +70,40 @@ export interface SettingsState {
   apiKeyStatus: Record<string, ApiKeyStatus>;
   /** 云端推理模型名（如 gpt-4o / deepseek-chat；空串表示未指定，走 Provider 默认） */
   cloudModel: string;
+  /** 本地生成后端：'ollama'（默认）或 'builtin'（Sidecar 内置 llama.cpp 引擎） */
+  localLlmBackend: string;
+  /** 内置后端的 GGUF 模型标识（模型目录名，非文件名） */
+  localLlmModel: string;
   /** 云端推理 Temperature（0-1，0.2 为通用默认） */
   temperature: number;
   /** 正在下载的 Embedding 模型名（null 表示无下载任务） */
   downloadingModel: string | null;
-  /** 模型下载状态（null 表示尚未查询） */
-  modelDownload: ModelDownloadStatus | null;
-  /** 下载相关错误信息（启动失败 / 查询失败；null 表示无错误） */
-  installError: string | null;
+  /**
+   * 各模型最近一次下载状态（按 model_name 索引；未查询过的模型不在表内）。
+   *
+   * 用映射而不是单个槽位：设置页同时挂载 Embedding / Rerank / 本地 GGUF 三张模型卡片，
+   * 单槽会被最后一次写入的模型独占——另一张卡片便读不到自己的状态（例如 Rerank 已就绪
+   * 却显示「未下载」）。
+   */
+  modelDownloads: Record<string, ModelDownloadStatus>;
+  /**
+   * 各模型「启动下载请求失败」的原因（按 model_name 索引）。
+   *
+   * 与 modelDownloads 同理按模型名分槽：共享单槽会让 A 模型卡片显示 B 模型的失败原因，
+   * 或让未参与下载的卡片永远看不到属于自己的失败（静默失败）。
+   */
+  installErrors: Record<string, string>;
+  /** 离线模型包导入进行中（本地拷贝数百 MB~数 GB，耗时长，用于禁用入口与切换文案） */
+  importingPackage: boolean;
+  /** 最近一次离线模型包导入结果（null 表示尚未导入） */
+  importResult: ModelImportResult | null;
+  /**
+   * 离线导入错误（含 EMB-V-001 / EMB-U-002 错误码与缺失文件明细）。
+   *
+   * 不复用通用的 `error`：那个字段由 Ollama 探测写入、且每次探测开始即被清空，
+   * 会让「导入失败」被一次后台探测擦掉，或在未导入时误显示探测错误。
+   */
+  importError: string | null;
   /** P-07：用户自定义云提供商列表（来自 DB cloud_providers 表，设置页表单直接操作） */
   cloudProviders: CloudProviderRecord[];
   /** P-07：当前激活的云提供商 slug（app_config.active_cloud_provider），空串=未指定 */
@@ -120,6 +147,11 @@ export interface SettingsState {
   startModelDownload: (modelName: string) => Promise<void>;
   /** 查询 Embedding 模型下载状态（设置页轮询用；失败只记录错误，不抛） */
   refreshModelDownload: (modelName: string) => Promise<void>;
+  /**
+   * 导入离线模型包（zip 文件，或 `models` 目录 / 单个模型目录）。
+   * 内网 / 无外网部署时用另一台已下载好模型的机器分发模型文件，避免检索时缺模型。
+   */
+  importModelPackage: (path: string) => Promise<void>;
   /** P-07：从 DB 拉取全部云提供商（覆盖 store） */
   loadCloudProviders: () => Promise<void>;
   /** P-07：新建或更新提供商（成功后自动刷新列表 + API Key 状态） */

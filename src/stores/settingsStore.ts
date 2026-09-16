@@ -19,7 +19,11 @@ import { persist } from 'zustand/middleware';
 import { applyTheme } from '../lib/theme';
 import { ThemeMode } from '../types/models';
 import { createCloudActions } from './settings/cloud';
-import { createConfigActions } from './settings/config';
+import {
+  createConfigActions,
+  DEFAULT_LOCAL_LLM_BACKEND,
+  DEFAULT_LOCAL_LLM_MODEL,
+} from './settings/config';
 import { createOllamaActions } from './settings/ollama';
 import type { SettingsState } from './settings/types';
 
@@ -51,10 +55,17 @@ export const useSettingsStore = create<SettingsState>()(
       theme: ThemeMode.System,
       apiKeyStatus: {},
       cloudModel: '',
+      // 本地生成后端与内置 GGUF 标识：默认值统一取自 config 模块常量
+      // （与 Rust AppConfig::default、V019 迁移列默认值三处一致）
+      localLlmBackend: DEFAULT_LOCAL_LLM_BACKEND,
+      localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
       temperature: 0.2,
       downloadingModel: null,
-      modelDownload: null,
-      installError: null,
+      modelDownloads: {},
+      installErrors: {},
+      importingPackage: false,
+      importResult: null,
+      importError: null,
       cloudProviders: [],
       activeCloudProvider: '',
       cloudProvidersLoading: false,

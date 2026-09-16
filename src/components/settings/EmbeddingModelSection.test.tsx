@@ -58,8 +58,8 @@ function seed(overrides: Partial<Parameters<typeof useSettingsStore.setState>[0]
     theme: ThemeMode.System,
     temperature: 0.2,
     downloadingModel: null,
-    modelDownload: null,
-    installError: null,
+    modelDownloads: {},
+    installErrors: {},
     apiKeyStatus: {
       Openai: { provider: 'Openai', has_key: false, hint: '' },
       Deepseek: { provider: 'Deepseek', has_key: false, hint: '' },
@@ -125,7 +125,7 @@ describe('EmbeddingModelSection', () => {
     seed({
       embeddingModelOptions: [MISSING_MODEL],
       downloadingModel: 'bge-large-zh-v1.5',
-      modelDownload: downloadStatus({ attempt: 2 }),
+      modelDownloads: { 'bge-large-zh-v1.5': downloadStatus({ attempt: 2 }) },
     });
     render(<EmbeddingModelSection />);
 
@@ -143,7 +143,7 @@ describe('EmbeddingModelSection', () => {
     seed({
       embeddingModelOptions: [MISSING_MODEL],
       downloadingModel: 'bge-large-zh-v1.5',
-      modelDownload: downloadStatus({ total_bytes: null }),
+      modelDownloads: { 'bge-large-zh-v1.5': downloadStatus({ total_bytes: null }) },
     });
     render(<EmbeddingModelSection />);
     expect(screen.getByText(/已下载 156.3 MB/)).toBeInTheDocument();
@@ -153,12 +153,14 @@ describe('EmbeddingModelSection', () => {
   it('shows failure reason and retry button after auto retries exhausted', () => {
     seed({
       embeddingModelOptions: [MISSING_MODEL],
-      modelDownload: downloadStatus({
-        status: 'failed',
-        attempt: 3,
-        downloaded_bytes: 0,
-        error: '下载失败（已自动重试 3 次，切换镜像均未成功）',
-      }),
+      modelDownloads: {
+        'bge-large-zh-v1.5': downloadStatus({
+          status: 'failed',
+          attempt: 3,
+          downloaded_bytes: 0,
+          error: '下载失败（已自动重试 3 次，切换镜像均未成功）',
+        }),
+      },
     });
     render(<EmbeddingModelSection />);
     expect(screen.getByRole('alert')).toHaveTextContent('下载失败');

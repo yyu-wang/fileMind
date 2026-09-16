@@ -357,3 +357,18 @@ class ModelDownloadStatusResponse(BaseModel):
     )
     error: str | None = Field(default=None, description="失败原因（status=failed 时非空）")
     updated_at: str = Field(default="", description="状态最后更新时间（ISO 8601）")
+
+
+class ModelImportRequest(BaseModel):
+    """POST /models/import 请求体：导入离线模型包（内网 / 无外网部署用）。"""
+
+    path: str = Field(
+        description="离线包路径（zip 文件，或 models 目录 / 单个模型目录）；Rust 侧已过路径安全校验"
+    )
+
+
+class ModelImportResponse(BaseModel):
+    """离线模型包导入结果：供设置页展示导入与跳过明细。"""
+
+    imported: list[str] = Field(default_factory=list, description="本次写入（或替换）的模型名")
+    skipped: list[str] = Field(default_factory=list, description="包内已就绪、按幂等跳过的模型名")

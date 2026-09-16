@@ -14,7 +14,8 @@ const SELECT_CONFIG_SQL: &str = "
            cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
            cloud_consent_signed_at,
            cloud_model,
-           active_cloud_provider
+           active_cloud_provider,
+           local_llm_backend, local_llm_model
     FROM app_config WHERE id = 1
 ";
 
@@ -25,8 +26,9 @@ const UPSERT_CONFIG_SQL: &str = "
         cloud_consent_signed, cloud_consent_version, cloud_consent_provider,
         cloud_consent_signed_at,
         cloud_model,
-        active_cloud_provider
-    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        active_cloud_provider,
+        local_llm_backend, local_llm_model
+    ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
     ON CONFLICT(id) DO UPDATE SET
         data_directory = excluded.data_directory,
         inference_mode = excluded.inference_mode,
@@ -40,7 +42,9 @@ const UPSERT_CONFIG_SQL: &str = "
         cloud_consent_provider = excluded.cloud_consent_provider,
         cloud_consent_signed_at = excluded.cloud_consent_signed_at,
         cloud_model = excluded.cloud_model,
-        active_cloud_provider = excluded.active_cloud_provider
+        active_cloud_provider = excluded.active_cloud_provider,
+        local_llm_backend = excluded.local_llm_backend,
+        local_llm_model = excluded.local_llm_model
 ";
 
 const SIGN_CONSENT_SQL: &str = "
@@ -108,6 +112,8 @@ impl ConfigRepo {
                 config.cloud_consent_signed_at,
                 config.cloud_model,
                 config.active_cloud_provider,
+                config.local_llm_backend,
+                config.local_llm_model,
             ],
         )?;
         Ok(())
@@ -163,6 +169,8 @@ fn map_config(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConfig> {
         cloud_consent_signed_at: row.get::<_, Option<String>>(10)?.map(normalize_signed_at),
         cloud_model: row.get(11)?,
         active_cloud_provider: active_str,
+        local_llm_backend: row.get(13)?,
+        local_llm_model: row.get(14)?,
     })
 }
 
@@ -317,6 +325,28 @@ mod tests {
         ConfigRepo::upsert(db.conn(), &config).unwrap();
         let reloaded = ConfigRepo::get(db.conn()).unwrap();
         assert_eq!(reloaded.active_cloud_provider.as_deref(), Some("my-custom"));
+    }
+
+    /// V019：迁移后旧库默认「ollama + 内置 GGUF 标识」——既有用户推理路径不变。
+    #[test]
+    fn local_llm_defaults_after_migration() {
+        let db = open_test_db();
+        let config = ConfigRepo::get(db.conn()).expect("读取默认配置");
+        assert_eq!(config.local_llm_backend, "ollama");
+        assert_eq!(config.local_llm_model, "qwen2.5-3b-instruct");
+    }
+
+    /// 切到内置后端后经 upsert 往返不丢值（T3 据此决定是否启用内置 llama.cpp）。
+    #[test]
+    fn local_llm_backend_roundtrips_through_upsert() {
+        let db = open_test_db();
+        let mut config = ConfigRepo::get(db.conn()).unwrap();
+        config.local_llm_backend = "builtin".to_string();
+        ConfigRepo::upsert(db.conn(), &config).unwrap();
+
+        let reloaded = ConfigRepo::get(db.conn()).unwrap();
+        assert_eq!(reloaded.local_llm_backend, "builtin");
+        assert_eq!(reloaded.local_llm_model, "qwen2.5-3b-instruct");
     }
 
     /// BE-M2 兼容：旧版 `epoch:` 前缀值读取时归一化为 RFC3339，语义不变。
