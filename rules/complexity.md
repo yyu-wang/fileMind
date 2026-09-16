@@ -165,18 +165,17 @@ bash scripts/check-file-size.sh
 
 圈复杂度历史欠账（登记在 `eslint.config.js`，登记值 = 该文件当前最大复杂度，**只允许降不允许升**）：
 
-| 文件                                | 当前上限 | 超限函数（ESLint 报点） |
-| ----------------------------------- | -------- | ----------------------- |
-| `src/lib/format.ts`                 | 22       | `getFileTypeMeta`       |
-| `src/components/rules/RuleForm.tsx` | 20       | `RuleForm`              |
+当前无登记项——历史欠账已全部消账，各条的消账方式如下：
 
-（`CloudProviderFormCard.tsx` 30 已消账：表单状态收进 `useCloudProviderForm`，校验规则移入
-`src/lib/cloudProviderValidation.ts`，五行字段改用 `ui/SettingsInputRow`，卡片本体复杂度回到 7；
-`ChatPage.tsx` 19 已消账：引用跳转流程收进 `src/hooks/useCitationPreview.ts`，头部与输入区拆为
-`ChatHeader` / `ChatInputArea`，页面本体复杂度回到 7；`ClassifyPage.tsx` 38 已消账：页面收敛为编排层，
-区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为 `ClassifyHeader` / `ClassifyIntroPanel` /
-`ClassifyHistoryView` / `ClassifyPreviewSection`；`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在
-拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
+（`format.ts` 22：`getFileTypeMeta` 的判断链改为有序规则表，扩展名数据表移入 `src/lib/fileExtensions.ts`，
+函数复杂度回到 3，文件 180 → 144 行；`RuleForm.tsx` 20：草稿状态与校验收进 `useRuleForm`，「启用规则」行
+拆为 `RuleEnabledToggle`，组件复杂度回到 4，文件 240 → 189 行；`CloudProviderFormCard.tsx` 30：表单状态收进
+`useCloudProviderForm`，校验规则移入 `src/lib/cloudProviderValidation.ts`，五行字段改用 `ui/SettingsInputRow`；
+`ChatPage.tsx` 19：引用跳转流程收进 `src/hooks/useCitationPreview.ts`，头部与输入区拆为
+`ChatHeader` / `ChatInputArea`；`ClassifyPage.tsx` 38：区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为
+`ClassifyHeader` / `ClassifyIntroPanel` / `ClassifyHistoryView` / `ClassifyPreviewSection`；
+`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、
+事件分发抽成 `dispatchChatEvent`。）
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 

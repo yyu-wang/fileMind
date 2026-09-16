@@ -152,19 +152,20 @@ export default [
     rules: { 'max-lines': ['error', max] },
   })),
   // ---- 历史欠账：圈复杂度 ----
-  // 登记值为该文件当前最大复杂度 = 现状上限：只允许下降，不允许上升。
-  // 消账方式：把函数拆到 15 以内后删除对应行。
-  { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
-  { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
-  // 注：CloudProviderFormCard.tsx(30) 已消账——表单状态收进 useCloudProviderForm，
-  // 校验规则移入 lib/cloudProviderValidation.ts，五行字段改用 ui/SettingsInputRow，
-  // 卡片本体复杂度回到 7；ChatPage.tsx(19) 已消账——引用跳转流程收进 hooks/useCitationPreview，
-  // 头部与输入区拆为 ChatHeader / ChatInputArea，页面本体复杂度回到 7；
-  // ClassifyPage.tsx(38) 已消账——页面收敛为编排层，判定收进 lib/classifyView.ts，
-  // 各区域拆为 ClassifyHeader / ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection；
-  // settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
-  // updateConfig 的字段合并抽成 mergeAppConfig、handleChatEvent 的事件分发抽成
-  // dispatchChatEvent，两者各自的复杂度都回到 15 以内，故覆盖块一并删除
+  // 规则：登记值 = 该文件当前最大复杂度（现状上限，只允许降不允许升）；消账方式是把函数
+  // 拆到 15 以内后删除对应行。当前已无登记项，历史欠账全部消账：
+  //   - format.ts(22)：getFileTypeMeta 的判断链改为有序规则表，扩展名数据表移入
+  //     lib/fileExtensions.ts，函数复杂度回到 3
+  //   - RuleForm.tsx(20)：草稿状态与校验收进 useRuleForm，启用开关行拆为 RuleEnabledToggle
+  //     组件复杂度回到 4
+  //   - CloudProviderFormCard.tsx(30)：状态收进 useCloudProviderForm，校验移入
+  //     lib/cloudProviderValidation.ts，五行字段改用 ui/SettingsInputRow，回到 7
+  //   - ChatPage.tsx(19)：引用跳转流程收进 hooks/useCitationPreview，头部与输入区拆为
+  //     ChatHeader / ChatInputArea，回到 7
+  //   - ClassifyPage.tsx(38)：判定收进 lib/classifyView.ts，区域拆为 ClassifyHeader /
+  //     ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection，回到 9
+  //   - settingsStore.ts(18) 与 chatStore.ts(16)：字段合并抽成 mergeAppConfig、
+  //     事件分发抽成 dispatchChatEvent
   // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
   // 不需要也不能显式 import；仅声明防止 no-undef 误报）。
   {
