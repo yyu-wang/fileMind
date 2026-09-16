@@ -1,6 +1,6 @@
 // 关于区块（设置页）：版本 / 技术栈 / 索引数据库 + 检查更新。
 //
-// 原型 05_交互原型 §设置页关于区。版本号与 package.json 保持一致（手动同步）。
+// 原型 05_交互原型 §设置页关于区。版本号取自 package.json（编译期注入 __APP_VERSION__）。
 // 「检查更新」接入 tauri-plugin-updater：手动触发检查 → 发现新版则二次确认 →
 // 下载并安装 → process 插件重启应用。「导出配置 / 重置应用」P1 不支持，不渲染占位按钮。
 
@@ -9,9 +9,6 @@ import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 
 import { ConfirmDialog } from '../ui/ConfirmDialog';
-
-/** 应用版本：与 package.json 的 version 字段保持一致。 */
-const APP_VERSION = 'v1.0.0-1';
 
 /** 检查接口返回的更新对象类型（避免手写 any）。 */
 type UpdateInfo = NonNullable<Awaited<ReturnType<typeof check>>>;
@@ -69,7 +66,7 @@ export function AboutSection() {
         </div>
         <div className="setting-control">
           <span className="mono text-muted" data-testid="about-version">
-            {APP_VERSION}
+            v{__APP_VERSION__}
           </span>
         </div>
       </div>

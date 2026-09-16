@@ -82,6 +82,8 @@ export default [
         CustomEvent: 'readonly',
         KeyboardEvent: 'readonly',
         __dirname: 'readonly',
+        // vite.config.ts 的 define 注入（package.json version），见 src/vite-env.d.ts
+        __APP_VERSION__: 'readonly',
       },
     },
     plugins: {
