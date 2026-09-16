@@ -1,0 +1,117 @@
+/* ========== 通用组件：Toast / Modal（对齐交互原型 §Toast / §Modal） ========== */
+/* Toast 容器：固定右下角，不拦截点击 */
+.toast-container {
+  position: fixed;
+  bottom: 50px;
+  right: 24px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+/* Toast 单条通知 */
+.toast {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink);
+  max-width: 380px;
+  pointer-events: auto;
+  animation: toastIn 0.3s var(--ease-spring);
+  border-left: 4px solid var(--accent2);
+}
+
+.toast.success {
+  border-left-color: var(--success);
+}
+
+.toast.warn {
+  border-left-color: var(--amber);
+}
+
+.toast.error {
+  border-left-color: var(--warn);
+}
+
+.toast .toast-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.toast .toast-action {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent2);
+  cursor: pointer;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.toast .toast-action:hover {
+  text-decoration: underline;
+}
+
+.toast.removing {
+  animation: toastOut 0.25s var(--ease) forwards;
+}
+
+/* Modal 遮罩 + 弹窗 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.2s var(--ease);
+}
+
+.modal {
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  max-width: 500px;
+  width: 90%;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: scaleIn 0.3s var(--ease-spring);
+}
+
+.modal-header {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.modal-body {
+  padding: 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  padding: 14px 22px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}

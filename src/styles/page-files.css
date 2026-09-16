@@ -1,0 +1,134 @@
+/* ========== T6.4 文件管理页 ========== */
+/* 页面容器：对齐文档 .page.active（路由切换时 React 单页挂载即 active） */
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: pageIn 0.25s var(--ease-out);
+}
+
+.files-page {
+  height: 100%;
+  min-height: 0;
+}
+
+.files-page__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin: var(--sp-2) var(--sp-6);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.files-page__error-dismiss {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* 工具栏（设计稿 05_交互原型 §file-toolbar） */
+.file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0 var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.file-toolbar .search-box {
+  flex: 1;
+  max-width: 360px;
+}
+
+.file-toolbar .btn {
+  height: 32px;
+  padding: 0 var(--sp-4);
+}
+
+/* 兼容旧类名 files-toolbar* */
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0 var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.files-toolbar__spacer {
+  flex: 1;
+}
+
+.files-toolbar__select {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.filter-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.filter-field select {
+  min-width: 110px;
+}
+
+/* 主体区（表格 + 预览抽屉） */
+.files-page__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0);
+  padding: var(--sp-0) var(--sp-6) var(--sp-5);
+}
+
+.files-page__table {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.files-page__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+}
+
+.files-page__empty-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.files-page__empty-sub {
+  font-size: 12px;
+}

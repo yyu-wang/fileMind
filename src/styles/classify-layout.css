@@ -1,0 +1,320 @@
+/* ===== 智能分类页双栏布局（对齐交互原型） ===== */
+.classify-page__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.classify-page__subtitle {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.classify-page__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.classify-main,
+.classify-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--sp-4);
+  /* 裁剪溢出：左右两列各自独立滚动，不把滚动泄漏到外层 */
+  overflow: hidden;
+  /* 外层 .classify-page 已统一提供左右 padding: var(--sp-6)，
+     此处不得再设置水平 padding，否则套娃缩进会导致
+     layout 子元素离窗口边界 24+24=48px，与 header 标题不对齐。 */
+  padding: 0 0 var(--sp-5);
+}
+
+.classify-main__tree,
+.classify-tree {
+  min-width: 0;
+}
+
+/* classify-layout 内的外层 .classify-tree 容器：占满剩余宽度（横向 flex），
+   纵向独立滚动（右侧统计面板固定不动） */
+.classify-layout > .classify-tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 树形分类预览（对齐原型 tree-panel / tree-node） */
+.classify-tree-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.classify-tree-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-tree-header .count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.tree-panel {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tree-panel.conflict {
+  border-color: var(--danger);
+}
+
+.tree-panel.confirm {
+  border-color: var(--warn);
+}
+
+.tree-node.parent {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg3);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tree-panel.conflict .tree-node.parent {
+  color: var(--danger);
+}
+
+.tree-panel.confirm .tree-node.parent {
+  color: var(--warn);
+}
+
+.tree-node .arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid currentColor;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.tree-node .arrow.expanded {
+  transform: rotate(180deg);
+}
+
+.tree-node .node-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.tree-children {
+  border-top: 1px solid var(--rule);
+}
+
+.tree-node.child {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.tree-node.child:first-child {
+  border-top: none;
+}
+
+.tree-node__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 文件名作为预览按钮：悬停高亮提示可点击 */
+.tree-node__name--preview {
+  background: none;
+  border: none;
+  padding: var(--sp-0);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-node__name--preview:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.tree-node__dir {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tree-node__conflict {
+  color: var(--danger);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 右侧统计面板（对齐原型 stats-panel） */
+.stats-panel {
+  width: 260px;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  /* 右侧固定不随左侧滚动；内容超出时仅自身独立滚动 */
+  overflow-y: auto;
+}
+
+.stats-card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+}
+
+.stats-card h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--sp-2);
+}
+
+.stats-card__row {
+  margin-bottom: var(--sp-1);
+}
+
+.stats-card__row:last-child {
+  margin-bottom: var(--sp-0);
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: var(--sp-1);
+}
+
+.stat-row .label {
+  color: var(--muted);
+}
+
+.stat-row .value {
+  font-weight: 600;
+}
+
+.stat-bar {
+  height: 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg3);
+  overflow: hidden;
+}
+
+.stat-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-xs);
+}
+
+.stats-card--tip {
+  background: var(--accent-light);
+  border-color: var(--accent2);
+}
+
+.stats-card__tip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin-bottom: var(--sp-2);
+}
+
+.stats-card__tip-text {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.stats-tree {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.8;
+  font-family: monospace;
+}
+
+.stats-tree__root {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stats-tree__child {
+  padding-left: var(--sp-3);
+}
+
+/* 底部警告条（对齐原型 classify-footer，按钮已收敛到头部） */
+.classify-footer {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+.warning-text {
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* 分类来源标签 */
+.classify-rule-tag {
+  display: inline-block;
+  padding: var(--sp-0) var(--sp-2);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.classify-rule-tag--rule {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.classify-rule-tag--heuristic {
+  background: #e9d8fd;
+  color: #6b46c1;
+}
+
+.classify-rule-tag--pending {
+  background: #fef3c7;
+  color: var(--warn);
+}

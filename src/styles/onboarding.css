@@ -1,0 +1,277 @@
+/* ========== T6.3 首次启动引导流（对齐交互原型 §Onboarding） ========== */
+.onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-10);
+}
+
+.onboarding-card {
+  max-width: 560px;
+  width: 100%;
+  text-align: center;
+}
+
+.onboarding-card .logo {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  margin: var(--sp-0) auto var(--sp-5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(26, 54, 93, 0.3);
+  animation: logoIn 0.5s var(--ease-spring);
+}
+
+.onboarding-card .logo svg {
+  width: 36px;
+  height: 36px;
+  color: #fff;
+}
+
+.onboarding-card h1 {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: var(--sp-2);
+}
+
+.onboarding-card .subtitle {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 28px;
+}
+
+/* step-dots: 原型圆点进度指示器 */
+.step-dots {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: center;
+  margin: var(--sp-6) var(--sp-0);
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--rule2);
+  transition: all 0.2s var(--ease);
+}
+
+.step-dot.active {
+  background: var(--accent);
+  width: 24px;
+  border-radius: var(--radius-xs);
+}
+
+/* onboarding-step: 步骤内容容器，active 时显示并入场动画 */
+.onboarding-step {
+  display: none;
+}
+
+.onboarding-step.active {
+  display: block;
+  animation: stepIn 0.4s var(--ease-out);
+}
+
+.onboarding-step h3 {
+  font-size: 18px;
+  color: var(--accent);
+  margin-bottom: var(--sp-2);
+}
+
+.onboarding-step .step-desc {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: var(--sp-5);
+}
+
+.onboarding-step .step-actions {
+  display: flex;
+  margin-top: var(--sp-5);
+}
+
+.onboarding-step .step-actions--end {
+  justify-content: flex-end;
+}
+
+.onboarding-step .step-actions--between {
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* callout: 原型信息提示框（warn/success/info/amber） */
+.callout {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  border-left: 4px solid;
+  font-size: 13px;
+  margin: var(--sp-3) var(--sp-0);
+  text-align: left;
+}
+
+.callout.warn {
+  background: var(--warn-light);
+  border-color: var(--warn);
+}
+
+.callout.success {
+  background: var(--success-light);
+  border-color: var(--success);
+}
+
+.callout.info {
+  background: var(--accent-light);
+  border-color: var(--accent2);
+}
+
+.callout.amber {
+  background: var(--amber-light);
+  border-color: var(--amber);
+}
+
+.callout-title {
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
+}
+
+.callout ul {
+  font-size: 13px;
+  color: var(--muted);
+  margin: var(--sp-1-5) var(--sp-0) var(--sp-1-5) calc(var(--sp-4) + var(--sp-0-5));
+  line-height: 1.8;
+}
+
+.callout p {
+  margin: var(--sp-1-5) var(--sp-0);
+}
+
+/* dropzone: 原型拖拽目录选择区 */
+.dropzone {
+  border: 2px dashed var(--rule2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-12);
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  background: var(--bg2);
+}
+
+.dropzone:hover {
+  border-color: var(--accent3);
+  background: var(--accent-light);
+}
+
+.dropzone .icon {
+  font-size: 40px;
+  opacity: 0.5;
+  margin-bottom: var(--sp-3);
+}
+
+.dropzone p {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* selected-dir: 已选目录展示 */
+.selected-dir {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2-5) var(--sp-3-5);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.selected-dir .mono {
+  word-break: break-all;
+}
+
+/* provider-select: 同意书步骤的提供商选择 */
+.provider-select {
+  margin: var(--sp-4) var(--sp-0);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.provider-select .field-label {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* consent-check: 同意勾选 */
+.consent-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2-5);
+  margin: var(--sp-4) var(--sp-0);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.consent-check input {
+  margin-top: var(--sp-0-5);
+  flex-shrink: 0;
+}
+
+/* onboarding error: 错误提示条 */
+.onboarding-error {
+  background: #fee2e2;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .onboarding-error {
+    background: rgba(239, 68, 68, 0.1);
+  }
+}
+
+.onboarding-error-dismiss {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 18px;
+  padding: var(--sp-0) var(--sp-1);
+}
+
+/* ========== T7.5 同意书滚动内容（滚动到底门控） ========== */
+.consent-agreement__scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  background: var(--bg);
+  outline-offset: 2px;
+}
+
+.consent-agreement__version-line {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--rule);
+  font-size: 12px;
+  color: var(--muted);
+}

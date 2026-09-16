@@ -1,0 +1,89 @@
+/* ========== 通用确认对话框（撤销等危险操作二次确认） ========== */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.dialog {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 20px 24px;
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dialog__message {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 分类方式选择弹窗（移动/复制两选项按钮） */
+.mode-dialog__options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mode-dialog__option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg3);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mode-dialog__option:hover {
+  border-color: var(--accent);
+}
+
+.mode-dialog__option-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mode-dialog__option-desc {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.btn--danger {
+  background: var(--danger);
+  color: white;
+  border-color: var(--danger);
+}
+
+.btn--danger:hover:not(:disabled) {
+  opacity: 0.9;
+  border-color: var(--danger);
+}

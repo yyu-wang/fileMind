@@ -1,0 +1,220 @@
+/* ========== T6.8 规则编辑页（对齐交互原型 §规则编辑） ========== */
+/* 文档结构：
+   .page > .main-header + .main-content > .rules-layout
+     ├ .rules-list（左 280px）
+     │   ├ .rules-list-header（h3 + 数量 tag）
+     │   └ .rule-item（rule-name + rule-desc + rule-meta tag）
+     └ .rules-detail（右 flex:1）
+         └ .card > h3 + .rule-form
+             ├ .form-group（label + input/select + .hint）
+             ├ .form-group > .condition-builder（多 .condition-row）
+             ├ .setting-row（setting-label + setting-control > .toggle）
+             └ 按钮组：保存/测试/删除
+*/
+.rules-layout {
+  display: flex;
+  gap: var(--sp-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.rules-list {
+  width: 280px;
+  flex-shrink: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.rules-list-header {
+  padding: var(--sp-3) var(--sp-3-5);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  position: relative;
+}
+
+.rules-list-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.rules-list-header .rules-list-count {
+  margin-left: auto;
+}
+
+/* 单条规则：左主信息（name + desc + meta tags）+ 右优先级/拖拽条 */
+.rule-item {
+  padding: var(--sp-2-5) var(--sp-3-5);
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+  transition: background 0.1s var(--ease);
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+
+.rule-item:last-child {
+  border-bottom: none;
+}
+
+.rule-item:hover {
+  background: var(--bg-hover);
+}
+
+.rule-item.active {
+  background: var(--accent-light);
+  border-left: 3px solid var(--accent);
+  padding-left: calc(var(--sp-3-5) - 3px);
+}
+
+.rule-item--dragging {
+  opacity: 0.5;
+}
+
+.rule-item .rule-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rule-item .rule-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-item .rule-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: var(--sp-0-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-item .rule-meta {
+  display: flex;
+  gap: var(--sp-1-5);
+  margin-top: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.rule-item .rule-priority {
+  font-size: 11px;
+  color: var(--muted2);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.rules-detail {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.rule-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.rule-form__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: var(--sp-1);
+}
+
+.rule-form__error {
+  background: var(--warn-light);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2-5) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.rule-form__actions {
+  display: flex;
+  gap: var(--sp-2-5);
+  margin-top: var(--sp-2);
+}
+
+.rule-form__actions .btn--danger {
+  margin-left: auto;
+}
+
+/* 空态/加载态（rules-detail 内嵌） */
+.rules-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2-5);
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  padding: var(--sp-10) var(--sp-5);
+}
+
+.rules-empty__icon {
+  font-size: 36px;
+}
+
+.rules-empty__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.rules-empty__desc {
+  font-size: 13px;
+  max-width: 320px;
+}
+
+.rules-page__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  background: var(--warn-light);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2-5) var(--sp-3-5);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin: var(--sp-0) var(--sp-6);
+}
+
+.rules-page__error-dismiss {
+  background: none;
+  border: none;
+  color: var(--warn);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* rules-page 主体：保留 main-content 的 padding/overflow，并允许 rules-layout 撑满高度 */
+.rules-page__body {
+  display: flex;
+  flex-direction: column;
+}
+
+.rules-page__body > .rules-layout,
+.rules-page__body > .rules-empty,
+.rules-page__body > .loading-state,
+.rules-page__body > .empty-state {
+  flex: 1;
+  min-height: 0;
+}

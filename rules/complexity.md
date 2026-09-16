@@ -151,7 +151,7 @@ bash scripts/check-file-size.sh
 | 已登记基线且未增长               | PASS，计入「待消账」清单                   |
 | 超过警告阈值但未达强制阈值       | WARN（不阻断）                             |
 
-历史欠账登记在 `scripts/file-size-baseline.txt`（当前 3 个文件：`db/file_repo.rs`、`sidecar/manager.rs`、`styles/globals.css`；2026-09 已相继拆分消账 `commands/file_ops.rs`(1395) 与 `main.rs`(703)）；拆分到阈值内后删除对应行即完成消账。
+历史欠账登记在 `scripts/file-size-baseline.txt`，**当前无在册条目**（2026-09 已相继拆分消账：`commands/file_ops.rs`(1395)、`main.rs`(703)、`db/file_repo.rs`(638)、`sidecar/manager.rs`(1111)、`styles/globals.css`(4608)——后者拆为 `src/styles/` 下 22 个分区文件 + `index.css` 清单，最大 389 行）；拆分到阈值内后删除对应行即完成消账。
 统计口径为**原始行数**（等价 `wc -l`，不剔除空行/注释）；生成物（`src/types/ipc.ts` 由 tauri-specta 生成、禁止手改）与 `node_modules` / `target` / `dist` / `.venv` / `__pycache__` / `gen` 不在管控范围。
 
 ### ESLint 复杂度规则

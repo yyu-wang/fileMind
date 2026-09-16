@@ -1,0 +1,157 @@
+/* ========== 文档 §设置 - 推理模式选择器（mode-selector + mode-option） ========== */
+/* .mode-selector: 竖向栈，每行一个 mode-option 卡片 */
+.mode-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 2px solid var(--rule2);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  background: var(--bg);
+}
+
+.mode-option:hover {
+  border-color: var(--muted2);
+}
+
+.mode-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.mode-option .mode-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.mode-option.local .mode-icon {
+  background: var(--purple-bg);
+}
+
+.mode-option.cloud .mode-icon {
+  background: var(--accent-light);
+}
+
+.mode-option.hybrid .mode-icon {
+  background: var(--amber-light);
+}
+
+.mode-option .mode-info {
+  flex: 1;
+}
+
+.mode-option .mode-info .name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.mode-option .mode-info .desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.mode-option .radio-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--rule2);
+  position: relative;
+  flex-shrink: 0;
+  transition: border-color 0.15s var(--ease);
+}
+
+.mode-option.selected .radio-dot {
+  border-color: var(--accent);
+}
+
+.mode-option.selected .radio-dot::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ========== 文档 §设置 - 模型列表项（model-item） ========== */
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  transition: border-color 0.15s var(--ease);
+  background: var(--bg2);
+}
+
+.model-item:hover {
+  border-color: var(--muted2);
+}
+
+.model-item .model-info {
+  flex: 1;
+}
+
+.model-item .model-info .name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.model-item .model-info .meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* .section-desc 文档通用段落（与现有 .settings-section__desc 等价） */
+.section-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+/* settings-section h3 文档样式（与现有 .settings-section__title 等价，用 accent 色） */
+.settings-section > h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Embedding 模型下载进度条（设置页）：宽度按百分比内联设置 */
+.model-progress {
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.model-progress__bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s var(--ease-out, var(--ease));
+}

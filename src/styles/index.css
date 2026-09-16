@@ -1,0 +1,56 @@
+/* 样式入口清单：按「层 → 通用组件 → 页面区块 → 通用块」组织。
+ *
+ * ⚠️ @import 顺序 = 级联顺序，不可随意调整。拆分前这里是单个 globals.css（4608 行），
+ * 各分区里存在「前段定基础、后段打补丁」的关系（暗色覆盖、旧类名别名、页面局部覆盖等），
+ * 同特异性下后者胜出，故本清单的顺序严格等于原文件的行序。新增样式请落到对应分区的
+ * 文件里；确需新增分区时，插在与其耦合最强的分区之后，并同步更新本清单。
+ *
+ * 门禁：`scripts/check-file-size.sh` 对 .css 的阈值是警告 200 / 强制 400 行。
+ * 等价性验证：拆分前后各跑一次构建，产出 CSS 的规则序列与内容必须逐条一致。
+ */
+
+/* :root 设计令牌 + 手动/跟随系统暗色映射 + 字体 + 工具类/panel + 滚动条 */
+@import './base.css';
+/* T6.1 应用外框 + 侧边栏 + 状态栏 */
+@import './layout.css';
+/* T6.3 按钮基础类 + .input 输入控件（含 select 暗色覆盖） */
+@import './components-form.css';
+/* T6.3 首次启动引导流 + T7.5 同意书滚动内容 */
+@import './onboarding.css';
+/* 应用加载态 + 05_交互原型 §关键帧动画（pageIn/msgIn/toastIn/blink…） */
+@import './motion.css';
+/* 通用组件：Toast / Modal */
+@import './components-overlay.css';
+/* T6.4 文件管理页：页面容器 / 工具栏 / 主体区 */
+@import './page-files.css';
+/* 文件表格 / 类型图标 / 分类 tag / 搜索框 / 分类状态徽章 */
+@import './files-table.css';
+/* 预览抽屉 + 抽屉内文件路径树 */
+@import './page-files-preview.css';
+/* T6.5 智能分类页 */
+@import './page-classify.css';
+/* 分类页双栏布局 / 预览树 / 统计面板 / 底部警告条 */
+@import './classify-layout.css';
+/* 分类来源标签 / 执行进度遮罩 / 分类结果面板 */
+@import './classify-result.css';
+/* T6.6 知识问答页：头部 / 消息 / 气泡 / 引用来源 / 空态 / 建议词 */
+@import './page-chat.css';
+/* 聊天输入区 + 引擎未就绪提示 + 打字光标动画 */
+@import './chat-input.css';
+/* T6.7 设置页 */
+@import './page-settings.css';
+/* T6.8 规则编辑页 */
+@import './page-rules.css';
+/* T6.9 主题切换控件 */
+@import './theme-toggle.css';
+/* T6.10 通用状态视图（空态 / 错误） */
+@import './states.css';
+/* 分类历史列表与明细 */
+@import './classify-history.css';
+/* 通用确认对话框（撤销等危险操作二次确认） */
+@import './dialog.css';
+/* 通用：表单组 / 条件构造器 / 设置行 / Toggle / Card */
+@import './components-controls.css';
+/* 推理模式选择器 + 模型列表项 + Embedding 进度条（进度条原在 components.css，
+ * 加载顺序上位于原 globals.css 之后，故附在该分区文件末尾以保持不变） */
+@import './settings-widgets.css';

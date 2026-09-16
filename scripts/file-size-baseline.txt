@@ -51,4 +51,17 @@
 #     mod.rs——测试模块直接读写 `SidecarManager` 的私有字段，字段可见性依赖定义位置；
 #     子模块的公开项由 mod.rs 再导出，故 `sidecar::manager::X` 与各调用方路径均未改动。
 
-src/styles/globals.css 4608
+# 修订记录（2026-09-16，styles/globals.css 拆分消账 → 基线清空）：
+#   - 删除 `src/styles/globals.css 4608` 条目：已按「层 / 通用组件 / 页面区块」拆为
+#     `src/styles/` 下 22 个分区文件（base、layout、components-form、components-overlay、
+#     components-controls、onboarding、motion、page-files、files-table、
+#     page-files-preview、page-classify、classify-layout、classify-result、classify-history、
+#     page-chat、chat-input、page-settings、page-rules、theme-toggle、states、dialog、
+#     settings-widgets）+ `index.css` 清单，最大 layout.css 389 行，全部落在 .css 的
+#     强制阈值 400 行内（警告阈值 200）。
+#   - 拆分纪律：每个分区都是原文件的**连续切片**（内容与原行段一致，仅按 prettier 规则
+#     去掉切片末尾空行），`index.css` 的 @import 顺序 = 原文件行序（CSS 同特异性下后者
+#     胜出，跨区搬动会改变覆盖关系）；等价性由「构建产物 CSS 与拆分前逐字节一致」证明。
+#     过渡文件 `components.css` 的内容并入末段（其加载位置原本就在最后）后删除。
+#   - 本文件自此**无在册条目**：当前无文件超过强制拆分阈值。
+

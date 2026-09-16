@@ -1,0 +1,357 @@
+/* ========== T6.7 设置页（对齐交互原型 §设置） ========== */
+/* 文档结构：
+   .page.settings-page > .main-header + .main-content > .settings-layout
+     ├ .settings-section（h3 + section-desc + 内容）
+     │   ├ .mode-selector > .mode-option.local/cloud/hybrid（mode-icon + mode-info + radio-dot）
+     │   ├ .setting-row（setting-label + setting-control）
+     │   └ .model-item（model-info + 切换按钮）
+*/
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-layout {
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.settings-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0-5);
+}
+
+.settings-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-page__desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-page__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 720px;
+}
+
+.settings-section {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.settings-section__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.settings-section__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-section__desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-section__consent-info {
+  margin-top: var(--sp-2);
+  font-size: 12px;
+  color: var(--success);
+}
+
+.settings-section__error {
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.settings-row--actions {
+  margin-top: var(--sp-2);
+  justify-content: flex-start;
+}
+
+.settings-mode-badge {
+  padding: var(--sp-1-5) var(--sp-3);
+  border-radius: var(--radius-full);
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-mode-badge--empty {
+  background: var(--rule);
+  color: var(--muted);
+}
+
+.settings-api-key__provider {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 160px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-api-key__input {
+  flex: 1 1 260px;
+  min-width: 200px;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.settings-api-key__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.settings-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2-5) var(--sp-3-5);
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-status--probing {
+  color: var(--muted);
+}
+
+.settings-status--ok {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.settings-status--down {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.settings-status__detail {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1-5);
+}
+
+.settings-field__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-field__hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-select {
+  padding: var(--sp-2) var(--sp-2-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  color: var(--ink);
+  font-size: 13px;
+  font-family: inherit;
+  max-width: 320px;
+}
+
+.settings-select:disabled {
+  background: var(--bg3);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.settings-embedding-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1-5);
+}
+
+.settings-embedding-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2-5);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+}
+
+.settings-embedding-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0-5);
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-embedding-current-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  margin-bottom: var(--sp-3);
+}
+
+.settings-embedding-current-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.settings-embedding-current-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  font-family: monospace;
+}
+
+.settings-embedding-current-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-embedding-item--current {
+  border-color: var(--accent2);
+  background: var(--accent-light);
+}
+
+.settings-embedding-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  font-family: monospace;
+}
+
+.settings-embedding-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-embedding-badge {
+  margin-left: auto;
+  padding: var(--sp-0-5) var(--sp-2);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.settings-embedding-badge--ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+}
+
+.settings-embedding-badge--missing {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warn);
+}
+
+.settings-toggle-placeholder {
+  width: 18px;
+  height: 18px;
+  cursor: not-allowed;
+  flex-shrink: 0;
+}
+
+/* 云端同意书对话框（设置页） */
+.settings-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6);
+  z-index: 100;
+}
+
+.settings-dialog {
+  background: var(--bg2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-6);
+  max-width: 720px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* 弹窗内同意书滚动区：撑满对话框剩余高度（替代基础样式的 320px 上限），
+   窗口足够高时全文直接可见；不足时仅在滚动区内滚动，避免双层滚动条 */
+.settings-dialog .consent-agreement__scroll {
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: none;
+}
+
+.settings-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+/* 云端模型 datalist combo（手动输入 + 预设下拉） */
+.settings-model-combo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.settings-model-input {
+  width: 100%;
+}
