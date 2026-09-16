@@ -1,10 +1,12 @@
-// citation.ts 单元测试：findFileByName 四级匹配策略 + Rust FTS 兜底 + 3s 超时保护。
+// citation.ts 单元测试：findFileByName 四级匹配策略 + Rust FTS 兜底 + 3s 超时保护，
+// 以及 hasUsableFileName 的文件名可用性判定。
 //
 // 匹配顺序：精确 → 大小写不敏感 → 去扩展名 → 子串包含 → IPC 兜底（带超时）。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileInfo } from '@/types/ipc';
-import { findFileByName } from './citation';
+import type { ChatCitation } from '@/types/models';
+import { findFileByName, hasUsableFileName } from './citation';
 
 const mocks = vi.hoisted(() => ({
   searchByFilename: vi.fn(),
@@ -104,5 +106,24 @@ describe('findFileByName', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('hasUsableFileName', () => {
+  it('文件名为非空字符串时可用', () => {
+    expect(hasUsableFileName({ id: 1, fileName: '设计规范.md', page: 2, text: '片段' })).toBe(true);
+  });
+
+  it('空串不可用', () => {
+    expect(hasUsableFileName({ id: 1, fileName: '', page: 2, text: '片段' })).toBe(false);
+  });
+
+  it('缺失对象或缺失字段不可用', () => {
+    expect(hasUsableFileName(null)).toBe(false);
+    expect(hasUsableFileName(undefined)).toBe(false);
+    // 解析异常时 fileName 可能不是字符串（此处刻意绕过类型约束模拟脏数据）
+    expect(
+      hasUsableFileName({ id: 1, fileName: 42, page: 1, text: '' } as unknown as ChatCitation),
+    ).toBe(false);
   });
 });
