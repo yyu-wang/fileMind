@@ -90,8 +90,18 @@ describe('getFileTypeMeta', () => {
     expect(getFileTypeMeta('REPORT.PDF')).toEqual({ label: 'PDF', kind: 'pdf' });
   });
 
+  it('maps media/txt/heic groups and multi-dot names', () => {
+    expect(getFileTypeMeta('voice.mp3')).toEqual({ label: 'AUD', kind: 'music' });
+    expect(getFileTypeMeta('clip.mp4')).toEqual({ label: 'VID', kind: 'video' });
+    expect(getFileTypeMeta('notes.txt')).toEqual({ label: 'TXT', kind: 'txt' });
+    expect(getFileTypeMeta('IMG_0001.heic')).toEqual({ label: 'IMG', kind: 'img' });
+    // 只取最后一个点之后的扩展名
+    expect(getFileTypeMeta('backup.tar.gz')).toEqual({ label: 'ZIP', kind: 'zip' });
+  });
+
   it('falls back to generic file for unknown extension', () => {
     expect(getFileTypeMeta('mystery.xyz')).toEqual({ label: 'XYZ', kind: 'file' });
     expect(getFileTypeMeta('noext')).toEqual({ label: 'FILE', kind: 'file' });
+    expect(getFileTypeMeta('trailing.')).toEqual({ label: 'FILE', kind: 'file' });
   });
 });
