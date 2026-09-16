@@ -26,16 +26,16 @@
 
 ### 现状证据（为什么必须做）
 
-| 事实                                                                              | 证据                                                                          | 影响                                        |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------- |
-| `tauri.conf.json` 中 `externalBin=[]`、`resources=[]`                             | [tauri.conf.json](src-tauri/tauri.conf.json) L52-53                           | Sidecar 不进安装包                          |
-| 打包态从 `resource_dir` 找 `filemind-sidecar-{triple}`                            | [manager.rs](src-tauri/src/sidecar/manager.rs) L735-794                       | 包内无该文件 → 启动即缺引擎退出             |
-| `filemind/binaries/*` 被 gitignore，CI 全新检出无二进制                           | [.gitignore](.gitignore) L75-77                                               | 需在构建期现场生成                          |
-| CI `merge-build.yml` 4 平台矩阵无 `build-sidecar.sh` 步骤                         | [merge-build.yml](.github/workflows/merge-build.yml) L44-83                   | 产出残缺安装包                              |
-| 现有 `filemind-sidecar-aarch64-apple-darwin` = **315MB**                          | filemind/binaries/                                                            | 远超 80MB 门控，见 D1                       |
-| 硬依赖集：lancedb/pyarrow/numpy/jieba/ollama/sentence-transformers(torch)         | [requirements.txt](python-sidecar/requirements.txt)                           | 315MB 是真实需要，无法靠 excludes 压回 80MB |
-| spec `_excludes` 与 docstring 已脱节（docstring 称 exclude 重型模块，实现已不含） | [filemind-sidecar.spec](python-sidecar/filemind-sidecar.spec) L1-14, L100-116 | 门控与实现需一起对齐                        |
-| 主程序 bundle 路径切换逻辑已写好（setup 内）                                      | [main.rs](src-tauri/src/main.rs) L488-555                                     | 只需让文件真实存在即可命中                  |
+| 事实                                                                              | 证据                                                                                                                                                                    | 影响                                        |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `tauri.conf.json` 中 `externalBin=[]`、`resources=[]`                             | [tauri.conf.json](src-tauri/tauri.conf.json) L52-53                                                                                                                     | Sidecar 不进安装包                          |
+| 打包态从 `resource_dir` 找 `filemind-sidecar-{triple}`                            | [manager.rs](src-tauri/src/sidecar/manager.rs) L735-794                                                                                                                 | 包内无该文件 → 启动即缺引擎退出             |
+| `filemind/binaries/*` 被 gitignore，CI 全新检出无二进制                           | [.gitignore](.gitignore) L75-77                                                                                                                                         | 需在构建期现场生成                          |
+| CI `merge-build.yml` 4 平台矩阵无 `build-sidecar.sh` 步骤                         | [merge-build.yml](.github/workflows/merge-build.yml) L44-83                                                                                                             | 产出残缺安装包                              |
+| 现有 `filemind-sidecar-aarch64-apple-darwin` = **315MB**                          | filemind/binaries/                                                                                                                                                      | 远超 80MB 门控，见 D1                       |
+| 硬依赖集：lancedb/pyarrow/numpy/jieba/ollama/sentence-transformers(torch)         | [requirements.txt](python-sidecar/requirements.txt)                                                                                                                     | 315MB 是真实需要，无法靠 excludes 压回 80MB |
+| spec `_excludes` 与 docstring 已脱节（docstring 称 exclude 重型模块，实现已不含） | [filemind-sidecar.spec](python-sidecar/filemind-sidecar.spec) L1-14, L100-116                                                                                           | 门控与实现需一起对齐                        |
+| 主程序 bundle 路径切换逻辑已写好（setup 内）                                      | [sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) `resolve_binary()`（dev 未命中→留空）+ [bootstrap.rs](src-tauri/src/sidecar/bootstrap.rs) `resolve_bootstrap_path()` | 只需让文件真实存在即可命中                  |
 
 ---
 
@@ -103,7 +103,7 @@
 - 联动：`Makefile` 新增目标（如 `build:sidecar`）并在 `build` 前置调用 `scripts/build-sidecar.sh`；`package.json` 增补对应 npm script（不改动核心依赖）
 - **关键验证点（本任务真正的 DoD）**：本机构建后，解包/运行打包 app，确认：
   1. dmg 内 `Contents/Resources/` 出现 `filemind-sidecar-aarch64-apple-darwin`
-  2. 运行 app 日志出现 `命中 bundle Sidecar 路径`（[main.rs](src-tauri/src/main.rs) L504-506），而非 `未命中...回退 dev`
+  2. 运行 app 日志出现 `Sidecar 引导使用路径: …/Contents/Resources/filemind-sidecar-aarch64-apple-darwin`（[bootstrap.rs](src-tauri/src/sidecar/bootstrap.rs) `bootstrap_worker`），而非 dev 目录路径；dev 侧未命中时会先出现 `dev 模式未找到 Sidecar 二进制，交由后台引导按 bundle 路径解析`（[sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) `resolve_binary`）
   3. Sidecar `/health` 正常、RAG 冒烟可用
 - ⚠️ 若验证点 1 中文件实际落到**非 resource_dir 目录**（Tauri 版本行为差异），备选方案：改 `resolve_bundle_binary_path` 用 `tauri_plugin_shell` 的 sidecar 解析 API，或按实际落地目录修正探测点（小改动，执行时现场定）
 - DoD：本地 `npm run build:tauri` 产出可运行 dmg；app 全程不依赖 dev 目录（`CARGO_MANIFEST_DIR` 布局）即能启动
@@ -138,7 +138,7 @@
 > **T3 执行记录（2026-09-04 完成代码改动，待真实 runner 验证）**
 >
 > - [merge-build.yml](.github/workflows/merge-build.yml) 重写为**原生三 job 矩阵**：`windows-latest`(msi+nsis 双产出) / `macos-14`(arm64) / `macos-13`(x64 Intel，PyInstaller 无法跨 mac 架构)
-> - **移除 Linux job**：打包态 Sidecar 解析（main.rs defer_to_bundle）当前仅 macOS/Windows，Linux 分发改后续版本（工作流注释说明）
+> - **移除 Linux job**：打包态 Sidecar 解析（[sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) 的 `can_bundle` 分支）当前仅 macOS/Windows，Linux 分发改后续版本（工作流注释说明）
 > - 每 job 新流程：setup-python 3.12 → 建 venv + 装 requirements/requirements-dev → gen:ipc → `build-sidecar.sh --target <native triple>` → `tauri build --bundles msi nsis|dmg` → **Smoke check（bundle 内必须存在 filemind-sidecar，否则显式失败）** → 上传 artifact
 > - `build-sidecar.sh` 兼容 Windows venv 布局（`.venv/Scripts/python.exe`）
 > - 本地自检：bash -n 通过、YAML `{{ }}` 配对 13/13
