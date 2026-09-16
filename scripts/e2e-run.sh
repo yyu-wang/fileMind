@@ -7,7 +7,9 @@
 # 用法：
 #   bash scripts/e2e-run.sh              # 本地：E2E-001/002 + spike（真实 sidecar）
 #   RUN_E2E=1 bash scripts/e2e-run.sh    # 追加 E2E-006（真实下载 313MB 模型）
-#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 追加 E2E-003（需真实 Ollama 三模型）
+#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 追加 E2E-003（需本机真实 Ollama 生成模型；
+#                                             # 进程内 Embedding 的模型文件会自动准备到
+#                                             # e2e/.cache/models，首次约 313MB）
 #   bash scripts/e2e-run.sh --ci         # CI 冒烟：只跑 E2E-001/002（stub sidecar）
 set -euo pipefail
 
@@ -26,12 +28,21 @@ for arg in "$@"; do
 done
 
 # —— 门控：E2E-003 需 RUN_E2E=1 + --rag ——
-# 与 sidecar 层 E2E 一致：默认跳过，显式 RUN_E2E 才跑（需 Ollama 三模型）。
+# 与 sidecar 层 E2E 一致：默认跳过，显式 RUN_E2E 才跑（需本机真实 Ollama 生成模型；
+# Embedding 已改为进程内 ONNX，模型文件由下面的共享缓存供给，不再走 Ollama）。
 RAG_ENABLED=$([ "$RUN_RAG" = 1 ] && [ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
 
 # —— 门控：E2E-006 只需 RUN_E2E=1 ——
 # 模型下载 spec 会真实下载 313MB（HF 镜像），默认本地 e2e 不跑，避免每次冒烟都拉一遍。
 MODEL_ENABLED=$([ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
+
+# —— E2E 共享模型缓存（仅 003 等「需要已就绪模型」的 spec 使用）——
+# 每个 spec 的数据目录都是全新的，而进程内 Embedding 需要模型文件已落盘，故用一份
+# 跨 spec 复用的缓存，进 003 前由 scripts/e2e-prepare-models.sh 幂等准备（已就绪秒级返回）。
+# 006 刻意不注入 → 仍走全新目录真实下载，下载链路覆盖不受影响。
+MODEL_CACHE_DIR="${FILEMIND_E2E_MODEL_DIR:-$ROOT/e2e/.cache/models}"
+#: 本地生成仍走 Ollama（Embedding/Reranker 已本地化），端口与 sidecar 层 E2E 约定一致
+OLLAMA_TAGS_URL="http://127.0.0.1:11434/api/tags"
 
 fail_count=0
 ran_any=0
@@ -99,6 +110,20 @@ for spec in e2e/specs/*.e2e.ts; do
       ;;
     003-*)
       [ "$RAG_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1 + --rag，真实 Ollama）──"; continue; }
+      # 前置 1：Ollama 生成模型（本地生成仍走 Ollama）——快速失败，不必等 spec 120s 超时
+      if ! curl -s -m 3 "$OLLAMA_TAGS_URL" >/dev/null; then
+        echo "❌ ${name} 前置不满足：Ollama 不可达（$OLLAMA_TAGS_URL）"
+        fail_count=$((fail_count + 1))
+        ran_any=1
+        continue
+      fi
+      # 前置 2：进程内 Embedding 的模型文件（共享缓存，幂等：已就绪秒级返回）
+      if ! bash "$ROOT/scripts/e2e-prepare-models.sh" "$MODEL_CACHE_DIR"; then
+        echo "❌ ${name} 前置不满足：Embedding 模型准备失败（见上方原因）"
+        fail_count=$((fail_count + 1))
+        ran_any=1
+        continue
+      fi
       ;;
     006-*)
       [ "$MODEL_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1，真实下载 313MB 模型）──"; continue; }
@@ -140,6 +165,15 @@ for spec in e2e/specs/*.e2e.ts; do
     export FILEMIND_E2E_MOCHA_TIMEOUT=1800000
   else
     unset FILEMIND_E2E_MOCHA_TIMEOUT
+  fi
+
+  # 模型目录：只有「需要已就绪模型」的 spec 指向共享缓存（Rust 启动 Sidecar 时
+  # 继承本进程 env，故这里 export 即可直达）；其余保持全新目录，让 006 继续覆盖
+  # 真实下载。003 的缓存已在上面的门控分支里准备过。
+  if [ "$name" = "003-rag-chat.e2e.ts" ]; then
+    export FILEMIND_MODEL_DIR="$MODEL_CACHE_DIR"
+  else
+    unset FILEMIND_MODEL_DIR
   fi
 
   _cleanup_sidecars
