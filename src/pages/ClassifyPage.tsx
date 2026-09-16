@@ -1,30 +1,27 @@
 // 智能分类页（对齐交互原型 §智能分类）：预览（左树 + 右统计）→ 分块执行 → 结果。
 //
-// 状态机渲染：
-//   Idle（preview=null）→ 说明 + 开始分类按钮
+// 状态机渲染（各区域显隐的判定收在 lib/classifyView.ts，本组件只做编排）：
+//   Idle（preview=null）→ ClassifyIntroPanel 或 ClassifyHistoryView
 //   Previewing → 加载提示
-//   Preview（Idle + preview）→ 双栏：ClassifyPreviewTree + ClassifyStatsPanel
-//   Running / Paused → 进度遮罩（覆盖在预览上）
+//   Preview（Idle + preview）→ ClassifyPreviewSection
+//   Running / Paused → 同上 + 进度遮罩
 //   Done / Cancelled → ClassifyDonePanel
 
 import { useEffect, useState } from 'react';
 
-import { ClassifyBatchDetail } from '@/components/classify/ClassifyBatchDetail';
 import { ClassifyDonePanel } from '@/components/classify/ClassifyDonePanel';
-import { ClassifyHistoryList } from '@/components/classify/ClassifyHistoryList';
+import { ClassifyHeader } from '@/components/classify/ClassifyHeader';
+import { ClassifyHistoryView } from '@/components/classify/ClassifyHistoryView';
+import { ClassifyIntroPanel } from '@/components/classify/ClassifyIntroPanel';
 import { ClassifyModeDialog } from '@/components/classify/ClassifyModeDialog';
-import { ClassifyPreviewTree } from '@/components/classify/ClassifyPreviewTree';
-import { ClassifyProgressOverlay } from '@/components/classify/ClassifyProgressOverlay';
-import { ClassifyStatsPanel } from '@/components/classify/ClassifyStatsPanel';
-import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
+import { ClassifyPreviewSection } from '@/components/classify/ClassifyPreviewSection';
 import type { FilePreviewTarget } from '@/components/common/FilePreviewDrawer';
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { resolveClassifyPageView } from '@/lib/classifyView';
 import { isOrganized } from '@/lib/fileTable';
-import { useClassifyHistoryStore } from '@/stores/classifyHistoryStore';
 import { useClassifyStore, type ClassifyExecMode } from '@/stores/classifyStore';
 import { useFileStore } from '@/stores/fileStore';
+import type { ClassifyPlanItem } from '@/types/ipc';
 import { ClassifyStatus } from '@/types/models';
-import type { OperationBatchSummary } from '@/types/ipc';
 
 export function ClassifyPage() {
   const files = useFileStore((s) => s.files);
@@ -46,50 +43,33 @@ export function ClassifyPage() {
   const reset = useClassifyStore((s) => s.reset);
   const clearError = useClassifyStore((s) => s.clearError);
 
-  // 「分类历史」视图状态：是否进入历史视图 + 待撤销批次的二次确认对象
-  const [showHistory, setShowHistory] = useState(false);
-  const [pendingUndo, setPendingUndo] = useState<OperationBatchSummary | null>(null);
-  // 「分类方式」选择弹窗状态：确认执行时先选移动/复制，再按该模式执行
+  /** 是否进入「分类历史」视图；「分类方式」弹窗的待执行参数；预览抽屉目标 */
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [pendingExecute, setPendingExecute] = useState<{ resolveConflicts: boolean } | null>(null);
-  // 预览抽屉目标：点击树中文件名后打开对应文件预览（复用公共 FilePreviewDrawer）
   const [previewTarget, setPreviewTarget] = useState<FilePreviewTarget | null>(null);
-
-  const historyBatches = useClassifyHistoryStore((s) => s.batches);
-  const historyDetail = useClassifyHistoryStore((s) => s.detail);
-  const historyLoading = useClassifyHistoryStore((s) => s.loading);
-  const historyUndoing = useClassifyHistoryStore((s) => s.undoing);
-  const historyError = useClassifyHistoryStore((s) => s.error);
-  const loadHistory = useClassifyHistoryStore((s) => s.loadHistory);
-  const openBatch = useClassifyHistoryStore((s) => s.openBatch);
-  const closeBatch = useClassifyHistoryStore((s) => s.closeBatch);
-  const undoBatch = useClassifyHistoryStore((s) => s.undoBatch);
 
   // 从文件页「整理选中」跳转进入：带选中态时自动生成预览（仅首次挂载）
   useEffect(() => {
-    const { selectedIds } = useFileStore.getState();
+    const { selectedIds: ids } = useFileStore.getState();
     const { status: st, preview: prev, generatePreview: gen } = useClassifyStore.getState();
-    if (selectedIds.length > 0 && st === ClassifyStatus.Idle && prev === null) {
-      void gen(selectedIds);
+    if (ids.length > 0 && st === ClassifyStatus.Idle && prev === null) {
+      void gen(ids);
     }
   }, []);
 
-  const hasFiles = files.length > 0;
   const hasSelection = selectedIds.length > 0;
-  // 软排除：无选中时「全部分类」只针对未整理文件；全部已整理则禁用并提示
   const unorganizedFiles = files.filter((f) => !isOrganized(f));
-  const noUnorganizedTargets = hasFiles && !hasSelection && unorganizedFiles.length === 0;
-  const showPreview =
-    preview !== null && status !== ClassifyStatus.Done && status !== ClassifyStatus.Cancelled;
-  // FE-C1/FE-C5：执行中隐藏头部按钮组（进度遮罩盖不住 header）——
-  // 双保险阻止第二个 execute；同时消除头部「取消」（丢弃预览）与遮罩内
-  // 「取消」（保留已执行块）的语义冲突，执行期只保留遮罩内一个取消入口。
-  const executing = status === ClassifyStatus.Running || status === ClassifyStatus.Paused;
-  const showHeaderActions = showPreview && !executing;
-
-  // 底部警告条计数（对齐原型「⚠️ N 个冲突文件需处理 · M 个待确认」）
-  const conflictCount = preview?.items.filter((i) => i.status === 'Conflict').length ?? 0;
-  const pendingCount = preview?.stats.pending ?? 0;
-  const showWarning = showPreview && (conflictCount > 0 || pendingCount > 0);
+  const view = resolveClassifyPageView({
+    status,
+    preview,
+    execSummary,
+    hasUndoBatch: lastBatchId !== null,
+    fileCounts: {
+      total: files.length,
+      selected: selectedIds.length,
+      unorganized: unorganizedFiles.length,
+    },
+  });
 
   const handleStart = () => {
     // 软排除：有选中尊重选中（可手动重选已整理文件）；无选中仅处理未整理文件
@@ -102,20 +82,11 @@ export function ClassifyPage() {
     void generatePreview(ids);
   };
 
-  const handleOpenHistory = () => {
-    setShowHistory(true);
-    void loadHistory();
-  };
-
-  const handleConfirmUndo = async () => {
-    if (!pendingUndo) return;
-    await undoBatch(pendingUndo.batch_id);
-    setPendingUndo(null);
-  };
-
-  const handleExecuteClick = (resolveConflicts: boolean) => {
-    // 先弹「移动/复制」选择框，确认后再按所选模式执行
-    setPendingExecute({ resolveConflicts });
+  const handleCancelPreview = () => {
+    // FE-M9：取消丢弃预览时同步清空文件页选中——否则残留的
+    // selectedIds 在下次进入分类页时又触发自动生成
+    useFileStore.getState().clearSelection();
+    reset();
   };
 
   const handleModeChosen = (mode: ClassifyExecMode) => {
@@ -125,44 +96,23 @@ export function ClassifyPage() {
     void execute(resolveConflicts, mode);
   };
 
+  const handleOpenPreviewItem = (item: ClassifyPlanItem) => {
+    setPreviewTarget({
+      path: item.original_path,
+      file_name: item.file_name,
+      category: item.category_name,
+    });
+  };
+
   return (
     <div className="page classify-page">
-      <header className="main-header">
-        <h1>智能分类</h1>
-        {showPreview && <span className="subtitle">预览分类方案</span>}
-        {scanPath && (
-          <span className="subtitle" title={scanPath}>
-            {scanPath}
-          </span>
-        )}
-        {showHeaderActions && (
-          <div className="header-actions">
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => {
-                // FE-M9：取消丢弃预览时同步清空文件页选中——否则残留的
-                // selectedIds 在下次进入分类页时又触发自动生成
-                useFileStore.getState().clearSelection();
-                reset();
-              }}
-            >
-              取消
-            </button>
-            <button type="button" className="btn btn--sm" onClick={() => handleExecuteClick(false)}>
-              仅执行无冲突项
-            </button>
-            <button
-              type="button"
-              className="btn btn--primary btn--sm"
-              data-testid="classify-execute"
-              onClick={() => handleExecuteClick(true)}
-            >
-              ✓ 确认执行全部
-            </button>
-          </div>
-        )}
-      </header>
+      <ClassifyHeader
+        scanPath={scanPath}
+        showPreviewSubtitle={view.showPreviewSubtitle}
+        showActions={view.showHeaderActions}
+        onCancelPreview={handleCancelPreview}
+        onExecute={(resolveConflicts) => setPendingExecute({ resolveConflicts })}
+      />
 
       {error && (
         <div className="classify-page__error" role="alert">
@@ -178,125 +128,56 @@ export function ClassifyPage() {
         </div>
       )}
 
-      {status === ClassifyStatus.Previewing && (
+      {view.loading && (
         <div className="classify-page__loading" role="status">
           正在生成分类预览…
         </div>
       )}
 
-      {showPreview && preview && (
-        <div className="classify-layout">
-          {/* 左：树形分类预览（按钮在头部，此处仅展示） */}
-          <div className="classify-tree">
-            <ClassifyPreviewTree
-              preview={preview}
-              onOpenPreview={(item) =>
-                setPreviewTarget({
-                  path: item.original_path,
-                  file_name: item.file_name,
-                  category: item.category_name,
-                })
-              }
-            />
-          </div>
-          {/* 右：统计面板 */}
-          <ClassifyStatsPanel preview={preview} />
-          {/* 右：文件预览抽屉（点击树中文件名打开；key 保证切换文件时重挂载重置状态） */}
-          <LazyFilePreviewDrawer
-            key={previewTarget?.path ?? 'none'}
-            file={previewTarget}
-            onClose={() => setPreviewTarget(null)}
-          />
-          {(status === ClassifyStatus.Running || status === ClassifyStatus.Paused) && (
-            <ClassifyProgressOverlay
-              progress={progress}
-              status={status}
-              onPause={pause}
-              onResume={resume}
-              onCancel={cancel}
-            />
-          )}
-        </div>
+      {view.layoutPreview && (
+        <ClassifyPreviewSection
+          preview={view.layoutPreview}
+          status={status}
+          progress={progress}
+          drawer={{ target: previewTarget, onClose: () => setPreviewTarget(null) }}
+          actions={{
+            onOpenPreview: handleOpenPreviewItem,
+            onPause: pause,
+            onResume: resume,
+            onCancel: cancel,
+          }}
+        />
       )}
 
       {/* 底部警告条（对齐原型：仅保留提示文字，按钮收敛到头部一处） */}
-      {showWarning && (
+      {view.showWarning && (
         <div className="classify-footer">
           <span className="warning-text">
-            ⚠️ {conflictCount} 个冲突文件需处理 · {pendingCount} 个待确认
+            ⚠️ {view.conflictCount} 个冲突文件需处理 · {view.pendingCount} 个待确认
           </span>
         </div>
       )}
 
-      {(status === ClassifyStatus.Done || status === ClassifyStatus.Cancelled) && execSummary && (
+      {view.doneSummary && (
         <ClassifyDonePanel
-          summary={execSummary}
-          cancelled={status === ClassifyStatus.Cancelled}
-          canUndo={lastBatchId != null}
+          summary={view.doneSummary}
+          cancelled={view.cancelled}
+          canUndo={view.canUndo}
           onUndo={() => void undoLastBatch()}
           onFinish={reset}
         />
       )}
 
-      {status === ClassifyStatus.Idle &&
-        !preview &&
-        (showHistory ? (
-          historyDetail ? (
-            <ClassifyBatchDetail logs={historyDetail.logs} onBack={closeBatch} />
-          ) : (
-            <ClassifyHistoryList
-              batches={historyBatches}
-              loading={historyLoading}
-              error={historyError}
-              undoing={historyUndoing}
-              onRefresh={() => void loadHistory()}
-              onBack={() => setShowHistory(false)}
-              onOpenBatch={(batchId) => void openBatch(batchId)}
-              onRequestUndo={setPendingUndo}
-            />
-          )
+      {view.idle &&
+        (historyOpen ? (
+          <ClassifyHistoryView onBack={() => setHistoryOpen(false)} />
         ) : (
-          <div className="classify-page__intro">
-            <p className="classify-page__intro-title">按规则与文件类型自动整理</p>
-            <p className="classify-page__intro-sub">
-              预览分类结果后执行；规则与类型识别均未命中的文件会进入「待确认」列表。
-            </p>
-            <button
-              type="button"
-              className="btn btn--primary"
-              data-testid="classify-start"
-              onClick={handleStart}
-              disabled={!hasFiles || noUnorganizedTargets}
-            >
-              {hasSelection
-                ? `对选中的 ${selectedIds.length} 个文件开始分类`
-                : noUnorganizedTargets
-                  ? '没有未整理的文件'
-                  : hasFiles
-                    ? '全部分类'
-                    : '请先在文件页扫描目录'}
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost classify-page__history-btn"
-              onClick={handleOpenHistory}
-            >
-              查看分类历史
-            </button>
-          </div>
+          <ClassifyIntroPanel
+            startButton={view.startButton}
+            onStart={handleStart}
+            onOpenHistory={() => setHistoryOpen(true)}
+          />
         ))}
-
-      {pendingUndo && (
-        <ConfirmDialog
-          title="撤销该批次？"
-          message={`将把该批次 ${pendingUndo.total_count} 个文件恢复到整理前的位置（原路径已被占用等会撤销失败）。`}
-          confirmLabel="确认撤销"
-          danger
-          loading={historyUndoing}
-          onConfirm={() => void handleConfirmUndo()}
-          onCancel={() => setPendingUndo(null)}
-        />
-      )}
 
       {pendingExecute && (
         <ClassifyModeDialog
