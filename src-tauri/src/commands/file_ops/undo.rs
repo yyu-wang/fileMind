@@ -1,5 +1,6 @@
 //! 撤销：按批次反向执行操作链（移动回滚 / 复制清理）；`delete` 批次不支持应用内撤销。
 
+use crate::db::models::OperationLog;
 use crate::db::{FileRepo, OperationRepo};
 use crate::error::{AppError, AppResult};
 use crate::services::undo_executor;
@@ -33,6 +34,40 @@ pub fn undo_batch(
 
 /// 撤销逻辑纯函数入口（便于单元测试，不依赖 `tauri::State`）。
 pub(super) fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<UndoResponse> {
+    let logs = load_undoable_logs(state, batch_id)?;
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let mut undone_count = 0u32;
+    let mut failed_count = 0u32;
+    // 路径被移回的文件（file_id, 恢复的原路径），撤销后同步到向量索引
+    let mut restored_paths: Vec<(String, String)> = Vec::new();
+
+    // 反向遍历：后执行的先撤销（同类操作互相独立，反序仅为语义正确性）
+    for log in logs.iter().rev() {
+        // 只撤销执行成功的项；failed/pending 无文件副作用可回滚，跳过
+        if log.status != "done" {
+            continue;
+        }
+        if undo_one(state, log, &mut restored_paths) {
+            undone_count += 1;
+        } else {
+            failed_count += 1;
+        }
+    }
+
+    // 尽力而为：把移回原路径的文件同步到向量索引（失败仅告警）
+    spawn_index_path_sync(state, restored_paths);
+
+    Ok(UndoResponse {
+        success: failed_count == 0,
+        undone_count,
+        failed_count,
+        task_id,
+    })
+}
+
+/// 拉取批次日志并做三项可撤销性校验（批次存在 / 未撤销过 / 不含 delete）。
+fn load_undoable_logs(state: &AppState, batch_id: &str) -> AppResult<Vec<OperationLog>> {
     let logs = {
         let guard = state
             .db
@@ -60,67 +95,51 @@ pub(super) fn undo_batch_inner(batch_id: &str, state: &AppState) -> AppResult<Un
         return Err(AppError::Forbidden("删除批次暂不支持撤销".into()));
     }
 
-    let task_id = uuid::Uuid::new_v4().to_string();
-    let mut undone_count = 0u32;
-    let mut failed_count = 0u32;
-    // 路径被移回的文件（file_id, 恢复的原路径），撤销后同步到向量索引
-    let mut restored_paths: Vec<(String, String)> = Vec::new();
+    Ok(logs)
+}
 
-    // 反向遍历：后执行的先撤销（同类操作互相独立，反序仅为语义正确性）
-    for log in logs.iter().rev() {
-        // 只撤销执行成功的项；failed/pending 无文件副作用可回滚，跳过
-        if log.status != "done" {
-            continue;
+/// 撤销单项：物理反向操作 → 成功后同步 DB。返回是否成功（失败仅告警，不中断整批）。
+fn undo_one(
+    state: &AppState,
+    log: &OperationLog,
+    restored_paths: &mut Vec<(String, String)>,
+) -> bool {
+    match undo_executor::execute_undo_item(&log.operation_type, &log.source_path, &log.target_path)
+    {
+        Ok(()) => {
+            sync_undone_to_db(state, log, restored_paths);
+            true
         }
+        Err(e) => {
+            log::warn!("undo_batch 撤销项失败 (id={}): {e}", log.id);
+            false
+        }
+    }
+}
 
-        let undo_result = undo_executor::execute_undo_item(
-            &log.operation_type,
-            &log.source_path,
-            &log.target_path,
-        );
-
-        match undo_result {
-            Ok(()) => {
-                // 物理撤销成功后同步 DB（files.path 回写 + 日志标记 undone）
-                if let Ok(guard) = state.db.lock() {
-                    let conn = guard.conn();
-                    match log.operation_type.as_str() {
-                        "move" | "rename" => {
-                            if let Ok(Some(rec)) = FileRepo::get_by_path(conn, &log.target_path) {
-                                if let Err(e) =
-                                    FileRepo::update_path(conn, &rec.id, &log.source_path)
-                                {
-                                    log::warn!("undo_batch 回写 files.path 失败: {e}");
-                                } else {
-                                    restored_paths.push((rec.id.clone(), log.source_path.clone()));
-                                }
-                            }
-                        }
-                        // copy 撤销只删副本，files 表源记录不变
-                        _ => {}
-                    }
-                    if let Err(e) = OperationRepo::update_status(conn, &log.id, "undone") {
-                        log::warn!("undo_batch 标记 undone 失败: {e}");
-                    }
-                }
-                undone_count += 1;
-            }
-            Err(e) => {
-                log::warn!("undo_batch 撤销项失败 (id={}): {e}", log.id);
-                failed_count += 1;
+/// 撤销后的 DB 收尾：`move`/`rename` 回写 `files.path` 并记入 `restored_paths`，
+/// 随后把日志标记 `undone`。`copy` 撤销只删副本，`files` 表源记录不变。
+fn sync_undone_to_db(
+    state: &AppState,
+    log: &OperationLog,
+    restored_paths: &mut Vec<(String, String)>,
+) {
+    let Ok(guard) = state.db.lock() else {
+        return;
+    };
+    let conn = guard.conn();
+    if matches!(log.operation_type.as_str(), "move" | "rename") {
+        if let Ok(Some(rec)) = FileRepo::get_by_path(conn, &log.target_path) {
+            if let Err(e) = FileRepo::update_path(conn, &rec.id, &log.source_path) {
+                log::warn!("undo_batch 回写 files.path 失败: {e}");
+            } else {
+                restored_paths.push((rec.id.clone(), log.source_path.clone()));
             }
         }
     }
-
-    // 尽力而为：把移回原路径的文件同步到向量索引（失败仅告警）
-    spawn_index_path_sync(state, restored_paths);
-
-    Ok(UndoResponse {
-        success: failed_count == 0,
-        undone_count,
-        failed_count,
-        task_id,
-    })
+    if let Err(e) = OperationRepo::update_status(conn, &log.id, "undone") {
+        log::warn!("undo_batch 标记 undone 失败: {e}");
+    }
 }
 
 /// 撤销响应体（API §s2-2c 返回值）。
