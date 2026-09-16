@@ -25,8 +25,13 @@
 #     命令注册路径随之改为子模块全路径（`file_ops::scan::scan_directory` 等），
 #     原因见 commands/file_ops/mod.rs 顶部注释。main.rs 的 +1 仍属「IPC 注册清单」
 #     型增量，保留在基线中，其拆分另行处理。
+#
+# 修订记录（2026-09-16，main.rs 拆分消账）：
+#   - 删除 `main.rs 703` 条目：入口已拆为 main.rs（薄装配编排，176 行）+
+#     startup / sidecar_setup / watchdog / window / ipc_handler 五个 bin crate 模块，
+#     最大 172 行，全部落在 300 行警告阈值内。IPC 命令注册清单移到 ipc_handler.rs，
+#     绑定方式不变（仍是 `generate_handler!`；路径必须写子模块全路径，原因同 file_ops）。
 
 src-tauri/src/db/file_repo.rs 638
-src-tauri/src/main.rs 703
 src-tauri/src/sidecar/manager.rs 1111
 src/styles/globals.css 4680
