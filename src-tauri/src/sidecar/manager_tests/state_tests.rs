@@ -3,6 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_fun_call)]
 // 测试代码允许：unwrap / panic 是测试失败的最直观表达（生产代码严格禁止）。
 
+use std::time::Duration;
+
 use super::super::*;
 use super::support::*;
 

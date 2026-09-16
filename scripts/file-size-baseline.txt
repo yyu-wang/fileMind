@@ -43,5 +43,12 @@
 #   - globals.css 4680 → 4608：删除无消费者的 `.progress-*` 样式块（72 行，原属已删除的
 #     `src/components/ui/ProgressOverlay.tsx`）。按「只允许下降」把上限一并下调，防止回涨。
 
-src-tauri/src/sidecar/manager.rs 1111
+#
+# 修订记录（2026-09-16，sidecar/manager 拆分消账）：
+#   - 删除 `src-tauri/src/sidecar/manager.rs 1111` 条目：已拆为 `sidecar/manager/` 目录
+#     （mod.rs + start / watchdog / shutdown / paths 四个子模块，最大 paths.rs 283 行），
+#     全部落在 rules/complexity.md 的 300 行警告阈值内（强制阈值 500）。类型与常量仍留在
+#     mod.rs——测试模块直接读写 `SidecarManager` 的私有字段，字段可见性依赖定义位置；
+#     子模块的公开项由 mod.rs 再导出，故 `sidecar::manager::X` 与各调用方路径均未改动。
+
 src/styles/globals.css 4608
