@@ -38,5 +38,10 @@
 #     全部方法是「接收外部 Connection」的无状态仓库方法，跨模块的 `impl FileRepo` 块
 #     共同构成同一类型的方法集合，故调用方（30+ 处）与 `file_repo_tests.rs` 均无需改动。
 
+#
+# 修订记录（2026-09-16，清理 ProgressOverlay 死代码）：
+#   - globals.css 4680 → 4608：删除无消费者的 `.progress-*` 样式块（72 行，原属已删除的
+#     `src/components/ui/ProgressOverlay.tsx`）。按「只允许下降」把上限一并下调，防止回涨。
+
 src-tauri/src/sidecar/manager.rs 1111
-src/styles/globals.css 4680
+src/styles/globals.css 4608
