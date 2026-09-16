@@ -31,7 +31,12 @@
 #     startup / sidecar_setup / watchdog / window / ipc_handler 五个 bin crate 模块，
 #     最大 172 行，全部落在 300 行警告阈值内。IPC 命令注册清单移到 ipc_handler.rs，
 #     绑定方式不变（仍是 `generate_handler!`；路径必须写子模块全路径，原因同 file_ops）。
+#
+# 修订记录（2026-09-16，file_repo 拆分消账）：
+#   - 删除 `db/file_repo.rs 638` 条目：已拆为 `db/file_repo/` 目录（mod.rs 84 行 +
+#     read / upsert / mutate / paths / embedding 五个子模块，最大 164 行）。
+#     全部方法是「接收外部 Connection」的无状态仓库方法，跨模块的 `impl FileRepo` 块
+#     共同构成同一类型的方法集合，故调用方（30+ 处）与 `file_repo_tests.rs` 均无需改动。
 
-src-tauri/src/db/file_repo.rs 638
 src-tauri/src/sidecar/manager.rs 1111
 src/styles/globals.css 4680
