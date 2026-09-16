@@ -67,29 +67,24 @@ DATA_HOME = Path(os.environ.get("FILEMIND_DATA_HOME", str(Path.home() / ".filemi
 LANCEDB_HOME = DATA_HOME / "data" / "lancedb"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期钩子。
+def _install_disconnect_noise_filter() -> None:
+    """步骤 0：安装事件循环断连噪声过滤器（见 ``app.core.loop_errors``）。
 
-    startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
-        0. 安装事件循环断连噪声过滤器——见 ``app.core.loop_errors``
-        1. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
-        2. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
-        3. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
-
-    shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
+    Rust 端每秒探活 /health；连接回收时 Windows proactor 循环会把
+    ConnectionResetError（WinError 10054）抛进回调，asyncio 默认处理器打成完整
+    traceback 刷屏（2026-09-15 实机）。这类断连是探活常态，降级为 debug。
     """
-    # --- 步骤 0：事件循环断连噪声过滤 -------------------------------------
-    # Rust 端每秒探活 /health；连接回收时 Windows proactor 循环会把
-    # ConnectionResetError（WinError 10054）抛进回调，asyncio 默认处理器打成完整
-    # traceback 刷屏（2026-09-15 实机）。这类断连是探活常态，降级为 debug。
     install_client_disconnect_filter(asyncio.get_running_loop())
 
-    # --- 步骤 1：父进程死亡看门狗 ----------------------------------------
-    # macOS ⌘Q（AppKit terminate）直接 exit()，Rust 侧收不到任何退出事件，
-    # Sidecar 会被 launchd 收养并继续占用 8765；由 Sidecar 自己识别孤儿身份自退。
-    # 仅 POSIX 启用：Windows 无 reparent 语义（孤儿保留已死父进程的 PID），
-    # 该判定不成立——Windows 依赖窗口关闭路径 + 启动期 cleanup_orphan_sidecar。
+
+def _start_parent_watchdog() -> None:
+    """步骤 1：拉起父进程死亡看门狗（仅 POSIX，见 ``app.core.parent_watchdog``）。
+
+    macOS ⌘Q（AppKit terminate）直接 exit()，Rust 侧收不到任何退出事件，
+    Sidecar 会被 launchd 收养并继续占用 8765；由 Sidecar 自己识别孤儿身份自退。
+    仅 POSIX 启用：Windows 无 reparent 语义（孤儿保留已死父进程的 PID），
+    该判定不成立——Windows 依赖窗口关闭路径 + 启动期 cleanup_orphan_sidecar。
+    """
     if sys.platform != "win32":
         threading.Thread(
             target=watch_parent,
@@ -97,12 +92,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             daemon=True,
         ).start()
 
-    # --- 步骤 2：PSK 注入 -------------------------------------------------
+
+def _inject_psk_from_stdin() -> None:
+    """步骤 2：从 stdin 读取 PSK（hex 编码）注入 ``app.state``。
+
+    非 PyInstaller 模式（dev / Rust 直接调 python -m uvicorn），或 PyInstaller
+    模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
+    dev 模式 PSK 保持 None，中间件跳过验签。
+    """
     if (
         os.environ.get("PYINSTALLER_RUNTIME") != "1" or state.get_psk() is None
     ) and not sys.stdin.isatty():
-        # 非 PyInstaller 模式（dev / Rust 直接调 python -m uvicorn），或 PyInstaller
-        # 模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
         psk_hex = sys.stdin.readline().strip()
         if psk_hex:
             # SC-m20：hex 非法时不应崩 lifespan，跳过 PSK（dev 模式中间件跳过验签）
@@ -110,10 +110,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 state.set_psk(bytes.fromhex(psk_hex))
             except ValueError:
                 logger.error("main.psk_invalid_hex", psk_len=len(psk_hex))
-    # dev 模式：PSK 保持 None，中间件跳过验签
 
-    # --- 步骤 3：LanceDB 初始化（T2.2 新增） ------------------------------
-    # 异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过
+
+def _init_lancedb() -> None:
+    """步骤 3：LanceDB 初始化（T2.2）。
+
+    异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过。
+    """
     try:
         mgr = LanceDBManager(LANCEDB_HOME)
         mgr.connect()
@@ -140,6 +143,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # get_lancedb() is None 时抛 503 Service Unavailable（T2.3/T2.5 时统一）
         logger.warning("lancedb.init_failed", home=str(LANCEDB_HOME), error=str(exc))
         state.set_lancedb(None)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """应用生命周期钩子。
+
+    startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
+        0. 安装事件循环断连噪声过滤器——见 ``app.core.loop_errors``
+        1. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
+        2. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
+        3. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
+
+    shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
+    """
+    _install_disconnect_noise_filter()
+    _start_parent_watchdog()
+    _inject_psk_from_stdin()
+    _init_lancedb()
 
     yield
 

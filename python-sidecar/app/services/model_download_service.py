@@ -227,6 +227,64 @@ async def ensure_downloaded(model: str) -> ModelDownloadStatusResponse:
         return state.as_response()
 
 
+def _start_attempt(state: _State, model: str, attempt: int) -> str:
+    """开始一轮下载尝试：记录镜像/次数并重置进度，返回本轮镜像地址。"""
+    mirror = MIRRORS[(attempt - 1) % len(MIRRORS)]
+    state.attempt = attempt
+    state.mirror = mirror
+    state.downloaded_bytes = 0
+    state.updated_at = _now_iso()
+    logger.info("model.download.attempt", model=model, attempt=attempt, mirror=mirror)
+    return mirror
+
+
+async def _attempt_mirror(
+    model: str,
+    mirror: str,
+    root: Path,
+    targets: tuple[str, ...],
+    weight: str,
+    state: _State,
+) -> None:
+    """用指定镜像依次下载全部目标文件（先探测权重总量，作为进度基准）。
+
+    Raises:
+        TimeoutError / httpx.HTTPError / OSError / ModelDownloadError:
+            由 :func:`_download_all` 捕获后切换下一个镜像。
+    """
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=DOWNLOAD_TIMEOUT, verify=_ssl_context()
+    ) as client:
+        repo = get_model_info(model).hf_repo
+        state.total_bytes = await _probe_size(client, _resolve_url(mirror, repo, weight))
+        for name in targets:
+            await _download_one(
+                client,
+                mirror,
+                model,
+                name,
+                root / name,
+                state,
+                count_progress=name == weight,
+            )
+
+
+def _mark_ready(state: _State, model: str, mirror: str, attempt: int) -> None:
+    """标记 ready（全部文件校验通过）并记录日志。"""
+    state.status = _STATUS_READY
+    state.error = None
+    state.updated_at = _now_iso()
+    logger.info("model.download.ready", model=model, mirror=mirror, attempt=attempt)
+
+
+def _mark_failed(state: _State, model: str, last_error: str) -> None:
+    """标记 failed（自动重试用尽，等待用户手动重试）并记录日志。"""
+    state.status = _STATUS_FAILED
+    state.error = f"下载失败（已自动重试 {MAX_ATTEMPTS} 次，切换镜像均未成功）: {last_error}"
+    state.updated_at = _now_iso()
+    logger.warning("model.download.failed", model=model, error=state.error)
+
+
 async def _download_all(model: str) -> None:
     """下载主体：按镜像序列重试 MAX_ATTEMPTS 次，全失败则置 failed。
 
@@ -241,28 +299,9 @@ async def _download_all(model: str) -> None:
     last_error: str = "未知错误"
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        mirror = MIRRORS[(attempt - 1) % len(MIRRORS)]
-        state.attempt = attempt
-        state.mirror = mirror
-        state.downloaded_bytes = 0
-        state.updated_at = _now_iso()
-        logger.info("model.download.attempt", model=model, attempt=attempt, mirror=mirror)
+        mirror = _start_attempt(state, model, attempt)
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True, timeout=DOWNLOAD_TIMEOUT, verify=_ssl_context()
-            ) as client:
-                repo = get_model_info(model).hf_repo
-                state.total_bytes = await _probe_size(client, _resolve_url(mirror, repo, weight))
-                for name in targets:
-                    await _download_one(
-                        client,
-                        mirror,
-                        model,
-                        name,
-                        root / name,
-                        state,
-                        count_progress=name == weight,
-                    )
+            await _attempt_mirror(model, mirror, root, targets, weight, state)
         except (TimeoutError, httpx.HTTPError, OSError, ModelDownloadError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
@@ -276,18 +315,12 @@ async def _download_all(model: str) -> None:
             continue
 
         if model_ready(model):
-            state.status = _STATUS_READY
-            state.error = None
-            state.updated_at = _now_iso()
-            logger.info("model.download.ready", model=model, mirror=mirror, attempt=attempt)
+            _mark_ready(state, model, mirror, attempt)
             return
         last_error = "下载完成后文件校验未通过"
         _cleanup_partials(root, targets)
 
-    state.status = _STATUS_FAILED
-    state.error = f"下载失败（已自动重试 {MAX_ATTEMPTS} 次，切换镜像均未成功）: {last_error}"
-    state.updated_at = _now_iso()
-    logger.warning("model.download.failed", model=model, error=state.error)
+    _mark_failed(state, model, last_error)
 
 
 async def _probe_size(client: httpx.AsyncClient, url: str) -> int | None:

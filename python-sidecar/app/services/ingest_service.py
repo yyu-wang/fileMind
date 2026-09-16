@@ -206,6 +206,34 @@ def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
     return docs
 
 
+async def _embed_docs(docs: list[DocumentChunk], embedding_model: str) -> None:
+    """分批 Embedding，向量就地写回 ``doc.vector``（网络 IO，事件循环友好）。"""
+    for start in range(0, len(docs), EMBED_BATCH_SIZE):
+        batch = docs[start : start + EMBED_BATCH_SIZE]
+        vectors = await embed_texts(
+            [d.chunk_text for d in batch],
+            model=embedding_model,
+        )
+        for doc, vector in zip(batch, vectors, strict=True):
+            doc.vector = vector
+
+
+def _delete_stale_chunks(
+    mgr: LanceDBManager,
+    table_name: str,
+    indexed_file_ids: set[str],
+) -> None:
+    """SC-C3：写入前按 file_id 删除旧向量行（add_chunks 是纯追加语义）。
+
+    不清理则同文件重复 build 后 chunk 翻倍、检索重复；非法 file_id 跳过并告警。
+    """
+    for file_id in indexed_file_ids:
+        if not _is_safe_file_id(file_id):
+            logger.warning("ingest.delete_stale_skipped", file_id=file_id)
+            continue
+        mgr.delete_chunks_by_file_id(table_name, file_id)
+
+
 async def build_index(
     files: list[tuple[str, str]],
     table_name: str,
@@ -243,23 +271,10 @@ async def build_index(
 
     if not docs:
         return BuildIndexResult(indexed=0, skipped=skipped)
-    # 阶段 2：分批 Embedding（网络 IO，事件循环友好）
-    for start in range(0, len(docs), EMBED_BATCH_SIZE):
-        batch = docs[start : start + EMBED_BATCH_SIZE]
-        vectors = await embed_texts(
-            [d.chunk_text for d in batch],
-            model=embedding_model,
-        )
-        for doc, vector in zip(batch, vectors, strict=True):
-            doc.vector = vector
-
+    # 阶段 2：分批 Embedding
+    await _embed_docs(docs, embedding_model)
     # 阶段 3（SC-C3）：先删旧行再写入——失败可整体重跑，无重复行
-    for file_id in indexed_file_ids:
-        if not _is_safe_file_id(file_id):
-            logger.warning("ingest.delete_stale_skipped", file_id=file_id)
-            continue
-        mgr.delete_chunks_by_file_id(table_name, file_id)
-
+    _delete_stale_chunks(mgr, table_name, indexed_file_ids)
     # 阶段 4：写入（LanceDB add 同步写盘，下沉线程池）
     await asyncio.to_thread(mgr.add_chunks, table_name, docs)
     logger.info(
