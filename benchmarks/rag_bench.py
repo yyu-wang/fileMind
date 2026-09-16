@@ -3,7 +3,7 @@
 
 流程：
 1. 拉起 Sidecar（复用 ``scripts/_sidecar_launcher.py``）；
-2. ``GET /metrics`` 记冷启动 RSS（验收线 <500MB）；
+2. ``GET /metrics`` 记冷启动 RSS（验收线 <2048MB，2026-09-15 由 500MB 上调）；
 3. 可选 RAG：从 ``--root`` 收集文件 → ``POST /index/build`` 建索引 →
    ``POST /chat/stream`` 流式问答，记检索耗时（done.retrieve_ms）与首 token
    耗时（客户端实测）。Embedding 模型 / Ollama 不可用时三项 RAG 指标置

@@ -3,8 +3,9 @@
 //! 所有命令做阻塞文件系统操作，通过 `#[tauri::command(async)]`
 //! 声明为线程池执行，避免阻塞主线程。
 
+use crate::commands::embedding_table;
 use crate::db::models::{FileRecord, OperationLog};
-use crate::db::{ConfigRepo, FileRepo, OperationRepo, ScannedDirectoryRepo};
+use crate::db::{FileRepo, OperationRepo, ScannedDirectoryRepo};
 use crate::error::{AppError, AppResult};
 use crate::security;
 use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::From;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const MAX_SCAN_DEPTH: u32 = 10;
 
@@ -375,21 +377,6 @@ fn spawn_index_path_sync(state: &AppState, mappings: Vec<(String, String)>) {
         return;
     }
 
-    // 目标表名由当前 embedding 模型决定（对齐 build_index 的 documents_{model}_v1）
-    let table_name = match state.db.lock() {
-        Ok(guard) => match ConfigRepo::get(guard.conn()) {
-            Ok(config) => format!("documents_{}_v1", config.embedding_model),
-            Err(e) => {
-                log::warn!("索引路径同步：读取 embedding 模型失败（跳过）: {e}");
-                return;
-            }
-        },
-        Err(poisoned) => {
-            log::warn!("索引路径同步：获取 DB 锁中毒（跳过）: {poisoned}");
-            return;
-        }
-    };
-
     // sidecar 未握手（PSK 为空，如测试环境）→ 静默跳过，不 spawn
     let psk = match state.sidecar_psk.lock() {
         Ok(guard) => guard.clone(),
@@ -401,9 +388,15 @@ fn spawn_index_path_sync(state: &AppState, mappings: Vec<(String, String)>) {
     let Some(psk) = psk else {
         return;
     };
+    // 两个序号：表名解析要发一次探测请求，路径同步请求另取一个
+    // （Sidecar 中间件要求序号严格递增，复用同一序号会被判重放）
+    let seq_probe = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let seq = state
         .request_seq
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let db = Arc::clone(&state.db);
 
     let count = mappings.len();
     let mappings: Vec<SidecarPathUpdateItem> = mappings
@@ -412,6 +405,16 @@ fn spawn_index_path_sync(state: &AppState, mappings: Vec<(String, String)>) {
         .collect();
 
     tauri::async_runtime::spawn(async move {
+        // 向量表名（模型来自配置、版本号来自 Sidecar 注册表）——best-effort：
+        // 解析失败（如 Sidecar 未就绪）仅告警，不影响执行结果
+        let table_name =
+            match embedding_table::resolve_vector_table_parts(&db, &psk, seq_probe).await {
+                Ok(name) => name,
+                Err(e) => {
+                    log::warn!("索引路径同步：解析向量表名失败（跳过）: {e}");
+                    return;
+                }
+            };
         let request = SidecarPathUpdateRequest {
             table_name,
             mappings,
@@ -1320,20 +1323,6 @@ fn spawn_index_delete_by_file_ids(state: &AppState, file_ids: Vec<String>) {
         return;
     }
 
-    let table_name = match state.db.lock() {
-        Ok(guard) => match ConfigRepo::get(guard.conn()) {
-            Ok(config) => format!("documents_{}_v1", config.embedding_model),
-            Err(e) => {
-                log::warn!("索引向量清理：读取 embedding 模型失败（跳过）: {e}");
-                return;
-            }
-        },
-        Err(poisoned) => {
-            log::warn!("索引向量清理：获取 DB 锁中毒（跳过）: {poisoned}");
-            return;
-        }
-    };
-
     let psk = match state.sidecar_psk.lock() {
         Ok(guard) => guard.clone(),
         Err(poisoned) => {
@@ -1344,12 +1333,26 @@ fn spawn_index_delete_by_file_ids(state: &AppState, file_ids: Vec<String>) {
     let Some(psk) = psk else {
         return;
     };
+    // 两个序号：表名解析要发一次探测请求，清理请求另取一个（复用会被判重放）
+    let seq_probe = state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let seq = state
         .request_seq
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let db = Arc::clone(&state.db);
 
     let count = file_ids.len();
     tauri::async_runtime::spawn(async move {
+        // 向量表名（模型来自配置、版本号来自 Sidecar 注册表）——best-effort
+        let table_name =
+            match embedding_table::resolve_vector_table_parts(&db, &psk, seq_probe).await {
+                Ok(name) => name,
+                Err(e) => {
+                    log::warn!("索引向量清理：解析向量表名失败（跳过）: {e}");
+                    return;
+                }
+            };
         let request = SidecarDeleteByFileIdsRequest {
             table_name,
             file_ids,

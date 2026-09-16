@@ -69,6 +69,16 @@ module = "sentence_transformers"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# onnxruntime / tokenizers 均未提供 py.typed（进程内 Embedding 的后端依赖），
+# 动态模块；调用点已用显式断言收敛返回值类型（同 sentence_transformers 处理）
+module = "onnxruntime"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tokenizers"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # openpyxl 未内置 py.typed；仅在 doc_extract 惰性导入，动态模块（同 jieba 处理）
 module = "openpyxl"
 ignore_missing_imports = true

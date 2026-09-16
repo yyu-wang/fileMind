@@ -56,7 +56,7 @@ describe('E2E-005 设置', () => {
 
   it('展示当前 Embedding 模型徽标', async () => {
     await $(sel.embeddingCurrent).waitForExist({ timeout: 10000 });
-    // 徽标展示模型名（bge-small-zh 默认），可用性未知/已安装由本机决定
+    // 徽标展示模型名（bge-large-zh-v1.5 默认），就绪/未下载由本机模型文件决定
     await expect($(sel.embeddingCurrent)).toHaveText(/bge-/);
   });
 });

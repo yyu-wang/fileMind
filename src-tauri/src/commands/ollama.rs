@@ -13,8 +13,6 @@ use crate::AppState;
 
 /// Sidecar 探测端点（API 规格书 §3.5，无请求参数，body 为空 JSON 对象）。
 const SIDECAR_INFERENCE_TEST_PATH: &str = "/inference/test";
-/// Sidecar Embedding 模型拉取端点。
-const SIDECAR_INSTALL_MODEL_PATH: &str = "/inference/install-model";
 
 /// 本地 Ollama 已安装的生成模型信息。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -86,7 +84,18 @@ async fn ollama_status_inner(state: &AppState) -> AppResult<OllamaStatus> {
         .request_seq
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let body = proxy::forward_post(SIDECAR_INFERENCE_TEST_PATH, "{}", &psk, seq).await?;
+    probe_inference(&psk, seq).await
+}
+
+/// 探测 Sidecar 推理环境的按部件入口（PSK + 序号）。
+///
+/// 供无法持有 `&AppState` 的调用点复用（如后台 best-effort 任务里的向量表名解析）。
+///
+/// # Errors
+///
+/// Sidecar 请求失败或响应解析失败时返回错误。
+pub(crate) async fn probe_inference(psk: &[u8], seq: u64) -> AppResult<OllamaStatus> {
+    let body = proxy::forward_post(SIDECAR_INFERENCE_TEST_PATH, "{}", psk, seq).await?;
     parse_ollama_status(&body)
 }
 
@@ -96,64 +105,6 @@ async fn ollama_status_inner(state: &AppState) -> AppResult<OllamaStatus> {
 ///
 /// JSON 结构不符合 `OllamaStatus` 时返回序列化错误。
 fn parse_ollama_status(body: &str) -> AppResult<OllamaStatus> {
-    Ok(serde_json::from_str(body)?)
-}
-
-/// Embedding 模型安装结果（对齐 Sidecar `ModelInstallResponse`）。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct ModelInstallResult {
-    /// 安装是否成功。
-    pub success: bool,
-    /// 注册表模型名。
-    pub model_name: String,
-    /// Ollama 实际模型名。
-    pub ollama_name: String,
-    /// 结果消息。
-    pub message: String,
-}
-
-/// 从 Ollama 拉取指定 Embedding 模型（Sidecar `/inference/install-model` 代理）。
-///
-/// # Errors
-///
-/// Sidecar 未握手（PSK 为 `None`）、请求失败或响应解析失败时返回错误。
-#[tauri::command]
-#[specta::specta]
-pub async fn install_embedding_model(
-    state: State<'_, AppState>,
-    model_name: String,
-) -> Result<ModelInstallResult, String> {
-    install_embedding_model_inner(&state, model_name)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 安装命令的纯逻辑入口（便于单元测试）。
-async fn install_embedding_model_inner(
-    state: &AppState,
-    model_name: String,
-) -> AppResult<ModelInstallResult> {
-    let psk = state
-        .sidecar_psk
-        .lock()
-        .map_err(|e| AppError::InvalidInput(format!("PSK 锁中毒: {e}")))?
-        .clone()
-        .ok_or_else(|| AppError::SidecarUnavailable("sidecar 未就绪".to_string()))?;
-    let seq = state
-        .request_seq
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-    let body = serde_json::json!({ "model_name": model_name }).to_string();
-    let resp = proxy::forward_post(SIDECAR_INSTALL_MODEL_PATH, &body, &psk, seq).await?;
-    parse_model_install_result(&resp)
-}
-
-/// 解析 Sidecar `/inference/install-model` 响应 JSON（纯函数，便于单测）。
-///
-/// # Errors
-///
-/// JSON 结构不符合 `ModelInstallResult` 时返回序列化错误。
-fn parse_model_install_result(body: &str) -> AppResult<ModelInstallResult> {
     Ok(serde_json::from_str(body)?)
 }
 

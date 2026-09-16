@@ -2,7 +2,7 @@
 """T1.6 Go/No-Go 决策 7 项自动化测试脚本（E1 Sidecar 打包验证 Epic 门控）。
 
 执行范围（阶段 1 = dev 模式下的 Sidecar，无需 PyInstaller）：
-  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <500MB（7）
+  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <2048MB（7）
   * SKIP：崩溃重启（5，需 Tauri app + watchdog 线程）、三平台（6，需 T1.2+T1.3 产物）
 
 用法：
@@ -64,7 +64,7 @@ TEST_ITEMS: list[tuple[int, str, str]] = [
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
     (5, "崩溃重启", "SIGKILL 模拟崩溃 → 3s 内重启 → new_pid≠old_pid → 重新 HMAC 握手通过（打包态=Phase2，dev=SKIP）"),
     (6, "三平台", "PyInstaller --onedir 产物目录体积≤1600MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
-    (7, "内存<500MB", "冷启动 GET /metrics → rss_mb < 500 且 within_limit=True"),
+    (7, "内存<2048MB", "冷启动 GET /metrics → rss_mb < 2048 且 within_limit=True"),
 ]
 
 Verdict = Literal["PASS", "FAIL", "SKIP"]
@@ -825,15 +825,17 @@ def _classify_binary(head: bytes, system: str) -> str:
 def _memory_limit_mb() -> int:
     """与 Sidecar ``routes_metrics.memory_threshold_mb()`` 同源的门控阈值。
 
-    默认 500（T10.3 放宽），env ``FILEMIND_MEMORY_THRESHOLD_MB`` 覆盖；
-    非法值回落默认，保证脚本断言与 Sidecar 实际判定一致（subprocess 继承 env）。
+    默认 2048（本次放宽：进程内 ONNX int8 embedding 的稳态内存，见
+    ``benchmarks/onnx_embedding_mem_probe.py`` 实测）；env
+    ``FILEMIND_MEMORY_THRESHOLD_MB`` 覆盖；非法值回落默认，保证脚本断言与
+    Sidecar 实际判定一致（subprocess 继承 env）。
     """
     raw = os.environ.get("FILEMIND_MEMORY_THRESHOLD_MB", "")
     try:
         value = int(raw)
     except ValueError:
-        return 500
-    return value if value > 0 else 500
+        return 2048
+    return value if value > 0 else 2048
 
 
 def run_t7_memory() -> TestResult:
