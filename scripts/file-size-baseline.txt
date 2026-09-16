@@ -13,12 +13,19 @@
 #     （main.rs 是 IPC 命令注册清单，移除 1 个命令、新增 2 个下载命令，净 +1；
 #      file_ops.rs 是把 3 处硬编码向量表名收敛为 resolve 调用，净 +3）。
 #     两者均为「清单/调用点」型增量，无法从文件内拆出；真正的解法是拆分这两个
-#     文件本身（file_ops.rs 已达 1395 行），已列为独立任务。
+#     文件本身（main.rs 已列为独立任务；file_ops.rs 已于 2026-09-16 拆分，见下）。
 #   - sidecar/manager.rs 1086 → 1111：**非本分支引入**。来自早先合并的
 #     fix/windows-sidecar-runtime（93bbc81，合并于 15a84f3），该分支未同步更新
 #     基线，属遗留欠账；此处一并消账以免阻塞后续 dev → main 的 PR。
+#
+# 修订记录（2026-09-16，file_ops 拆分消账）：
+#   - 删除 `commands/file_ops.rs 1395` 条目：该文件已按 component-split 拆为
+#     `commands/file_ops/` 目录（mod.rs + 8 个职责子模块），最大 preview.rs 289 行，
+#     全部落在 rules/complexity.md 的 300 行**警告**阈值内（强制阈值 500）。
+#     命令注册路径随之改为子模块全路径（`file_ops::scan::scan_directory` 等），
+#     原因见 commands/file_ops/mod.rs 顶部注释。main.rs 的 +1 仍属「IPC 注册清单」
+#     型增量，保留在基线中，其拆分另行处理。
 
-src-tauri/src/commands/file_ops.rs 1395
 src-tauri/src/db/file_repo.rs 638
 src-tauri/src/main.rs 703
 src-tauri/src/sidecar/manager.rs 1111

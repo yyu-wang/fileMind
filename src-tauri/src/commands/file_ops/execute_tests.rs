@@ -8,10 +8,16 @@
     clippy::significant_drop_tightening
 )]
 
-use super::file_ops_test_support::{
+use super::test_support::{
     make_conflict_plan, make_test_app_state, preview_then_execute, seed_files_for_preview,
 };
 use super::*;
+
+// 拆分后按需显式引入：内部实现来自子模块，外部名字原先靠 `use super::*` 取到
+use super::execute::execute_operations_inner;
+use super::preview::preview_operations_inner;
+use crate::db::{FileRepo, OperationRepo};
+use crate::services::conflict_resolver::ConflictStrategy;
 
 #[test]
 fn test_execute_operations_move_full_flow() -> Result<(), Box<dyn std::error::Error>> {

@@ -8,8 +8,13 @@
     clippy::significant_drop_tightening
 )]
 
-use super::file_ops_test_support::{create_temp_file, make_test_app_state, seed_files_for_preview};
+use super::test_support::{create_temp_file, make_test_app_state, seed_files_for_preview};
 use super::*;
+
+// 拆分后按需显式引入：内部实现来自子模块，外部名字原先靠 `use super::*` 取到
+use super::preview::preview_operations_inner;
+use crate::error::AppError;
+use crate::services::conflict_resolver::{ConflictStrategy, PlanStatus};
 
 #[test]
 fn test_preview_operations_move_rename_strategy() -> Result<(), Box<dyn std::error::Error>> {

@@ -18,6 +18,14 @@ use crate::AppState;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
+
+// 拆分子模块后按需显式引入（原先靠 `use super::*` 从 file_ops 的 import 里取到）
+use super::execute::execute_operations_inner;
+use super::preview::preview_operations_inner;
+use crate::db::models::FileRecord;
+use crate::db::FileRepo;
+use crate::services::conflict_resolver::{ConflictStrategy, ConflictType, PlanStatus};
+use std::path::Path;
 use std::sync::Mutex;
 
 pub(super) fn create_temp_file(

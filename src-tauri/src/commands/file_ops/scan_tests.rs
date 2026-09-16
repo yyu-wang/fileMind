@@ -8,8 +8,17 @@
     clippy::significant_drop_tightening
 )]
 
-use super::file_ops_test_support::{create_temp_file, make_test_app_state};
-use super::*;
+use super::test_support::{create_temp_file, make_test_app_state};
+
+// 拆分后按需显式引入：内部实现来自各子模块，外部名字原先靠 `use super::*` 取到
+use super::fs_walk::{format_system_time, scan_files_on_disk, MAX_SCAN_DEPTH};
+use super::index_sync::spawn_index_path_sync;
+use super::scan::persist_scan_files;
+use crate::db::models::FileRecord;
+use crate::db::FileRepo;
+use crate::services::hash_service::compute_hashes_parallel;
+use crate::FileInfo;
+use std::collections::HashSet;
 
 #[test]
 fn test_scan_files_finds_files_with_hash() -> Result<(), Box<dyn std::error::Error>> {

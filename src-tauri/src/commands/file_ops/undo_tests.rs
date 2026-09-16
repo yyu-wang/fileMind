@@ -8,10 +8,14 @@
     clippy::significant_drop_tightening
 )]
 
-use super::file_ops_test_support::{
-    make_test_app_state, preview_then_execute, seed_files_for_preview,
-};
+use super::test_support::{make_test_app_state, preview_then_execute, seed_files_for_preview};
 use super::*;
+
+// 拆分后按需显式引入：内部实现来自子模块，外部名字原先靠 `use super::*` 取到
+use super::delete::delete_files_inner;
+use super::undo::undo_batch_inner;
+use crate::db::{FileRepo, OperationRepo};
+use crate::error::AppError;
 
 #[test]
 fn test_undo_batch_move_full_flow() -> Result<(), Box<dyn std::error::Error>> {
