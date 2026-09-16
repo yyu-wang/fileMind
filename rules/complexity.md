@@ -165,16 +165,17 @@ bash scripts/check-file-size.sh
 
 圈复杂度历史欠账（登记在 `eslint.config.js`，登记值 = 该文件当前最大复杂度，**只允许降不允许升**）：
 
-| 文件                                                | 当前上限 | 超限函数（ESLint 报点）      |
-| --------------------------------------------------- | -------- | ---------------------------- |
-| `src/components/settings/CloudProviderFormCard.tsx` | 30       | `CloudProviderFormCard`      |
-| `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`            |
-| `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`                   |
-| `src/pages/ChatPage.tsx`                            | 19       | 行 109 的匿名 async 箭头函数 |
+| 文件                                                | 当前上限 | 超限函数（ESLint 报点） |
+| --------------------------------------------------- | -------- | ----------------------- |
+| `src/components/settings/CloudProviderFormCard.tsx` | 30       | `CloudProviderFormCard` |
+| `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`       |
+| `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`              |
 
-（`ClassifyPage.tsx` 38 已消账：页面收敛为编排层，区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为
-`ClassifyHeader` / `ClassifyIntroPanel` / `ClassifyHistoryView` / `ClassifyPreviewSection`；
-`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
+（`ChatPage.tsx` 19 已消账：引用跳转流程收进 `src/hooks/useCitationPreview.ts`，头部与输入区拆为
+`ChatHeader` / `ChatInputArea`，页面本体复杂度回到 7；`ClassifyPage.tsx` 38 已消账：页面收敛为编排层，
+区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为 `ClassifyHeader` / `ClassifyIntroPanel` /
+`ClassifyHistoryView` / `ClassifyPreviewSection`；`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在
+拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 

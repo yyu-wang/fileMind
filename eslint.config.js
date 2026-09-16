@@ -160,8 +160,9 @@ export default [
   },
   { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
   { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
-  { files: ['src/pages/ChatPage.tsx'], rules: { complexity: ['error', 19] } },
-  // 注：ClassifyPage.tsx(38) 已消账——页面收敛为编排层，判定收进 lib/classifyView.ts，
+  // 注：ChatPage.tsx(19) 已消账——引用跳转流程收进 hooks/useCitationPreview，
+  // 头部与输入区拆为 ChatHeader / ChatInputArea，页面本体复杂度回到 7；
+  // ClassifyPage.tsx(38) 已消账——页面收敛为编排层，判定收进 lib/classifyView.ts，
   // 各区域拆为 ClassifyHeader / ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection；
   // settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
   // updateConfig 的字段合并抽成 mergeAppConfig、handleChatEvent 的事件分发抽成
