@@ -10,7 +10,8 @@ FTS5 由 Rust 层执行（Sidecar 永不碰 SQLite），命中含文本经请求
 SSE 事件契约（04_API详细规格书 §3.4 + IT-005）：
     search_start → search_result → token* → citation → done / error
     （P-04 检测到问题且重试次数 < max_retries 时：token* → retry → token* → citation → done；
-      重试耗尽仍失败：done 带 low_confidence: true）
+      重试耗尽仍失败：done 带 low_confidence: true；
+      检索降级兜底时：search_start 之后、search_result 之前插入 search_warning）
 """
 
 from __future__ import annotations
@@ -40,7 +41,12 @@ from app.services.generation_service import (
 from app.services.hybrid_search import hybrid_search
 from app.services.provider_factory import resolve_cloud_provider
 from app.services.query_cache import get_query_cache
-from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
+from app.services.rerank_service import (
+    RerankCandidate,
+    RerankResult,
+    RerankUnavailableError,
+    rerank,
+)
 from app.services.rewrite_service import ConversationTurn, rewrite_query
 from app.services.self_correct_service import validate_answer
 
@@ -113,8 +119,8 @@ async def _retrieve(
     mgr: LanceDBManager,
     provider: LLMProvider | None,
     skip_vector: bool = False,
-) -> tuple[str, int, list[dict[str, object]], list[SourceChunk]]:
-    """改写 → 混合检索 → 重排序，返回 (rewritten_query, candidates, sources, chunks)。
+) -> tuple[str, int, list[dict[str, object]], list[SourceChunk], bool]:
+    """改写 → 混合检索 → 重排序，返回 (rewritten_query, candidates, sources, chunks, 降级标记)。
 
     Args:
         request: 流式请求（含 FTS 命中与对话历史）。
@@ -127,10 +133,10 @@ async def _retrieve(
         - ``candidates``：重排前候选池大小（search_result 事件字段）。
         - ``sources``：精选 Top-K 的来源列表（含引用编号）。
         - ``chunks``：P-03 上下文片段（含原文，按 citation_id 升序）。
+        - 末位布尔值：重排是否降级（模型不可用时退回融合排序），供调用方发提示。
 
     Raises:
-        LLMUnavailableError / EmbeddingUnavailableError / RerankUnavailableError:
-            推理（改写 / 向量化 / 重排）不可用。
+        LLMUnavailableError / EmbeddingUnavailableError: 推理（改写 / 向量化）不可用。
     """
     # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
     # 降级模式（skip_vector=True）不缓存，以便 embedding 恢复后能重试全向量检索。
@@ -183,8 +189,19 @@ async def _retrieve(
         if hit.chunk_text
     ]
     t_stage = time.monotonic()
-    reranked = await rerank(rewritten_query, candidates, top_k=request.rerank_top_k)
-    logger.info("chat.retrieve.rerank", ms=_elapsed_ms(t_stage))
+    rerank_degraded = False
+    try:
+        reranked = await rerank(rewritten_query, candidates, top_k=request.rerank_top_k)
+        logger.info("chat.retrieve.rerank", ms=_elapsed_ms(t_stage))
+    except RerankUnavailableError as exc:
+        # 降级兜底：重排模型缺失（未下载 / HF 缓存被清）或推理失败时，退回 RRF 融合序
+        # 取 Top-K —— 问答质量降级而非整条请求失败（原行为直接中断并报 RERANK_UNAVAILABLE）。
+        logger.warning("chat.retrieve.rerank_degraded", ms=_elapsed_ms(t_stage), error=str(exc))
+        rerank_degraded = True
+        reranked = [
+            RerankResult(c.chunk_id, c.score, c.file_path, c.page)
+            for c in candidates[: request.rerank_top_k]
+        ]
 
     hit_by_id = {h.chunk_id: h for h in enriched}
     sources: list[dict[str, object]] = []
@@ -209,8 +226,9 @@ async def _retrieve(
                 text=text,
             )
         )
-    retrieved = (rewritten_query, len(candidates), sources, chunks)
-    if not skip_vector:
+    retrieved = (rewritten_query, len(candidates), sources, chunks, rerank_degraded)
+    # 降级结果（skip_vector / rerank_degraded）不缓存：模型恢复后同一问句立刻重试完整管线。
+    if not skip_vector and not rerank_degraded:
         await cache.set(cache_key, retrieved)
     return retrieved
 
@@ -250,45 +268,52 @@ async def _rag_event_stream(
     retrieve_started = time.monotonic()
     degraded_warning = False
     try:
-        rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
-    except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
+        rewritten_query, candidates, sources, chunks, rerank_degraded = await _retrieve(
+            request, mgr, provider
+        )
+    except (LLMUnavailableError, EmbeddingUnavailableError) as exc:
         # 云端模式：Embedding 不可用时降级到纯 FTS5 检索
         if isinstance(exc, EmbeddingUnavailableError) and request.inference_mode.lower() == "cloud":
             logger.warning("chat.embedding_unavailable_cloud_fallback", error=str(exc))
             try:
-                rewritten_query, candidates, sources, chunks = await _retrieve(
+                rewritten_query, candidates, sources, chunks, rerank_degraded = await _retrieve(
                     request, mgr, provider, skip_vector=True
                 )
                 degraded_warning = True
-            except (LLMUnavailableError, RerankUnavailableError) as fallback_exc:
+            except LLMUnavailableError as fallback_exc:
                 logger.warning("chat.retrieve_fallback_failed", error=str(fallback_exc))
-                if isinstance(fallback_exc, RerankUnavailableError):
-                    code = "RERANK_UNAVAILABLE"
-                else:
-                    code = "LLM_UNAVAILABLE"
-                yield ("error", {"code": code, "message": str(fallback_exc)})
+                yield ("error", {"code": "LLM_UNAVAILABLE", "message": str(fallback_exc)})
                 return
         else:
             logger.warning("chat.retrieve_failed", error=str(exc))
-            # SC-m10：区分错误码——LLM/Embedding/Rerank 不可用不应统一报 OLLAMA_UNAVAILABLE
-            if isinstance(exc, EmbeddingUnavailableError):
-                code = "EMBEDDING_UNAVAILABLE"
-            elif isinstance(exc, RerankUnavailableError):
-                code = "RERANK_UNAVAILABLE"
-            else:
-                code = "LLM_UNAVAILABLE"
+            # SC-m10：区分错误码——LLM/Embedding 不可用不应统一报 OLLAMA_UNAVAILABLE
+            # （Rerank 不可用已不在此列：_retrieve 内部降级，不再抛到本层）
+            code = (
+                "EMBEDDING_UNAVAILABLE"
+                if isinstance(exc, EmbeddingUnavailableError)
+                else "LLM_UNAVAILABLE"
+            )
             yield ("error", {"code": code, "message": str(exc)})
             return
     retrieve_ms = _elapsed_ms(retrieve_started)
     logger.info("chat.retrieve.done", ms=retrieve_ms)
 
+    yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
+    # 降级提示必须发在 search_start 之后：前端的 search_start 分支会清空 error 字段，
+    # 发在其前会被立刻覆盖，用户看不到降级说明（静默降级）。
     if degraded_warning:
         yield (
             "search_warning",
             {"code": "EMBEDDING_DEGRADED", "message": "Embedding 不可用，已降级为纯关键词检索"},
         )
-
-    yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
+    if rerank_degraded:
+        yield (
+            "search_warning",
+            {
+                "code": "RERANK_DEGRADED",
+                "message": "重排模型不可用，已降级为融合排序（结果相关性可能下降）",
+            },
+        )
     yield (
         "search_result",
         {"candidates": candidates, "after_rerank": len(sources), "sources": sources},
