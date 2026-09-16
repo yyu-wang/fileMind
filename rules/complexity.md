@@ -167,13 +167,14 @@ bash scripts/check-file-size.sh
 
 | 文件                                                | 当前上限 | 超限函数（ESLint 报点）      |
 | --------------------------------------------------- | -------- | ---------------------------- |
-| `src/pages/ClassifyPage.tsx`                        | 38       | `ClassifyPage`               |
 | `src/components/settings/CloudProviderFormCard.tsx` | 30       | `CloudProviderFormCard`      |
 | `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`            |
 | `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`                   |
 | `src/pages/ChatPage.tsx`                            | 19       | 行 109 的匿名 async 箭头函数 |
 
-（`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
+（`ClassifyPage.tsx` 38 已消账：页面收敛为编排层，区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为
+`ClassifyHeader` / `ClassifyIntroPanel` / `ClassifyHistoryView` / `ClassifyPreviewSection`；
+`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 

@@ -154,7 +154,6 @@ export default [
   // ---- 历史欠账：圈复杂度 ----
   // 登记值为该文件当前最大复杂度 = 现状上限：只允许下降，不允许上升。
   // 消账方式：把函数拆到 15 以内后删除对应行。
-  { files: ['src/pages/ClassifyPage.tsx'], rules: { complexity: ['error', 38] } },
   {
     files: ['src/components/settings/CloudProviderFormCard.tsx'],
     rules: { complexity: ['error', 30] },
@@ -162,7 +161,9 @@ export default [
   { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
   { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
   { files: ['src/pages/ChatPage.tsx'], rules: { complexity: ['error', 19] } },
-  // 注：settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
+  // 注：ClassifyPage.tsx(38) 已消账——页面收敛为编排层，判定收进 lib/classifyView.ts，
+  // 各区域拆为 ClassifyHeader / ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection；
+  // settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
   // updateConfig 的字段合并抽成 mergeAppConfig、handleChatEvent 的事件分发抽成
   // dispatchChatEvent，两者各自的复杂度都回到 15 以内，故覆盖块一并删除
   // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
