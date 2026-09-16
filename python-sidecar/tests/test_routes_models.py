@@ -65,13 +65,14 @@ def test_status_unsigned_rejected(client: TestClient) -> None:
 
 
 def test_status_signed_returns_idle(client: TestClient) -> None:
-    """已签名查询 → 200 且返回初始 idle 状态。"""
-    path = "/models/download/status"
-    resp: HttpxResponse = client.get(
-        path,
-        params={"model_name": MODEL},
-        headers=_headers("GET", path, "", 1),
-    )
+    """已签名查询（**含查询串**）→ 200 且返回初始 idle 状态。
+
+    签名口径必须与真实调用方（Rust ``proxy::forward_get``）一致：把
+    ``path?query`` 整体参与签名。此前这里只签裸 path，恰好绕过了
+    「查询串未纳入验签」的缺陷，导致该缺陷在单测里看不见。
+    """
+    path = f"/models/download/status?model_name={MODEL}"
+    resp: HttpxResponse = client.get(path, headers=_headers("GET", path, "", 1))
     assert resp.status_code == 200
     data = resp.json()
     assert data["model_name"] == MODEL
@@ -82,12 +83,8 @@ def test_status_signed_returns_idle(client: TestClient) -> None:
 
 def test_status_unknown_model_400(client: TestClient) -> None:
     """未知模型 → 400（而非 500）。"""
-    path = "/models/download/status"
-    resp = client.get(
-        path,
-        params={"model_name": "nope"},
-        headers=_headers("GET", path, "", 1),
-    )
+    path = "/models/download/status?model_name=nope"
+    resp = client.get(path, headers=_headers("GET", path, "", 1))
     assert resp.status_code == 400
     assert "未知 Embedding 模型" in resp.json()["detail"]
 

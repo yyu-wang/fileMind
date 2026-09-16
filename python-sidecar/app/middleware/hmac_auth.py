@@ -6,6 +6,10 @@
 - ``X-Signature``: ``HMAC-SHA256(PSK, "{method}|{path}|{body}|{seq}")`` 的 hex
 - ``X-Request-Seq``: 单调递增的整数序号，防止重放攻击
 
+``path`` **含查询串**（``/models/download/status?model_name=x``）：Rust 侧
+``proxy::forward_get`` 就是拿「带 query 的 path」参与签名，此处必须同口径，
+否则带查询参数的 GET 全部 401（真实踩过：模型下载进度恒为 0）。
+
 豁免路由（``/handshake``、``/health``、文档路由）跳过验签；
 dev 模式下（PSK 未设置）所有路由跳过验签，仅本机测试用。
 """
@@ -55,8 +59,22 @@ def _verify(psk: bytes, message: str, signature_hex: str) -> bool:
 
 
 def _build_request_canonical(method: str, path: str, body: str, seq: int) -> str:
-    """构造请求签名 canonical string：``{method}|{path}|{body}|{seq}``。"""
+    """构造请求签名 canonical string：``{method}|{path}|{body}|{seq}``。
+
+    ``path`` 为「路由 + 查询串」（无查询串时就是路由本身），与调用方
+    （Rust ``proxy::forward_get``）的拼接口径一致。
+    """
     return f"{method}|{path}|{body}|{seq}"
+
+
+def _canonical_path(request: Request) -> str:
+    """请求的签名用路径：``path`` + （有查询串时）``?query``。
+
+    ``request.url.path`` 不含查询串，直接拿它验签会让带查询参数的 GET 全部
+    401（模型下载状态查询即如此），故这里显式拼回查询串。
+    """
+    query = request.url.query
+    return f"{request.url.path}?{query}" if query else request.url.path
 
 
 def _error_response(status_code: int, detail: str) -> JSONResponse:
@@ -119,7 +137,7 @@ class HMACMiddleware(BaseHTTPMiddleware):
         if seq <= state.get_last_seq():
             return _error_response(401, "SEC-E-002:序号重放或乱序")
 
-        canonical = _build_request_canonical(request.method, path, body, seq)
+        canonical = _build_request_canonical(request.method, _canonical_path(request), body, seq)
         if not _verify(psk, canonical, signature):
             return _error_response(401, "SEC-E-002:签名验证失败")
 
