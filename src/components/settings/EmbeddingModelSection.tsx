@@ -55,7 +55,7 @@ function DownloadProgress({ download }: { download: ModelDownloadStatus }) {
 /** 自动重试用尽：展示原因并提供重新下载入口（由列表按钮触发）。 */
 function DownloadFailure({ download }: { download: ModelDownloadStatus }) {
   return (
-    <div style={{ marginTop: 12 }} role="alert">
+    <div style={{ marginTop: 12 }} role="alert" data-testid="model-download-failure">
       <div style={{ fontSize: 12, color: 'var(--danger, #d33)' }}>
         下载失败：{download.error ?? '未知原因'}（已自动重试并切换镜像，请点击重试）
       </div>
@@ -89,6 +89,7 @@ function ModelRow({ model, isCurrent, isDownloading, hasFailed, onDownload }: Mo
         <button
           type="button"
           className="btn btn--primary btn--sm"
+          data-testid="model-download-btn"
           disabled={isDownloading}
           onClick={() => onDownload(model.name)}
           title={isDownloading ? '正在下载中' : '下载该模型文件'}

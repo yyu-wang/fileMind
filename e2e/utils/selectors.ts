@@ -70,4 +70,9 @@ export const sel = {
   themeLight: '[data-testid="theme-light"]',
   themeDark: '[data-testid="theme-dark"]',
   embeddingCurrent: '[data-testid="embedding-current"]',
+  // —— Embedding 模型下载（EmbeddingModelSection）——
+  modelDownloadBtn: '[data-testid="model-download-btn"]',
+  modelDownloadProgress: '[data-testid="model-download-progress"]',
+  modelDownloadFailure: '[data-testid="model-download-failure"]',
+  modelReady: '[data-testid="model-ready"]',
 } as const;

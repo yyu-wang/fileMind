@@ -6,7 +6,8 @@
 #
 # 用法：
 #   bash scripts/e2e-run.sh              # 本地：E2E-001/002 + spike（真实 sidecar）
-#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 含 E2E-003（需真实 Ollama 三模型）
+#   RUN_E2E=1 bash scripts/e2e-run.sh    # 追加 E2E-006（真实下载 313MB 模型）
+#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 追加 E2E-003（需真实 Ollama 三模型）
 #   bash scripts/e2e-run.sh --ci         # CI 冒烟：只跑 E2E-001/002（stub sidecar）
 set -euo pipefail
 
@@ -27,6 +28,10 @@ done
 # —— 门控：E2E-003 需 RUN_E2E=1 + --rag ——
 # 与 sidecar 层 E2E 一致：默认跳过，显式 RUN_E2E 才跑（需 Ollama 三模型）。
 RAG_ENABLED=$([ "$RUN_RAG" = 1 ] && [ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
+
+# —— 门控：E2E-006 只需 RUN_E2E=1 ——
+# 模型下载 spec 会真实下载 313MB（HF 镜像），默认本地 e2e 不跑，避免每次冒烟都拉一遍。
+MODEL_ENABLED=$([ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
 
 fail_count=0
 ran_any=0
@@ -87,12 +92,16 @@ for spec in e2e/specs/*.e2e.ts; do
   # 按 spec 编号过滤：
   #   000-spike      本地跑，CI 跳过（已由 001 覆盖应用启动断言，省一个冷启动）
   #   003-rag        仅 RAG_ENABLED 时跑
+  #   006-model      仅 MODEL_ENABLED（RUN_E2E=1）时跑（真实下载 313MB）
   case "$name" in
     000-*)
       [ "$CI_MODE" = 1 ] && { echo "── 跳过 ${name}（CI 精简）──"; continue; }
       ;;
     003-*)
       [ "$RAG_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1 + --rag，真实 Ollama）──"; continue; }
+      ;;
+    006-*)
+      [ "$MODEL_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1，真实下载 313MB 模型）──"; continue; }
       ;;
   esac
 
@@ -118,11 +127,20 @@ for spec in e2e/specs/*.e2e.ts; do
   export FILEMIND_E2E_DATA_DIR="$SCAN_DIR"
   export FILEMIND_E2E=1
   # 000/001 测「首次引导」→ 不能 SKIP（否则 main.rs 预置 onboarding_completed=true，
-  # loadConfig 校正后直达文件页，wizard 永不出现）；002/003 直达文件页 → SKIP。
+  # loadConfig 校正后直达文件页，wizard 永不出现）；002~006 直达文件页 → SKIP。
+  # 漏配的后果：应用停在引导向导，spec 首行等 .files-page 必挂 120s（E2E-006 踩过）。
   case "$name" in
-    002-*|003-*|004-*|005-*) export FILEMIND_E2E_SKIP_ONBOARDING=1 ;;
-    *)                        unset FILEMIND_E2E_SKIP_ONBOARDING ;;
+    002-*|003-*|004-*|005-*|006-*) export FILEMIND_E2E_SKIP_ONBOARDING=1 ;;
+    *)                             unset FILEMIND_E2E_SKIP_ONBOARDING ;;
   esac
+
+  # 006 要等一次真实 313MB 下载：单独上调 Mocha 单测超时（config 默认 180s 不够），
+  # 其余 spec 保持默认，避免真挂住时白等半小时。
+  if [ "$name" = "006-model-download.e2e.ts" ]; then
+    export FILEMIND_E2E_MOCHA_TIMEOUT=1800000
+  else
+    unset FILEMIND_E2E_MOCHA_TIMEOUT
+  fi
 
   _cleanup_sidecars
 
