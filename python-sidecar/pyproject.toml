@@ -31,7 +31,9 @@ module = "app.models.doc_preview"
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
-module = "app.db.lancedb_repo"
+# lancedb_repo 已拆为同名包（types/tables/chunks/search/manager）：pydantic.mypy 对
+# BaseModel 字段生成显式 Any（DocumentChunk 位于 types.py），故整包沿用既有 override
+module = ["app.db.lancedb_repo", "app.db.lancedb_repo.*"]
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
