@@ -252,6 +252,14 @@
      引入）同样早已停发 macOS x86_64 wheel。结合 Apple 已停 Intel 支持、GitHub 将于 macOS 15
      之后（2027 秋）退役 Intel runner，本轮起**只分发 macOS arm64 + Windows**；
      将来若仍需 Intel 包，路径是为该平台单独降级 lancedb/torch（运行时行为分叉，需实测）
+  9. **引擎取包纳入 PR 门禁**（2026-09-17，T3 引擎分发链路暴露的漏网之鱼）：`build-check` 用
+     `stub-sidecar-product.sh` 占位、不走 `build-sidecar.sh`，故「取引擎产物 → 入产物」这条链路
+     只有 merge-build 才真正跑到。实测后果：`fetch-llama-server.sh` 的内嵌 Python 在 Windows runner
+     上按 cp1252 输出 ⏳/中文，`print` 抛 UnicodeEncodeError，脚本在「开始下载」前即退出 →
+     merge-build Windows job 4.5min 假失败、其后三段引擎冒烟全部 skipped，而 PR 侧全绿。
+     处置：脚本在打印前 `reconfigure(encoding="utf-8")`（与 [go-no-go.py](scripts/go-no-go.py) 同一
+     写法），并在 `build-check` 补一步「取引擎 + 断言产物存在」——每 PR 每平台 +1 次下载（macOS
+     27MB / Windows 45MB，约 1 分钟）；PyInstaller 与入产物仍只由 merge-build 覆盖。
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按

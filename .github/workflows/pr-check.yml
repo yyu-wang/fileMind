@@ -125,6 +125,35 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      # 内置 llama.cpp 引擎的取包链路（T3c）必须在 PR 阶段就跑一遍：本 job 的 sidecar 是
+      # 占位目录（下面第一步），不走 build-sidecar.sh，故这条链路此前只有 merge-build 覆盖——
+      # 实测漏掉了 fetch-llama-server.sh 在 Windows runner 上因 cp1252 无法编码 ⏳/中文而在
+      # 下载前退出（merge-build 假失败、PR 却全绿）。这里只做「取包 + 产物存在」两件事：
+      # 真实 sha256 校验与产物结构由脚本自身完成，PyInstaller/入产物仍留给 merge-build。
+      # 代价：每个 PR 每平台多一次引擎下载（macOS 27MB / Windows 45MB，约 1 分钟）。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare python env for engine fetch
+        shell: bash
+        run: |
+          python -m venv .venv
+          if [[ "$RUNNER_OS" == "Windows" ]]; then PY=".venv/Scripts/python.exe"; else PY=".venv/bin/python"; fi
+          "$PY" -m pip install --quiet httpx
+      - name: Fetch bundled engine + assert artifact
+        shell: bash
+        run: |
+          set -e
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            TARGET="x86_64-pc-windows-msvc"
+            ENGINE="python-sidecar/vendor/llama/win-x64/llama-server.exe"
+          else
+            TARGET="aarch64-apple-darwin"
+            ENGINE="python-sidecar/vendor/llama/macos-arm64/llama-server"
+          fi
+          bash scripts/fetch-llama-server.sh --target "$TARGET"
+          test -f "$ENGINE"
+          echo "内置引擎取包 OK: $ENGINE"
       # 下面两步与 merge-build.yml 同理，缺一不可：
       #   1) 占位 sidecar 目录 —— tauri-build 的 build.rs 资源存在性校验
       #   2) gen:ipc —— beforeBuildCommand `npm run build` 里 tsc 依赖 src/types/ipc.ts
