@@ -10,6 +10,8 @@ pub mod classify;
 pub mod cloud_providers;
 /// 应用配置读写命令。
 pub mod config;
+/// Office 文档预览的 Sidecar 抽取路径（`file_preview` 的实现模块，无命令）。
+pub mod document_preview;
 /// (T9.5) E2E 测试专用命令（函数常编译；注册在 main.rs 仅 debug，release 不可调用）。
 pub mod e2e;
 /// 向量表名解析（模型来自配置、版本来自 Sidecar 注册表，避免硬编码 `_v1`）。

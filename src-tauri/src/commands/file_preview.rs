@@ -3,17 +3,22 @@
 //! 安全模型：所有路径先经 `security::validate`（规范化 + 系统目录黑名单拦截），
 //! 前端无法绕过校验直接读取任意文件。读取内容带字节上限，防止超大文件撑爆内存
 //! 与 IPC 传输。
+//!
+//! 拆分（原单文件 409 行，逼近 Rust 模块 500 行强制阈值）：
+//!   - `commands/document_preview.rs`  Office 文档（Sidecar 抽取）路径
+//!   - `commands/file_preview_tests.rs` 单元测试
+//!
+//! 两个 `#[tauri::command]` 留在本模块，注册路径不变。
 
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+use crate::commands::document_preview::extract_document_preview;
 use crate::error::{AppError, AppResult};
 use crate::security;
-use crate::sidecar::proxy;
 use crate::AppState;
 
 /// 文本预览上限（字节）。超出时截断并标记 `truncated=true`。
@@ -124,7 +129,8 @@ fn read_file_preview_inner(path: &str) -> AppResult<FilePreview> {
 /// 文件名扩展名是否为 Office 文档（docx / xlsx / pptx）。
 ///
 /// 这些格式预览需经 Sidecar `doc_extract` 抽取为纯文本（PDF 走原生 data URL）。
-fn is_office_document(file_name: &str) -> bool {
+/// 可见性为 `pub(super)`：`commands::document_preview` 的抽取入口先做同一判定。
+pub(super) fn is_office_document(file_name: &str) -> bool {
     let ext = Path::new(file_name)
         .extension()
         .and_then(|e| e.to_str())
@@ -134,9 +140,8 @@ fn is_office_document(file_name: &str) -> bool {
 
 /// 读取 Office 文档预览：经 Sidecar `/extract/document` 抽取为纯文本后返回。
 ///
-/// 与文本预览同构（`kind=Text`），前端复用 `<pre>` 渲染；原始排版（表格/分页）
-/// 会失真，属预期降级。路径先经 `security::validate` 校验，再转发给本机
-/// Sidecar（HMAC 验签），文件内容不直接暴露给任意调用方。
+/// 实现见 `commands::document_preview::extract_document_preview`；路径校验、PSK 获取与
+/// 转发细节都在那边，本命令只做入口与错误码转发。
 ///
 /// # Errors
 ///
@@ -148,57 +153,9 @@ pub async fn read_document_preview(
     path: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<FilePreview, String> {
-    read_document_preview_async(&path, &state)
+    extract_document_preview(&path, &state)
         .await
         .map_err(|e| e.to_string())
-}
-
-/// Office 文档预览逻辑入口（async：需向 Sidecar 转发抽取请求）。
-async fn read_document_preview_async(path: &str, state: &AppState) -> AppResult<FilePreview> {
-    let safe_path = security::validate(path)?;
-    if !safe_path.is_file() {
-        return Err(AppError::InvalidInput(format!(
-            "FILE-E-002:预览对象不存在或不是文件: {}",
-            safe_path.display()
-        )));
-    }
-    let meta = std::fs::metadata(&safe_path).map_err(read_error)?;
-    let file_name = safe_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string();
-    if !is_office_document(&file_name) {
-        return Err(AppError::InvalidInput(
-            "FILE-E-005:暂不支持该文档类型".into(),
-        ));
-    }
-
-    // Sidecar 握手成功后 PSK 必然存在；缺失视为未就绪
-    let psk = state
-        .sidecar_psk
-        .lock()
-        .map_err(|e| AppError::Internal(format!("PSK 锁中毒: {e}")))?
-        .clone()
-        .ok_or_else(|| AppError::SidecarUnavailable("Sidecar 未就绪，无法抽取文档文本".into()))?;
-    let seq = state.request_seq.fetch_add(1, Ordering::SeqCst);
-    let payload = serde_json::json!({ "path": safe_path.to_string_lossy() }).to_string();
-    let resp = proxy::forward_post("/extract/document", &payload, &psk, seq).await?;
-    let parsed: serde_json::Value = serde_json::from_str(&resp).map_err(AppError::Serialize)?;
-    let text = parsed
-        .get("text")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-
-    Ok(FilePreview {
-        kind: PreviewKind::Text,
-        file_name,
-        file_size: meta.len(),
-        text: Some(text),
-        data_url: None,
-        truncated: false,
-    })
 }
 
 /// 文本上限的 `usize` 视图。
@@ -268,142 +225,15 @@ fn classify_extension(file_name: &str) -> (PreviewKind, Option<&'static str>) {
 }
 
 /// 统一 IO 错误 → 用户可读错误码（`FILE-E-003`）。
-fn read_error(e: std::io::Error) -> AppError {
+///
+/// 可见性为 `pub(super)`：`commands::document_preview` 的元数据读取复用同一文案。
+pub(super) fn read_error(e: std::io::Error) -> AppError {
     AppError::InvalidInput(format!("FILE-E-003:文件读取失败 ({e})"))
 }
 
+// 单元测试移到兄弟文件 file_preview_tests.rs（原内嵌，与实现合计超 Rust 模块 300 行
+// 警告阈值；与 db/file_repo_tests.rs、commands/classify_tests.rs 同款）。
+
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::redundant_clone,
-    clippy::unnecessary_wraps,
-    clippy::significant_drop_tightening
-)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    /// 在临时目录写一个文件，返回 `(TempDir, 文件路径)`。
-    ///
-    /// 调用方必须持有 `TempDir` 直到断言结束（否则目录被删，路径失效）。
-    fn write_temp_file(
-        name: &str,
-        bytes: &[u8],
-    ) -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
-        let tmp = tempfile::tempdir()?;
-        let path = tmp.path().join(name);
-        std::fs::write(&path, bytes)?;
-        Ok((tmp, path))
-    }
-
-    #[test]
-    fn test_text_preview() -> Result<(), Box<dyn std::error::Error>> {
-        let (_tmp, path) = write_temp_file("notes.md", "hello 世界".as_bytes())?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Text);
-        assert_eq!(preview.text.as_deref(), Some("hello 世界"));
-        assert!(!preview.truncated);
-        assert!(preview.data_url.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn test_text_preview_truncates_oversize() -> Result<(), Box<dyn std::error::Error>> {
-        let content = vec![b'a'; text_cap_usize() + 1000];
-        let (_tmp, path) = write_temp_file("big.log", &content)?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Text);
-        assert!(preview.truncated);
-        let text = preview.text.ok_or("text 应非空")?;
-        assert_eq!(text.len(), text_cap_usize());
-        Ok(())
-    }
-
-    #[test]
-    fn test_image_preview_data_url() -> Result<(), Box<dyn std::error::Error>> {
-        let (_tmp, path) = write_temp_file("photo.png", &[0x89, 0x50, 0x4e, 0x47])?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Image);
-        let data_url = preview.data_url.ok_or("data_url 应非空")?;
-        assert!(
-            data_url.starts_with("data:image/png;base64,"),
-            "PNG 应生成 image/png data URL: {data_url}"
-        );
-        assert!(preview.text.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn test_pdf_preview_data_url() -> Result<(), Box<dyn std::error::Error>> {
-        let (_tmp, path) = write_temp_file("doc.pdf", b"%PDF-1.4 fake")?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Pdf);
-        let data_url = preview.data_url.ok_or("data_url 应非空")?;
-        assert!(
-            data_url.starts_with("data:application/pdf;base64,"),
-            "PDF 应生成 application/pdf data URL"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn test_unsupported_extension() -> Result<(), Box<dyn std::error::Error>> {
-        let (_tmp, path) = write_temp_file("archive.zip", b"PK\x03\x04")?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Unsupported);
-        assert!(preview.text.is_none());
-        assert!(preview.data_url.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn test_extension_case_insensitive() -> Result<(), Box<dyn std::error::Error>> {
-        let (_tmp, path) = write_temp_file("README.MD", b"# title")?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Text);
-        Ok(())
-    }
-
-    #[test]
-    fn test_oversize_image_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let size = usize::try_from(MAX_IMAGE_BYTES).unwrap_or(usize::MAX) + 1;
-        let (_tmp, path) = write_temp_file("huge.png", &vec![0u8; size])?;
-        let result = read_file_preview_inner(&path.to_string_lossy());
-        let err = result.expect_err("超大图片应报错").to_string();
-        assert!(err.contains("FILE-E-004"), "应返回 FILE-E-004: {err}");
-        Ok(())
-    }
-
-    #[test]
-    fn test_nonexistent_path_rejected() {
-        let result = read_file_preview_inner("/nonexistent/no-such-file.txt");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_blocked_system_path_rejected() {
-        let result = read_file_preview_inner("/System/Library/CoreServices/SystemVersion.plist");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_file_name_empty_falls_back_to_default() -> Result<(), Box<dyn std::error::Error>> {
-        // 无扩展名文件 → Unsupported，不 panic
-        let (_tmp, path) = write_temp_file("README", b"plain")?;
-        let preview = read_file_preview_inner(&path.to_string_lossy())?;
-        assert_eq!(preview.kind, PreviewKind::Unsupported);
-        assert_eq!(preview.file_name, "README");
-        Ok(())
-    }
-
-    #[test]
-    fn test_is_office_document_recognizes_doc_exts() {
-        assert!(is_office_document("report.docx"));
-        assert!(is_office_document("sheet.XLSX"));
-        assert!(is_office_document("deck.pptx"));
-        assert!(!is_office_document("notes.md"));
-        assert!(!is_office_document("doc.pdf"));
-        assert!(!is_office_document("README"));
-    }
-}
+#[path = "file_preview_tests.rs"]
+mod tests;
