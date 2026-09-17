@@ -2,20 +2,17 @@
 //
 // 与 store 分离的原因：这些是「流式链路」的核心动作（含 IPC 调用与看门狗），
 // 依赖通过 deps 注入（set/get）而非直接引用 store，避免循环依赖并便于单测。
+//
+// 消息构造已拆到 ./messages.ts、会话生命周期兜底已拆到 ./streamLifecycle.ts
+//（原单文件 164 行，逼近 .ts 警告阈值 150）。
 
 import { chatStream } from '@/lib/ipc/chatIpc';
 import { flushThrottledStorage } from '@/lib/throttledStorage';
-import { ChatRole, stripCitationLiterals, type ChatMessage } from '@/types/models';
 import { dispatchChatEvent } from './events';
-import { genMessageId } from './messages';
+import { buildAssistantMessage, buildUserMessage } from './messages';
 import { buildRequest } from './request';
-import {
-  acceptEvent,
-  resetActiveSeq,
-  restartWatchdog,
-  setActiveSeq,
-  stopWatchdog,
-} from './streamControl';
+import { acceptEvent, resetActiveSeq, setActiveSeq, stopWatchdog } from './streamControl';
+import { armWatchdog, sessionReset } from './streamLifecycle';
 import type { ChatGet, ChatSet, ChatState } from './types';
 
 /** 流式动作工厂所需的最小依赖面。 */
@@ -47,43 +44,18 @@ export function createStreamingActions({
       const trimmed = content.trim();
       if (!trimmed || get().isStreaming) return;
 
-      const userMessage: ChatMessage = {
-        id: genMessageId(),
-        role: ChatRole.User,
-        content: trimmed,
-        createdAt: new Date().toISOString(),
-      };
       set((state) => ({
-        messages: [...state.messages, userMessage],
+        messages: [...state.messages, buildUserMessage(trimmed)],
         isStreaming: true,
         status: 'searching',
-        currentStream: '',
-        pendingCitations: [],
-        rewrittenQuery: null,
-        searchInfo: null,
-        retries: 0,
-        retryReason: null,
-        lowConfidence: false,
         error: null,
+        ...sessionReset(),
       }));
 
       // FE-C2：invoke 返回前 activeSeq 置空——旧流残余事件（seq 为旧值）
       // 在此期间到达一律丢弃；首帧可能先于 invoke 返回，由收编逻辑处理
       resetActiveSeq();
-
-      // FE-C3：流级看门狗，超时兜底复位（done/error/clearHistory 时清除）
-      restartWatchdog(() => {
-        const s = get();
-        if (!s.isStreaming) return;
-        stopWatchdog();
-        resetActiveSeq();
-        set({
-          error: '流式响应超时，请重试',
-          isStreaming: false,
-          status: 'idle',
-          currentStream: '',
-        });
-      });
+      armWatchdog({ set, get });
 
       try {
         const seq = await chatStream(buildRequest(trimmed, get().messages));
@@ -102,18 +74,7 @@ export function createStreamingActions({
       // 一律丢弃，避免串入新回答或误杀进行中的新流（判定见 streamControl.acceptEvent）
       if (!acceptEvent(event.request_seq, get().isStreaming)) return;
       // FE-C3：每个已处理事件重置空闲计时
-      restartWatchdog(() => {
-        const s = get();
-        if (!s.isStreaming) return;
-        stopWatchdog();
-        resetActiveSeq();
-        set({
-          error: '流式响应超时，请重试',
-          isStreaming: false,
-          status: 'idle',
-          currentStream: '',
-        });
-      });
+      armWatchdog({ set, get });
 
       dispatchChatEvent(event, { set, get });
     },
@@ -136,26 +97,17 @@ export function createStreamingActions({
         set({ isStreaming: false, status: 'idle', currentStream: '' });
         return;
       }
-      const assistantMessage: ChatMessage = {
-        id: genMessageId(),
-        role: ChatRole.Assistant,
-        content: stripCitationLiterals(currentStream),
-        ...(pendingCitations.length > 0 ? { citations: pendingCitations } : {}),
-        ...(meta.lowConfidence ? { lowConfidence: true } : {}),
-        ...(retries > 0 ? { retries } : {}),
-        createdAt: new Date().toISOString(),
-      };
+      const assistantMessage = buildAssistantMessage({
+        content: currentStream,
+        citations: pendingCitations,
+        retries,
+        lowConfidence: meta.lowConfidence,
+      });
       set((state) => ({
         messages: [...state.messages, assistantMessage],
         isStreaming: false,
         status: 'idle',
-        currentStream: '',
-        pendingCitations: [],
-        retries: 0,
-        retryReason: null,
-        rewrittenQuery: null,
-        searchInfo: null,
-        lowConfidence: false,
+        ...sessionReset(),
       }));
       // 终态消息立即落盘，不等节流窗口
       flushThrottledStorage();
