@@ -260,6 +260,12 @@
      处置：脚本在打印前 `reconfigure(encoding="utf-8")`（与 [go-no-go.py](scripts/go-no-go.py) 同一
      写法），并在 `build-check` 补一步「取引擎 + 断言产物存在」——每 PR 每平台 +1 次下载（macOS
      27MB / Windows 45MB，约 1 分钟）；PyInstaller 与入产物仍只由 merge-build 覆盖。
+     ✅ **已验证（2026-09-17）**：PR Check run `35184498769` 两平台 `build-check` 全绿，新步骤真跑——
+     Windows `[engine] 目标平台 win-x64` → `✅ sha256 校验通过（17.6 MB）` →
+     `内置引擎取包 OK: python-sidecar/vendor/llama/win-x64/llama-server.exe`；macOS 同（10.6 MB）。
+     实测代价远低于预估：引擎下载在 CI 上约 1 秒，整轮 PR Check 仍约 7min。同轮 merge-build
+     （`ce309a0`）另证编码修复后 Windows 三段引擎冒烟（产物断言 / 打包侧车 `/health` / 引擎 `--version`）
+     全部通过。
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按
