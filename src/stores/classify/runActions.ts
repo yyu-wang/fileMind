@@ -1,23 +1,22 @@
-// 执行与撤销动作：分批执行的编排（重入守卫 / 计划筛选 / 令牌取号 / 收尾写状态）与整批撤销。
+// 执行动作：分批执行的编排（重入守卫 / 计划筛选 / 令牌取号 / 收尾写状态）。
 //
 // 与 store 分离的原因：`execute` 的编排是一整块流程，留在 create 回调里会把回调推过
 // 函数行数阈值。实现是模块级具名函数、工厂只做转发——工厂自身也在函数行数阈值内。
 //
-// 执行令牌（FE-C5）随之落在本模块：reset 通过 `invalidateExecution()` 作废在途执行。
+// 同目录拆分（原单文件 181 行，逼近 .ts 警告阈值 150）：
+//   - ./executionToken.ts  执行令牌（FE-C5）：取号 / 作废 / 持有判定
+//   - ./undoActions.ts     整批撤销（store 的 undoLastBatch）
+// 本文件保留执行链路本体与动作工厂；`createRunActions` / `invalidateExecution`
+// 仍是 classifyStore 的既有导入路径。
 
-import { fileIpc } from '@/lib/ipc';
-import { ipcErrorMessage } from '@/lib/ipcError';
 import type { ClassifyPlanItem, ClassifyPreview } from '@/types/ipc';
 import { ClassifyStatus } from '@/types/models';
 import { useFileStore } from '../fileStore';
-import {
-  buildSummary,
-  runBatchedExecution,
-  toPlanItem,
-  type ExecControl,
-  type ExecutionOutcome,
-} from './executor';
-import { INITIAL_PROGRESS, type ClassifyExecMode, type ClassifyState } from './types';
+import { runBatchedExecution, type ExecControl, type ExecutionOutcome } from './executor';
+import { buildSummary, toPlanItem } from './executionPlan';
+import { beginExecution, holdsToken } from './executionToken';
+import type { ClassifyExecMode, ClassifyState } from './types';
+import { undoLastBatchImpl } from './undoActions';
 
 /** 执行/撤销动作所需的最小依赖面。 */
 export interface RunDeps {
@@ -27,18 +26,6 @@ export interface RunDeps {
   get: () => ClassifyState;
   /** 执行循环的非响应式开关（暂停/取消由它中断 chunk 循环） */
   control: ExecControl;
-}
-
-/**
- * 执行令牌（FE-C5）：每次 execute 递增取号，reset() 再递增作废在途执行。
- * 在途执行在每个 await 恢复点校验令牌，失配即放弃写状态——
- * 防止「用户已 reset 重来」后被旧循环的收尾 set 覆盖回 Cancelled/Done。
- */
-let execToken = 0;
-
-/** 作废在途执行（reset 调用；循环恢复后因令牌失配静默退出）。 */
-export function invalidateExecution(): void {
-  execToken += 1;
 }
 
 /** 执行中/暂停中拒绝再次进入（FE-C1：防止双执行循环交错、operations_log 双写污染撤销链）。 */
@@ -61,16 +48,6 @@ function noExecutablePatch(preview: ClassifyPreview): Partial<ClassifyState> {
     execSummary: buildSummary(preview, 0, 0),
     error: hasCategorized ? '没有可执行的分类项（文件已分类或目标冲突）' : null,
   };
-}
-
-/** 取执行令牌号并复位控制开关，同时把状态切到 Running。 */
-function beginExecution(deps: RunDeps, total: number): number {
-  const { set, control } = deps;
-  const token = ++execToken;
-  control.paused = false;
-  control.cancelled = false;
-  set({ status: ClassifyStatus.Running, error: null, progress: { done: 0, total } });
-  return token;
 }
 
 /**
@@ -118,9 +95,9 @@ async function executeImpl(
   }
 
   const plan = execItems.map((item) => toPlanItem(item, mode));
-  const token = beginExecution(deps, plan.length);
+  const token = beginExecution(set, control, plan.length);
   /** 当前执行是否仍持有令牌（reset 会作废在途执行的写状态权利）。 */
-  const stillHolds = (): boolean => token === execToken;
+  const stillHolds = (): boolean => holdsToken(token);
 
   // 执行循环与异常收尾都在 runBatchedExecution 内：它把「已完成的部分结果」
   // 一并带回，store 不会因为异常边界拿不到 success/failed（那样只能按 0/0 收尾）。
@@ -141,31 +118,8 @@ async function executeImpl(
   void useFileStore.getState().loadStats();
 }
 
-/** 撤销最近整批：无批次时提示；成功回 Idle 并刷新统计。 */
-async function undoLastBatchImpl(deps: RunDeps): Promise<void> {
-  const { set, get } = deps;
-  const batchId = get().lastBatchId;
-  if (!batchId) {
-    set({ error: '无最近批次可撤销' });
-    return;
-  }
-  try {
-    const result = await fileIpc.undoBatch(batchId);
-    if (result.status === 'ok') {
-      set({ status: ClassifyStatus.Idle, lastBatchId: null, progress: INITIAL_PROGRESS });
-      // 同 execute：撤销后只刷统计，避免数十万级全量刷新卡 UI
-      void useFileStore.getState().loadStats();
-    } else {
-      set({ error: result.error });
-    }
-  } catch (err) {
-    // 调用方是 `void undoLastBatch()`：抛出会变成 unhandled rejection 且界面无提示
-    set({ error: ipcErrorMessage(err) });
-  }
-}
-
 /**
- * 生成执行/撤销动作（工厂只转发，实现见上方模块级函数）。
+ * 生成执行/撤销动作（工厂只转发，实现见同目录模块级函数）。
  *
  * Args:
  *   deps: store 注入的依赖面
@@ -179,3 +133,5 @@ export function createRunActions(deps: RunDeps): Pick<ClassifyState, 'execute' |
     undoLastBatch: () => undoLastBatchImpl(deps),
   };
 }
+
+export { invalidateExecution } from './executionToken';
