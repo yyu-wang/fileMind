@@ -2,11 +2,13 @@
 //!
 //! 独立文件拆分原因：父模块内嵌 tests 会超 Rust 模块行数阈值（rules/complexity.md），
 //! 与本仓既有约定一致（见 `sidecar/manager_tests/` 目录）。
+//! 注意 `super` 指 `commands::cloud_providers` 模块；被拆到兄弟模块的私有项
+//! （输入校验）与其依赖（`ConfigRepo`）需按模块路径显式引入。
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
-use super::*;
-use crate::db::Database;
+use super::validate::{validate_base_url, validate_optional_website};
+use crate::db::{ConfigRepo, Database};
 use tempfile::NamedTempFile;
 
 fn open_test_db() -> Database {
