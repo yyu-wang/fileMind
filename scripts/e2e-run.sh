@@ -64,6 +64,27 @@ esac
 fail_count=0
 ran_any=0
 
+# —— 本地 E2E 的 Sidecar 注入：必须跑当前源码，不能落到 binaries/ 下的历史打包产物 ——
+# 背景：`filemind/binaries/` 是 gitignored 的构建产物目录，本地跑过一次
+# scripts/build-sidecar.sh 就会留下 onedir 产物，而 Rust 的布局发现**只认 onedir**、
+# 优先级高于 dev wrapper → E2E 实际测的是那份产物里**冻结的旧 Python**。实测踩过：
+# 带着修复前的 sidecar 跑了一轮 E2E，排查被带偏。
+# CI 由 e2e-smoke.yml 注入 stub wrapper（FILEMIND_SIDECAR_BINARY），故这里只在未设置时兜底。
+if [ -z "${FILEMIND_SIDECAR_BINARY:-}" ]; then
+  VENV_PY="$ROOT/.venv/bin/python"
+  if [ ! -x "$VENV_PY" ]; then
+    echo "❌ 未找到 $VENV_PY：本地 E2E 需要它跑当前源码的 Sidecar（先执行 make install）" >&2
+    exit 3
+  fi
+  # 与 filemind/binaries/filemind-sidecar-dev 等价，但临时生成——该 wrapper 是 gitignored 的，
+  # 全新检出没有它，写死在脚本里会让 CI/新机器的本地 E2E 直接跑不起来。
+  SIDECAR_SHIM="${TMPDIR:-/tmp}/fm-e2e-sidecar-$$.sh"
+  printf '#!/bin/sh\nexec "%s" "%s"\n' "$VENV_PY" "$ROOT/python-sidecar/sidecar_entry.py" > "$SIDECAR_SHIM"
+  chmod +x "$SIDECAR_SHIM"
+  export FILEMIND_SIDECAR_BINARY="$SIDECAR_SHIM"
+  echo "── Sidecar 注入：当前源码（$VENV_PY sidecar_entry.py）──"
+fi
+
 # —— Vite dev server 自举 ——
 # 本地 E2E 用 cargo 构建的 debug 二进制（未开 custom-protocol 特性），前端页面
 # 从 devUrl（http://localhost:1420，Vite 开发服务器）加载，而非内嵌 dist。
@@ -99,16 +120,25 @@ _cleanup_vite() {
 }
 trap _cleanup_vite EXIT
 
+# 临时生成的 sidecar shim 也要清（见上面「Sidecar 注入」段）
+_cleanup_sidecar_shim() {
+  [ -n "${SIDECAR_SHIM:-}" ] && rm -f "$SIDECAR_SHIM"
+  return 0
+}
+trap '_cleanup_vite; _cleanup_sidecar_shim' EXIT
+
 # —— 孤儿 sidecar / 应用清理 ——
 # 应用被 wdio 强杀时其子进程 sidecar 会残留并占用 SIDECAR_PORT(8765)，
 # 使下一次启动无法绑定 → 握手失败退出。每个 spec 前清一次本项目的 sidecar。
-# 两个模式都清：真实 PyInstaller 二进制（本地）与 CI stub（python3 sidecar_stub.py）。
+# 三个模式都清：历史打包二进制、CI stub（python3 sidecar_stub.py）与源码 wrapper
+# （python sidecar_entry.py，本地默认注入的那条路径）。
 # 注意：E2E 运行期间请勿同时运行真实 FileMind（两者共用同一 sidecar 端口）。
 # 应用本体也要清：wdio teardown 偶发杀不掉 debug 二进制，孤儿 app 会占用
 # 云端代理端口 8766，使下一个 spec 的应用启动即退出（code=1）。
 _cleanup_sidecars() {
   pkill -f 'filemind-sidecar-aarch64-apple-darwin' 2>/dev/null || true
   pkill -f 'sidecar_stub.py' 2>/dev/null || true
+  pkill -f 'sidecar_entry.py' 2>/dev/null || true
   # 只杀本项目 debug 二进制的孤儿，不误伤正式安装的 FileMind.app
   pkill -f 'src-tauri/target/debug/filemind' 2>/dev/null || true
   sleep 1
