@@ -8,7 +8,7 @@ use crate::error::AppResult;
 /// 内置分类种子：`is_builtin=1` 的默认分类（启发式兜底的目标分类）。
 ///
 /// `id` 用稳定 slug，便于幂等 `INSERT OR IGNORE`；`name` 与分类器启发式映射表
-/// `services/classifier.rs` 的 `HEURISTIC_EXT_MAP` 值保持一致。
+/// `services/classifier_engine.rs` 的 `HEURISTIC_EXT_MAP` 值保持一致。
 pub(super) struct BuiltinCategorySeed {
     id: &'static str,
     name: &'static str,
