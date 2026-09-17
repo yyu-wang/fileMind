@@ -1,7 +1,9 @@
 // T9.5 E2E-003 知识问答（RAG）——真实后端 + 真实 sidecar，默认 skip，`RUN_E2E=1 --rag` 才跑。
 //
 // 前置（由 scripts/e2e-run.sh 的 003 门控分支负责准备与快速校验）：
-//   1. 本机真实 Ollama + 生成模型（默认 `qwen3.8-27b`，见 V010 迁移）——本地生成仍走 Ollama；
+//   1. 本地生成模型：默认走本机真实 Ollama（默认 `qwen3.8-27b`，见 V010 迁移）。
+//      T3 起若探测到 Ollama 不可用且内置 GGUF 就绪，应用会自动回落内置 llama.cpp
+//      引擎；但本脚本门控仍按「Ollama 可达」快速失败（见 scripts/e2e-run.sh 的 003 分支）；
 //   2. 进程内 Embedding 的模型文件：脚本用 scripts/e2e-prepare-models.sh 幂等下到共享缓存
 //      `e2e/.cache/models` 并注入 `FILEMIND_MODEL_DIR`（每个 spec 的数据目录都是全新的，
 //      不注入就会 EmbeddingUnavailableError 卡在建立索引）；

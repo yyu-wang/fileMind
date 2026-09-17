@@ -61,6 +61,18 @@ function ImportActions({ isImporting, onPickZip, onPickDirectory }: ImportAction
   );
 }
 
+/** 区块说明：包内容要求 + 导入耗时 + 网络共享盘提示。 */
+function PackageHint() {
+  return (
+    <p className="section-desc">
+      本机无外网时，可将另一台已下载好模型的机器上的 models 目录（或其 zip 包）导入； 包内需含
+      bge-large-zh-v1.5/ 或 bge-reranker-v2-m3/ 等模型目录。导入为本地拷贝，
+      需要数十秒，过程中请勿关闭应用。若包放在网络共享盘，请先拷到本机再导入： 导入请求有 10
+      分钟上限，数 GB 的包走慢速共享盘可能中途超时。
+    </p>
+  );
+}
+
 export function OfflineModelSection() {
   const importingPackage = useSettingsStore((s) => s.importingPackage);
   const importResult = useSettingsStore((s) => s.importResult);
@@ -95,11 +107,7 @@ export function OfflineModelSection() {
       <h3 id="settings-offline-model-title" className="settings-section__title">
         📦 离线模型包（内网部署）
       </h3>
-      <p className="section-desc">
-        本机无外网时，可将另一台已下载好模型的机器上的 models 目录（或其 zip 包）导入； 包内需含
-        bge-large-zh-v1.5/ 或 bge-reranker-v2-m3/ 等模型目录。导入为本地拷贝，
-        需要数十秒，过程中请勿关闭应用。
-      </p>
+      <PackageHint />
 
       <ImportActions
         isImporting={importingPackage}

@@ -2,6 +2,12 @@
 //
 // 策略：mock plugin-dialog 的 open（原生对话框在测试环境点不到）与 store 的导入动作，
 // 只断言用户可见行为（文案 / testid / 按钮禁用），不触碰后端与实现细节。
+//
+// 覆盖边界（为何没有 E2E 覆盖「点击导入」这一层）：跨进程链路已被
+// `test_routes_models.py::test_import_real_package_end_to_end`（真实 zip → 签名请求 →
+// 落盘 → 就绪）与 `src-tauri/src/commands/model.rs` 的契约用例覆盖，本文件补齐 UI 层；
+// 中间只剩「点按钮 → 原生对话框选路径」——原生对话框无法被 WebDriver 驱动，为其加
+// 测试接缝要在生产组件里留分支，故按「已知缺口」记录，不再重复覆盖上下两层。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';

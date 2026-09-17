@@ -36,7 +36,7 @@ src/components/layout/StatusBar.tsx 94
 src/components/onboarding/OnboardingWizard.tsx 111
 src/components/onboarding/StepConsent.tsx 94
 src/components/onboarding/StepDirectory.tsx 105
-src/components/onboarding/StepModeSelect.tsx 96
+src/components/onboarding/StepModeSelect.tsx 72
 src/components/rules/RuleForm.test.tsx 189
 src/components/rules/RuleForm.tsx 125
 src/components/rules/RuleList.tsx 73
