@@ -79,7 +79,27 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
     Ok(body)
 }
 
-/// 转发 JSON POST 请求到 Sidecar 并返回响应文本。
+/// 普通 Sidecar POST 的超时：10 分钟，防止索引构建等长任务挂起。
+pub const DEFAULT_POST_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// 离线模型包导入的超时：1 小时。
+///
+/// 为什么单独放宽：导入是**同步**本地拷贝，包可达数 GB（rerank 权重 2.2GB），而部署机
+/// 常见「包放在网络共享盘」。按 3MB/s 估算 2GB 需约 11 分钟——10 分钟必然触顶，用户在界面
+/// 上只看到一句失败，Sidecar 侧其实还在拷（响应已被丢弃）。放宽到 1 小时可覆盖 ≥1MB/s 的
+/// 共享盘；保留上限是因为共享盘掉线时不能永远占着界面上的「导入中…」。
+pub const IMPORT_POST_TIMEOUT: Duration = Duration::from_hours(1);
+
+/// 转发 JSON POST 请求到 Sidecar 并返回响应文本（超时取 [`DEFAULT_POST_TIMEOUT`]）。
+///
+/// # Errors
+///
+/// 同 [`forward_post_with_timeout`]。
+pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppResult<String> {
+    forward_post_with_timeout(path, body, psk, seq, DEFAULT_POST_TIMEOUT).await
+}
+
+/// 转发 JSON POST 请求到 Sidecar 并返回响应文本（自定义超时）。
 ///
 /// Sidecar 返回非 2xx（如 503 Embedding 不可用）时，错误体为
 /// `{"detail": "..."}`，与成功响应形状不同。此处直接以
@@ -89,7 +109,13 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
 /// # Errors
 ///
 /// 签名计算、请求发送、响应读取失败，或 Sidecar 返回非 2xx 时返回 `SidecarUnavailable`。
-pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppResult<String> {
+pub async fn forward_post_with_timeout(
+    path: &str,
+    body: &str,
+    psk: &[u8],
+    seq: u64,
+    timeout: Duration,
+) -> AppResult<String> {
     let url = format!("{SIDECAR_BASE_URL}{path}");
     let canonical = handshake::build_request_canonical("POST", path, body, seq);
     let signature = handshake::sign(psk, &canonical)?;
@@ -100,7 +126,7 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
         .header(handshake::SIGNATURE_HEADER, &signature)
         .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
         .body(body.to_string())
-        .timeout(Duration::from_mins(10)) // 10 分钟超时，防止索引构建等长任务挂起
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar POST 失败: {e}")))?;
@@ -295,5 +321,19 @@ mod tests {
         let resp = mock_response(200, "");
         let passed = ensure_stream_success(resp).await.expect("200 应放行");
         assert_eq!(passed.status(), reqwest::StatusCode::OK);
+    }
+
+    /// 导入超时必须显著长于默认值，且固定 1 小时。
+    ///
+    /// 契约而非实现细节：数 GB 的包放网络共享盘时，10 分钟会在拷贝途中触顶——界面报失败
+    /// 而 Sidecar 其实还在拷（响应已被丢弃）。固定成常量是让「有人顺手改回 from_mins(10)」
+    /// 在测试里就暴露，而不是等部署机上的用户遇到。
+    #[test]
+    fn import_timeout_is_one_hour_and_longer_than_default() {
+        assert_eq!(IMPORT_POST_TIMEOUT, Duration::from_hours(1));
+        assert!(
+            IMPORT_POST_TIMEOUT > DEFAULT_POST_TIMEOUT,
+            "导入超时({IMPORT_POST_TIMEOUT:?}) 必须大于默认超时({DEFAULT_POST_TIMEOUT:?})"
+        );
     }
 }

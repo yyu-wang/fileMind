@@ -11,7 +11,8 @@
 //!
 //! 线程模型：下载在 Sidecar 侧的后台任务中进行，`start_model_download` **立即返回**
 //! 当前状态（不阻塞 UI）；进度通过 `model_download_status` 轮询获取。导入则相反，
-//! 是同步等待的本地拷贝（最大模型 2.2GB），需一次拿到「缺哪个文件」的结论。
+//! 是同步等待的本地拷贝（最大模型 2.2GB），需一次拿到「缺哪个文件」的结论，故用
+//! `proxy::IMPORT_POST_TIMEOUT`（1h）而非默认的 10 分钟。
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -160,8 +161,16 @@ pub async fn import_model_package(
 async fn import_model_package_inner(state: &AppState, path: &str) -> AppResult<ModelImportResult> {
     let canonical = safe_package_path(path)?;
     let (psk, seq) = sidecar_call_parts(state)?;
-    let resp =
-        proxy::forward_post(SIDECAR_IMPORT_PATH, &import_body(&canonical), &psk, seq).await?;
+    // 用导入专用超时（1h，见 proxy::IMPORT_POST_TIMEOUT）：数 GB 的包放网络共享盘时，
+    // 默认的 10 分钟会在拷贝途中触顶，界面报失败而 Sidecar 其实还在拷
+    let resp = proxy::forward_post_with_timeout(
+        SIDECAR_IMPORT_PATH,
+        &import_body(&canonical),
+        &psk,
+        seq,
+        proxy::IMPORT_POST_TIMEOUT,
+    )
+    .await?;
     parse_import_result(&resp)
 }
 
