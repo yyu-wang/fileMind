@@ -24,9 +24,12 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Generator
 
+    from app.models import ModelDownloadStatusResponse
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.services import model_download_service as svc  # noqa: E402
+from app.services import model_download_transfer as transfer  # noqa: E402
 
 MODEL = "bge-large-zh-v1.5"
 CONTENT = b"x" * 512
@@ -137,7 +140,7 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[None,
     svc.reset_state()
 
 
-async def _run_download(model: str = MODEL) -> svc.ModelDownloadStatusResponse:
+async def _run_download(model: str = MODEL) -> ModelDownloadStatusResponse:
     """启动下载并等待后台任务结束，返回最终状态。"""
     await svc.ensure_downloaded(model)
     await svc._tasks[model]  # noqa: SLF001  测试内需等待后台任务收敛
@@ -333,7 +336,7 @@ async def test_probe_size_none_when_size_unavailable(
     """HEAD 与 Range 都拿不到大小 → None（前端显示不确定进度）。"""
     client = _FakeClient(head_without_length=True, fail_mirrors=frozenset({"https://"}))
     _patch_client(monkeypatch, client)
-    size = await svc._probe_size(client, "https://hf-mirror.com/x/y")  # noqa: SLF001
+    size = await transfer._probe_size(client, "https://hf-mirror.com/x/y")  # noqa: SLF001
     assert size is None
 
 
@@ -349,7 +352,7 @@ async def test_probe_size_none_when_size_unavailable(
 )
 def test_parse_content_range_total(header: str | None, expected: int | None) -> None:
     """Content-Range 解析：正常、未知总量（*）、残缺、垃圾值、缺失头部。"""
-    assert svc._parse_content_range_total(header) == expected  # noqa: SLF001
+    assert transfer._parse_content_range_total(header) == expected  # noqa: SLF001
 
 
 async def test_ensure_downloaded_unknown_model_raises() -> None:
@@ -390,7 +393,7 @@ def test_cleanup_partials_removes_leftovers(tmp_path: Path) -> None:
     root.mkdir(parents=True)
     (root / "tokenizer.json").write_bytes(b"ok")
     (root / "tokenizer.json.part").write_bytes(b"half")
-    svc._cleanup_partials(root, ("tokenizer.json",))  # noqa: SLF001
+    transfer._cleanup_partials(root, ("tokenizer.json",))  # noqa: SLF001
     assert not (root / "tokenizer.json.part").exists()
     assert (root / "tokenizer.json").exists()
 
@@ -398,13 +401,13 @@ def test_cleanup_partials_removes_leftovers(tmp_path: Path) -> None:
 def test_ssl_context_caps_tls12_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """默认把 TLS 上限压到 1.2（TLS 1.3 访问 hf-mirror 必现 BAD_RECORD_MAC）。"""
     monkeypatch.delenv("FILEMIND_MODEL_TLS_MAX", raising=False)
-    assert svc._ssl_context().maximum_version == ssl.TLSVersion.TLSv1_2  # noqa: SLF001
+    assert transfer._ssl_context().maximum_version == ssl.TLSVersion.TLSv1_2  # noqa: SLF001
 
 
 def test_ssl_context_allows_tls13_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
     """``FILEMIND_MODEL_TLS_MAX=1.3`` 时恢复默认协商（不设上限）。"""
     monkeypatch.setenv("FILEMIND_MODEL_TLS_MAX", "1.3")
-    assert svc._ssl_context().maximum_version == ssl.TLSVersion.MAXIMUM_SUPPORTED  # noqa: SLF001
+    assert transfer._ssl_context().maximum_version == ssl.TLSVersion.MAXIMUM_SUPPORTED  # noqa: SLF001
 
 
 def test_download_one_writes_whole_file_atomically(
@@ -416,7 +419,7 @@ def test_download_one_writes_whole_file_atomically(
     dest = tmp_path / "one.bin"
 
     async def _go() -> None:
-        await svc._download_one(  # noqa: SLF001
+        await transfer._download_one(  # noqa: SLF001
             client,
             svc.MIRRORS[0],
             MODEL,
@@ -444,7 +447,7 @@ def test_download_one_skips_progress_for_aux_files(
     dest = tmp_path / "aux.bin"
 
     async def _go() -> None:
-        await svc._download_one(  # noqa: SLF001
+        await transfer._download_one(  # noqa: SLF001
             client,
             svc.MIRRORS[0],
             MODEL,
