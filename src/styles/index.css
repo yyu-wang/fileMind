@@ -50,8 +50,10 @@
 @import './page-settings-form.css';
 @import './page-settings-embedding.css';
 @import './page-settings-dialog.css';
-/* T6.8 规则编辑页 */
+/* T6.8 规则编辑页（2026-09-17 拆自原 page-rules.css，220 行超 CSS 警告阈值 200；
+ * 两者顺序 = 原文件行序：列表 → 详情表单） */
 @import './page-rules.css';
+@import './page-rule-form.css';
 /* T6.9 主题切换控件 */
 @import './theme-toggle.css';
 /* T6.10 通用状态视图（空态 / 错误） */

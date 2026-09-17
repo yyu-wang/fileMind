@@ -1,0 +1,104 @@
+/* 规则详情表单 + 空态与页面级提示（原 page-rules.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须紧随 page-rules.css 之后
+ * （原文件的行序即规则优先级）。
+ * 本文件 = 原行 123-220。
+ */
+.rule-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.rule-form__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: var(--sp-1);
+}
+
+.rule-form__error {
+  background: var(--warn-light);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2-5) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.rule-form__actions {
+  display: flex;
+  gap: var(--sp-2-5);
+  margin-top: var(--sp-2);
+}
+
+.rule-form__actions .btn--danger {
+  margin-left: auto;
+}
+
+/* 空态/加载态（rules-detail 内嵌） */
+.rules-empty {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2-5);
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  padding: var(--sp-10) var(--sp-5);
+}
+
+.rules-empty__icon {
+  font-size: 36px;
+}
+
+.rules-empty__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.rules-empty__desc {
+  font-size: 13px;
+  max-width: 320px;
+}
+
+.rules-page__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  background: var(--warn-light);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: var(--sp-2-5) var(--sp-3-5);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin: var(--sp-0) var(--sp-6);
+}
+
+.rules-page__error-dismiss {
+  background: none;
+  border: none;
+  color: var(--warn);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* rules-page 主体：保留 main-content 的 padding/overflow，并允许 rules-layout 撑满高度 */
+.rules-page__body {
+  display: flex;
+  flex-direction: column;
+}
+
+.rules-page__body > .rules-layout,
+.rules-page__body > .rules-empty,
+.rules-page__body > .loading-state,
+.rules-page__body > .empty-state {
+  flex: 1;
+  min-height: 0;
+}
