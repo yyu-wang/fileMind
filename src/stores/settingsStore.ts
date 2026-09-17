@@ -11,6 +11,7 @@
 // 落到 ./settings/ 子模块；对外导入路径 @/stores/settingsStore 与公开符号保持不变。
 //   ./settings/types.ts    状态结构 + 动作工厂的依赖面
 //   ./settings/config.ts   加载配置 / 推理模式 / 更新配置 / 本地模型 / 完成引导
+//   ./settings/configMapping.ts  配置默认值 + partial↔AppConfig↔state 映射（纯函数）
 //   ./settings/cloud.ts    同意书 / API Key / 云提供商 CRUD 与激活
 //   ./settings/ollama.ts   本地 Ollama 环境探测
 //   ./settings/modelDownload.ts  Embedding / Rerank / GGUF 下载与离线包导入
@@ -20,11 +21,8 @@ import { persist } from 'zustand/middleware';
 import { applyTheme } from '../lib/theme';
 import { ThemeMode } from '../types/models';
 import { createCloudActions } from './settings/cloud';
-import {
-  createConfigActions,
-  DEFAULT_LOCAL_LLM_BACKEND,
-  DEFAULT_LOCAL_LLM_MODEL,
-} from './settings/config';
+import { createConfigActions } from './settings/config';
+import { DEFAULT_LOCAL_LLM_BACKEND, DEFAULT_LOCAL_LLM_MODEL } from './settings/configMapping';
 import { createModelDownloadActions } from './settings/modelDownload';
 import { createOllamaActions } from './settings/ollama';
 import type { SettingsState } from './settings/types';
