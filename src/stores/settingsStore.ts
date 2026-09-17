@@ -12,7 +12,8 @@
 //   ./settings/types.ts    状态结构 + 动作工厂的依赖面
 //   ./settings/config.ts   加载配置 / 推理模式 / 更新配置 / 本地模型 / 完成引导
 //   ./settings/cloud.ts    同意书 / API Key / 云提供商 CRUD 与激活
-//   ./settings/ollama.ts   本地 Ollama 探测与 Embedding 模型安装
+//   ./settings/ollama.ts   本地 Ollama 环境探测
+//   ./settings/modelDownload.ts  Embedding / Rerank / GGUF 下载与离线包导入
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -24,6 +25,7 @@ import {
   DEFAULT_LOCAL_LLM_BACKEND,
   DEFAULT_LOCAL_LLM_MODEL,
 } from './settings/config';
+import { createModelDownloadActions } from './settings/modelDownload';
 import { createOllamaActions } from './settings/ollama';
 import type { SettingsState } from './settings/types';
 
@@ -73,6 +75,7 @@ export const useSettingsStore = create<SettingsState>()(
       ...createConfigActions({ set, get }),
       ...createCloudActions({ set, get }),
       ...createOllamaActions({ set, get }),
+      ...createModelDownloadActions({ set, get }),
 
       setTheme: (mode) => {
         set({ theme: mode });
