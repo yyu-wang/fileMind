@@ -155,25 +155,25 @@ def _request(
     with contextlib.ExitStack() as stack:
         stack.enter_context(
             mock.patch(
-                "app.api.routes_chat.rewrite_query",
+                "app.api.chat_retrieve.rewrite_query",
                 new=mock.AsyncMock(
                     return_value=RewriteResult(rewritten_query="改写", need_rewrite=True)
                 ),
             )
         )
-        stack.enter_context(mock.patch("app.api.routes_chat.hybrid_search", new=hybrid))
-        stack.enter_context(mock.patch("app.api.routes_chat.rerank", new=rerank_obj))
+        stack.enter_context(mock.patch("app.api.chat_retrieve.hybrid_search", new=hybrid))
+        stack.enter_context(mock.patch("app.api.chat_retrieve.rerank", new=rerank_obj))
         stack.enter_context(
             mock.patch(
-                "app.api.routes_chat.stream_generate", new=lambda *a, **k: _dummy_token_stream()
+                "app.api.chat_answer.stream_generate", new=lambda *a, **k: _dummy_token_stream()
             )
         )
         stack.enter_context(
-            mock.patch("app.api.routes_chat.stream_with_citations", new=_fake_answer)
+            mock.patch("app.api.chat_answer.stream_with_citations", new=_fake_answer)
         )
         stack.enter_context(
             mock.patch(
-                "app.api.routes_chat.validate_answer",
+                "app.api.chat_answer.validate_answer",
                 new=mock.AsyncMock(return_value=SelfCorrectResult(is_correct=True)),
             )
         )

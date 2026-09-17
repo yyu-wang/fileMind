@@ -164,21 +164,21 @@ def test_sse_event_sequence_and_fields(client: TestClient) -> None:
     rewritten = "2024年Q3营收是多少"
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite(rewritten)),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate", new=lambda *a, **k: _dummy_token_stream()
+            "app.api.chat_answer.stream_generate", new=lambda *a, **k: _dummy_token_stream()
         ),
-        mock.patch("app.api.routes_chat.stream_with_citations", new=_fake_citations),
+        mock.patch("app.api.chat_answer.stream_with_citations", new=_fake_citations),
         mock.patch(
-            "app.api.routes_chat.validate_answer",
+            "app.api.chat_answer.validate_answer",
             new=mock.AsyncMock(return_value=SelfCorrectResult(is_correct=True)),
         ),
     ):
@@ -237,9 +237,9 @@ def test_history_passed_to_rewrite(client: TestClient) -> None:
     """请求 history → 转为 ConversationTurn 传给 rewrite_query（P-02 输入）。"""
     rewrite_mock = mock.AsyncMock(return_value=_rewrite("改写"))
     with (
-        mock.patch("app.api.routes_chat.rewrite_query", new=rewrite_mock),
-        mock.patch("app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=[])),
-        mock.patch("app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=[])),
+        mock.patch("app.api.chat_retrieve.rewrite_query", new=rewrite_mock),
+        mock.patch("app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=[])),
+        mock.patch("app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=[])),
     ):
         _post_sse(client, _payload())
 
@@ -256,11 +256,11 @@ def test_no_candidates_short_circuit(client: TestClient) -> None:
     """无检索候选 → token 兜底回答「根据现有文档，未找到相关信息」+ done，无 citation。"""
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("改写")),
         ),
-        mock.patch("app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=[])),
-        mock.patch("app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=[])),
+        mock.patch("app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=[])),
+        mock.patch("app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=[])),
     ):
         resp = _post_sse(client, _payload())
 
@@ -278,19 +278,19 @@ def test_llm_unavailable_yields_error_event(client: TestClient) -> None:
 
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("改写")),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate", new=lambda *a, **k: _dummy_token_stream()
+            "app.api.chat_answer.stream_generate", new=lambda *a, **k: _dummy_token_stream()
         ),
-        mock.patch("app.api.routes_chat.stream_with_citations", new=boom),
+        mock.patch("app.api.chat_answer.stream_with_citations", new=boom),
     ):
         resp = _post_sse(client, _payload())
 
@@ -324,10 +324,10 @@ def test_unexpected_exception_yields_error_event(client: TestClient) -> None:
 
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("改写")),
         ),
-        mock.patch("app.api.routes_chat.hybrid_search", new=boom),
+        mock.patch("app.api.chat_retrieve.hybrid_search", new=boom),
     ):
         resp = _post_sse(client, _payload())
 
@@ -349,21 +349,21 @@ def test_retry_replays_corrected_answer(client: TestClient) -> None:
     corrected = "修正后的回答 [1]"
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("2024年Q3营收多少")),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate",
+            "app.api.chat_answer.stream_generate",
             new=lambda *a, **k: _wrong_answer_stream(),
         ),
         mock.patch(
-            "app.api.routes_chat.validate_answer",
+            "app.api.chat_answer.validate_answer",
             new=mock.AsyncMock(
                 side_effect=[
                     SelfCorrectResult(
@@ -420,21 +420,21 @@ def test_retry_exhausted_marks_low_confidence(client: TestClient) -> None:
     )
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("2024年Q3营收多少")),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate",
+            "app.api.chat_answer.stream_generate",
             new=lambda *a, **k: _wrong_answer_stream(),
         ),
         mock.patch(
-            "app.api.routes_chat.validate_answer",
+            "app.api.chat_answer.validate_answer",
             new=mock.AsyncMock(side_effect=[incorrect, incorrect, incorrect]),
         ),
     ):
@@ -461,20 +461,20 @@ def test_validate_llm_unavailable_fail_open(client: TestClient) -> None:
 
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("2024年Q3营收多少")),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate",
+            "app.api.chat_answer.stream_generate",
             new=lambda *a, **k: _wrong_answer_stream(),
         ),
-        mock.patch("app.api.routes_chat.validate_answer", new=boom),
+        mock.patch("app.api.chat_answer.validate_answer", new=boom),
     ):
         resp = _post_sse(client, _payload())
 
@@ -488,21 +488,21 @@ def test_corrected_empty_marks_low_confidence(client: TestClient) -> None:
     """P-04 检出问题但无修正回答 → 不重试，直接 done.low_confidence=true。"""
     with (
         mock.patch(
-            "app.api.routes_chat.rewrite_query",
+            "app.api.chat_retrieve.rewrite_query",
             new=mock.AsyncMock(return_value=_rewrite("2024年Q3营收多少")),
         ),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate",
+            "app.api.chat_answer.stream_generate",
             new=lambda *a, **k: _wrong_answer_stream(),
         ),
         mock.patch(
-            "app.api.routes_chat.validate_answer",
+            "app.api.chat_answer.validate_answer",
             new=mock.AsyncMock(
                 return_value=SelfCorrectResult(
                     is_correct=False, issues=["无引用"], corrected_answer=None, reason="无引用"
@@ -524,19 +524,19 @@ def test_query_cache_hit_skips_retrieval_pipeline(client: TestClient) -> None:
     rewritten = "2024年Q3营收是多少"
     rewrite_mock = mock.AsyncMock(return_value=_rewrite(rewritten))
     with (
-        mock.patch("app.api.routes_chat.rewrite_query", new=rewrite_mock),
+        mock.patch("app.api.chat_retrieve.rewrite_query", new=rewrite_mock),
         mock.patch(
-            "app.api.routes_chat.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
+            "app.api.chat_retrieve.hybrid_search", new=mock.AsyncMock(return_value=_vector_hits())
         ),
         mock.patch(
-            "app.api.routes_chat.rerank", new=mock.AsyncMock(return_value=_rerank_results())
+            "app.api.chat_retrieve.rerank", new=mock.AsyncMock(return_value=_rerank_results())
         ),
         mock.patch(
-            "app.api.routes_chat.stream_generate", new=lambda *a, **k: _dummy_token_stream()
+            "app.api.chat_answer.stream_generate", new=lambda *a, **k: _dummy_token_stream()
         ),
-        mock.patch("app.api.routes_chat.stream_with_citations", new=_fake_citations),
+        mock.patch("app.api.chat_answer.stream_with_citations", new=_fake_citations),
         mock.patch(
-            "app.api.routes_chat.validate_answer",
+            "app.api.chat_answer.validate_answer",
             new=mock.AsyncMock(return_value=SelfCorrectResult(is_correct=True)),
         ),
     ):

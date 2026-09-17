@@ -1,10 +1,13 @@
 """RAG 流式流水线的纯逻辑：检索结果整形 + SSE 事件载荷组装。
 
 由 :mod:`app.api.routes_chat` 拆出（函数行数门禁：单函数 ≤60 行、模块 ≤500 行）：
-本模块只放**纯变换**（不发起 IO、不解析全局状态），路由层保留编排、事件顺序
-与对服务层的调用（rewrite_query / hybrid_search / rerank / stream_generate /
-stream_with_citations / validate_answer）——那些名字仍需在路由模块内解析，
-以便测试按 ``app.api.routes_chat.<name>`` 注入替身。
+本模块只放**纯变换**（不发起 IO、不解析全局状态），编排留在路由层，
+调用点按阶段再拆为 :mod:`app.api.chat_retrieve`（改写 / 混合检索 / 重排 / 降级）
+与 :mod:`app.api.chat_answer`（生成 / 自我纠正 / SSE 帧）——服务层函数名
+（rewrite_query / hybrid_search / rerank / stream_generate / stream_with_citations /
+validate_answer）在这两个模块内解析，测试须按
+``app.api.chat_retrieve.<name>`` / ``app.api.chat_answer.<name>`` 注入替身
+（monkeypatch 补丁打在调用点所在模块上，打到 ``routes_chat`` 不会生效）。
 
 事件契约见 ``routes_chat`` 模块 docstring（04_API详细规格书 §3.4 + IT-005）。
 """
