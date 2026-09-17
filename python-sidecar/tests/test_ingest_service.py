@@ -1,4 +1,8 @@
-"""ingest_service 单元测试：分块、文本读取、支持判定、build_index 流程（mock Embedding）。"""
+"""ingest_service 单元测试：分块、文本读取、支持判定、build_index 流程（mock Embedding）。
+
+文本层（分块 / 读取 / 支持判定）已拆到 ``app.services.ingest_text``，
+故这些用例引用 ``ingest_text``；``build_index`` 流程仍属 ``ingest_service``。
+"""
 
 from __future__ import annotations
 
@@ -9,23 +13,23 @@ from unittest.mock import patch
 import pytest
 from docx import Document
 
-from app.services import ingest_service
+from app.services import ingest_service, ingest_text
 
 if TYPE_CHECKING:
     from app.db.lancedb_repo import DocumentChunk
 
 
 def test_is_supported_text() -> None:
-    assert ingest_service.is_supported_text(Path("/tmp/a.md"))
-    assert ingest_service.is_supported_text(Path("/tmp/a.py"))
-    assert ingest_service.is_supported_text(Path("/tmp/data.csv"))
-    assert not ingest_service.is_supported_text(Path("/tmp/a.pdf"))
-    assert not ingest_service.is_supported_text(Path("/tmp/a.png"))
-    assert not ingest_service.is_supported_text(Path("/tmp/noext"))
+    assert ingest_text.is_supported_text(Path("/tmp/a.md"))
+    assert ingest_text.is_supported_text(Path("/tmp/a.py"))
+    assert ingest_text.is_supported_text(Path("/tmp/data.csv"))
+    assert not ingest_text.is_supported_text(Path("/tmp/a.pdf"))
+    assert not ingest_text.is_supported_text(Path("/tmp/a.png"))
+    assert not ingest_text.is_supported_text(Path("/tmp/noext"))
 
 
 def test_chunk_text_single_short() -> None:
-    chunks = ingest_service.chunk_text("hello world\nsecond line")
+    chunks = ingest_text.chunk_text("hello world\nsecond line")
     assert len(chunks) == 1
     assert "hello world" in chunks[0]
 
@@ -33,42 +37,42 @@ def test_chunk_text_single_short() -> None:
 def test_chunk_text_splits_long() -> None:
     # 单行超 target → 按行累积切块；200 个 'a' 行，每行 1 字符，target=500 → 应切成多块
     text = "\n".join("a" for _ in range(2000))
-    chunks = ingest_service.chunk_text(text)
+    chunks = ingest_text.chunk_text(text)
     assert len(chunks) > 1
-    assert all(len(c) <= ingest_service.CHUNK_TARGET_CHARS + 1 for c in chunks)
+    assert all(len(c) <= ingest_text.CHUNK_TARGET_CHARS + 1 for c in chunks)
 
 
 def test_chunk_text_paragraph_boundary() -> None:
     # 空行分段：段内短文本不切，空行处收块
     text = "line1\nline2\n\nline3\nline4"
-    chunks = ingest_service.chunk_text(text)
+    chunks = ingest_text.chunk_text(text)
     assert len(chunks) == 2
     assert chunks[0] == "line1\nline2"
     assert chunks[1] == "line3\nline4"
 
 
 def test_chunk_text_empty() -> None:
-    assert ingest_service.chunk_text("") == []
-    assert ingest_service.chunk_text("   \n  ") == []
+    assert ingest_text.chunk_text("") == []
+    assert ingest_text.chunk_text("   \n  ") == []
 
 
 def test_read_text(tmp_path: Path) -> None:
     p = tmp_path / "a.txt"
     p.write_text("hello 世界", encoding="utf-8")
-    assert ingest_service.read_text(p) == "hello 世界"
+    assert ingest_text.read_text(p) == "hello 世界"
 
 
 def test_read_text_truncates_oversize(tmp_path: Path) -> None:
     p = tmp_path / "big.txt"
-    p.write_bytes(b"a" * (ingest_service.MAX_FILE_BYTES + 100))
-    assert len(ingest_service.read_text(p)) == ingest_service.MAX_FILE_BYTES
+    p.write_bytes(b"a" * (ingest_text.MAX_FILE_BYTES + 100))
+    assert len(ingest_text.read_text(p)) == ingest_text.MAX_FILE_BYTES
 
 
 def test_read_text_invalid_utf8_lossy(tmp_path: Path) -> None:
     p = tmp_path / "bin.txt"
     p.write_bytes(b"\xff\xfe\x00abc")
     # 非法字节降级为替换符，不抛异常
-    assert "abc" in ingest_service.read_text(p)
+    assert "abc" in ingest_text.read_text(p)
 
 
 class _FakeManager:

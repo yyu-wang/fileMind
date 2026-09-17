@@ -27,10 +27,10 @@ from app.services.index_service import evaluate_incremental
 from app.services.ingest_service import (
     build_index as build_index_service,
 )
-from app.services.ingest_service import (
+from app.services.ingest_vectors import (
     delete_by_file_ids as delete_by_file_ids_service,
 )
-from app.services.ingest_service import (
+from app.services.ingest_vectors import (
     update_paths as update_paths_service,
 )
 from app.services.query_cache import get_query_cache
