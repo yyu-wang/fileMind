@@ -62,4 +62,3 @@ src/stores/ruleStore.ts 95
 src/stores/settings/cloud.ts 146
 src/stores/settings/config.ts 94
 src/stores/settings/ollama.ts 77
-src/stores/settingsStore.test.ts 311
