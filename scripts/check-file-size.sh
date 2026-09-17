@@ -147,8 +147,16 @@ for candidate in python-sidecar/.venv/bin/python .venv/bin/python python3.12; do
     break
   fi
 done
-py_report=$("${PY_BIN}" - <<'PY' || true
-import ast, pathlib
+py_report=""
+py_status=0
+py_report=$("${PY_BIN}" - <<'PY'
+import ast, pathlib, sys
+
+# 输出强制 UTF-8：Windows 控制台/管道默认 cp1252，而本段消息含中文且**只在有超限时**
+# 才产生，print 会抛 UnicodeEncodeError（CI 在 ubuntu 上不暴露，Windows 本地会踩）。
+# 与 scripts/go-no-go.py、scripts/fetch-llama-server.sh 同一处置。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 SOURCE_LIMIT, TEST_LIMIT = 60, 120
 fails = []
@@ -183,13 +191,19 @@ for root in ('python-sidecar/app', 'python-sidecar/tests'):
 
 print('\n'.join(fails))
 PY
-)
-if ! command -v "${PY_BIN}" >/dev/null 2>&1; then
-  # 不静默跳过：环境缺 Python 时这一维度就没人管了，必须显式告警
-  echo "WARN: 未找到可用的 Python 解释器（需 3.12+），Python 函数行数检查被跳过——请保证该检查可执行"
-fi
+) || py_status=$?
+
 py_fails=0
-if [[ -n "${py_report}" ]]; then
+if [[ ${py_status} -ne 0 ]]; then
+  # 扫描没跑完：解释器缺失只告警（历史口径，环境问题不该卡住提交），解释器报错则必须
+  # FAIL——否则报告丢失会伪装成 FAIL 0（原先 `|| true` 就是这个坑），这一维度白设。
+  if command -v "${PY_BIN}" >/dev/null 2>&1; then
+    echo "FAIL: Python 函数行数扫描未能完成（${PY_BIN} 退出码 ${py_status}，traceback 见上方日志）——门禁不得静默跳过"
+    py_fails=1
+  else
+    echo "WARN: 未找到可用的 Python 解释器（需 3.12+），Python 函数行数检查被跳过——请保证该检查可执行"
+  fi
+elif [[ -n "${py_report}" ]]; then
   echo "${py_report}"
   py_fails=$(printf '%s\n' "${py_report}" | grep -c '^FAIL:' || true)
 fi
