@@ -1,0 +1,53 @@
+/* T6.3 首次启动引导流 · 目录选择步骤（dropzone / 已选目录）
+ *
+ * 原 styles/onboarding.css 拆出（该文件 277 行超 CSS 警告阈值 200）。范围是
+ * StepDirectory 的两个元素：拖拽选择区与已选目录展示条。
+ *
+ * 级联顺序依赖：index.css 中需排在本步骤前一步（骨架/通用）之后、同意书步骤之前
+ * （与拆分前在原文件内的相对位置一致，选择器互不重叠）。
+ */
+
+/* dropzone: 原型拖拽目录选择区 */
+.dropzone {
+  border: 2px dashed var(--rule2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-12);
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  background: var(--bg2);
+}
+
+.dropzone:hover {
+  border-color: var(--accent3);
+  background: var(--accent-light);
+}
+
+.dropzone .icon {
+  font-size: 40px;
+  opacity: 0.5;
+  margin-bottom: var(--sp-3);
+}
+
+.dropzone p {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* selected-dir: 已选目录展示 */
+.selected-dir {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2-5) var(--sp-3-5);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.selected-dir .mono {
+  word-break: break-all;
+}

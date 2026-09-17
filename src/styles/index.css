@@ -18,16 +18,23 @@
 @import './layout-statusbar.css';
 /* T6.3 按钮基础类 + .input 输入控件（含 select 暗色覆盖） */
 @import './components-form.css';
-/* T6.3 首次启动引导流 + T7.5 同意书滚动内容 */
+/* T6.3 首次启动引导流 + T7.5 同意书滚动内容（2026-09-17 按步骤拆自原 onboarding.css，
+ * 277 行超 CSS 警告阈值 200；三者的相对顺序 = 原文件行序，必须保持：
+ * 骨架/通用 → 目录选择步骤 → 同意书步骤） */
 @import './onboarding.css';
+@import './onboarding-directory.css';
+@import './onboarding-consent.css';
 /* 应用加载态 + 05_交互原型 §关键帧动画（pageIn/msgIn/toastIn/blink…） */
 @import './motion.css';
 /* 通用组件：Toast / Modal */
 @import './components-overlay.css';
 /* T6.4 文件管理页：页面容器 / 工具栏 / 主体区 */
 @import './page-files.css';
-/* 文件表格 / 类型图标 / 分类 tag / 搜索框 / 分类状态徽章 */
+/* 文件表格 / 搜索框（2026-09-17 按区域拆自原 files-table.css，283 行触 CSS 警告阈值；
+ * 三者的相对顺序 = 原文件行序，必须保持：表格骨架 → 类型图标 → tag/徽章） */
 @import './files-table.css';
+@import './file-type-icon.css';
+@import './tags.css';
 /* 预览抽屉 + 抽屉内文件路径树（2026-09-17 按区域拆自原 page-files-preview.css，
  * 371 行逼近 CSS 强制阈值 400；三者的相对顺序 = 原文件行序，必须保持：
  * 抽屉骨架 → 内容区 → 路径树） */

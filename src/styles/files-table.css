@@ -1,4 +1,11 @@
-/* 文件表格 */
+/* 文件表格：列头（可排序）+ 虚拟滚动行 + 单元格修饰 + 搜索框
+ *
+ * 拆分（2026-09-17，原 283 行逼近 CSS 警告阈值 200）：
+ *   - ./file-type-icon.css 文件类型图标（含扩展名渐变）
+ *   - ./tags.css           tag / badge 原子样式（跨页面复用）
+ * 三者在 index.css 中按「本文件 → 图标 → tags」顺序引入。
+ */
+
 .files-table {
   display: flex;
   flex-direction: column;
@@ -111,120 +118,12 @@
   color: var(--muted);
 }
 
-/* 文件类型图标（对齐交互原型彩色块） */
+/* 文件类型图标列（图标本体见 ./file-type-icon.css） */
 .files-table__cell--type {
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.file-type-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: 0.2px;
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-}
-
-/* 渐变背景（设计稿 05_交互原型 §文件类型图标） */
-.file-type-icon.pdf,
-.file-type-icon--pdf {
-  background: linear-gradient(135deg, #e53e3e, #c53030);
-}
-.file-type-icon.doc,
-.file-type-icon--doc {
-  background: linear-gradient(135deg, #3182ce, #2b6cb0);
-}
-.file-type-icon.img,
-.file-type-icon--img {
-  background: linear-gradient(135deg, #38a169, #2f855a);
-}
-.file-type-icon.code,
-.file-type-icon--code {
-  background: linear-gradient(135deg, #805ad5, #6b46c1);
-}
-.file-type-icon.xls,
-.file-type-icon--xls {
-  background: linear-gradient(135deg, #2f855a, #276749);
-}
-.file-type-icon.md,
-.file-type-icon--md {
-  background: linear-gradient(135deg, #718096, #4a5568);
-}
-.file-type-icon.ppt,
-.file-type-icon--ppt {
-  background: linear-gradient(135deg, #dd6b20, #c05621);
-}
-.file-type-icon.txt,
-.file-type-icon--txt {
-  background: linear-gradient(135deg, #a0aec0, #718096);
-}
-.file-type-icon.zip,
-.file-type-icon--zip {
-  background: linear-gradient(135deg, #d69e2e, #b7791f);
-}
-.file-type-icon.music,
-.file-type-icon--music {
-  background: linear-gradient(135deg, #ed64a6, #d53f8c);
-}
-.file-type-icon.video,
-.file-type-icon--video {
-  background: linear-gradient(135deg, #9f7aea, #6b46c1);
-}
-.file-type-icon.file,
-.file-type-icon.other,
-.file-type-icon--file {
-  background: linear-gradient(135deg, #a0aec0, #718096);
-}
-
-/* 分类/状态 tag（对齐交互原型 tag-blue/green/amber/gray/purple） */
-.tag {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 1.6;
-  white-space: nowrap;
-}
-
-/* 文档使用单横线命名（tag-blue），保留双横线（tag--blue）作为旧别名 */
-.tag--blue,
-.tag-blue {
-  background: var(--accent-light);
-  color: var(--accent2);
-}
-.tag--green,
-.tag-green {
-  background: var(--success-light);
-  color: var(--success);
-}
-.tag--amber,
-.tag-amber {
-  background: var(--amber-light);
-  color: var(--amber);
-}
-.tag--gray,
-.tag-gray {
-  background: var(--bg3);
-  color: var(--muted);
-}
-.tag--purple,
-.tag-purple {
-  background: var(--purple-bg);
-  color: var(--purple-deep);
-}
-.tag--red,
-.tag-red {
-  background: var(--warn-light);
-  color: var(--warn);
 }
 
 /* 搜索框（对齐交互原型） */
@@ -260,24 +159,5 @@
 }
 
 .search-box input::placeholder {
-  color: var(--muted);
-}
-
-/* 分类状态徽章 */
-.badge {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.badge--categorized {
-  background: var(--success);
-  color: #fff;
-}
-
-.badge--uncategorized {
-  background: var(--bg3);
   color: var(--muted);
 }
