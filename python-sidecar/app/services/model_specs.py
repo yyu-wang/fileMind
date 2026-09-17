@@ -135,6 +135,21 @@ def model_dir_for(model: str) -> Path:
     return resolve_spec(model).root
 
 
+def llm_gguf_path(model: str = LLM_MODEL_NAME) -> Path:
+    """GGUF 权重的本地绝对路径（内置 llama.cpp 引擎的加载目标）。
+
+    就绪判定用 :func:`spec_ready` / ``model_download_service.model_ready``；
+    本函数只算路径，不判断文件是否存在（缺失时由加载方报错）。
+
+    Raises:
+        ValueError: 传入的不是内置生成模型（挡住误传 Embedding/Rerank 模型名的场景）。
+    """
+    if model not in (LLM_MODEL_NAME, LLM_REPO):
+        raise ValueError(f"{model!r} 不是内置生成模型（可用: {LLM_MODEL_NAME}）")
+    spec = resolve_spec(model)
+    return spec.root / spec.weight
+
+
 def importable_models() -> list[str]:
     """可离线导入的模型名（Embedding 注册表 + Rerank + GGUF），顺序稳定。
 

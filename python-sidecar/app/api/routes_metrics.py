@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 
-import psutil  # type: ignore[import-untyped]
+import psutil
 from fastapi import APIRouter
 
 from app.models import MetricsResponse

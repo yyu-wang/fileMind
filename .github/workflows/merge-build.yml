@@ -110,6 +110,7 @@ jobs:
 
       # 打包态冒烟：安装包内必须真实包含 Sidecar onedir 产物（缺它 = 装完即崩），显式失败
       # P2-2：落地位置由 externalBin（主可执行同目录）改为 resources（$RESOURCE/sidecar/）
+      # T3c：内置 llama.cpp 引擎（没装 Ollama 的机器靠它问答）也必须在包内
       - name: Smoke check Sidecar bundled
         shell: bash
         run: |
@@ -119,11 +120,15 @@ jobs:
             test -n "${APP}"
             test -x "${APP}/Contents/Resources/sidecar/filemind-sidecar"
             test -d "${APP}/Contents/Resources/sidecar/_internal"
+            test -d "${APP}/Contents/Resources/sidecar/_internal/vendor/llama"
+            test -x "${APP}/Contents/Resources/sidecar/_internal/vendor/llama/llama-server"
             echo "Sidecar bundled (macOS): ${APP}/Contents/Resources/sidecar"
           elif [[ "${{ runner.os }}" == "Windows" ]]; then
             # Windows 资源收集目录 = target/<triple>/release/sidecar（安装器据此打包）
             test -f "src-tauri/target/${{ matrix.target }}/release/sidecar/filemind-sidecar.exe"
             test -d "src-tauri/target/${{ matrix.target }}/release/sidecar/_internal"
+            test -d "src-tauri/target/${{ matrix.target }}/release/sidecar/_internal/vendor/llama"
+            test -f "src-tauri/target/${{ matrix.target }}/release/sidecar/_internal/vendor/llama/llama-server.exe"
             echo "Sidecar resources collected (Windows)"
           fi
           echo "Sidecar bundled OK"
@@ -151,6 +156,25 @@ jobs:
           test -d "${SIDECAR_DIR}"
           echo "运行 bundle 内 Sidecar 并探活: ${SIDECAR_DIR}"
           "${PY}" scripts/go-no-go.py --test 1 --binary "${SIDECAR_DIR}"
+
+      # T3c 运行时门控：包内内置引擎必须「真能起来」——只验「文件在」会漏掉动态库加载
+      # 失败（本项目同类前车之鉴：strip 弄坏 libssl-3.dll，侧车 100% 起不来而结构冒烟
+      # 全绿）。直接执行包内 llama-server --version：dylib/dll 能加载才有输出，否则非零退出。
+      - name: Smoke check bundled engine runs
+        shell: bash
+        run: |
+          set -e
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ENGINE="src-tauri/target/${{ matrix.target }}/release/sidecar/_internal/vendor/llama/llama-server.exe"
+          else
+            APP="$(find src-tauri/target/${{ matrix.target }}/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+            test -n "${APP}"
+            ENGINE="${APP}/Contents/Resources/sidecar/_internal/vendor/llama/llama-server"
+          fi
+          test -f "${ENGINE}"
+          echo "运行包内引擎: ${ENGINE}"
+          "${ENGINE}" --version
+          echo "Bundled engine runs OK"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

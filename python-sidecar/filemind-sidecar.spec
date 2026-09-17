@@ -9,9 +9,11 @@ P2-2（2026-09-11）由 ``--onefile`` 改为 ``--onedir``：
     （见 src-tauri/tauri.conf.json + sidecar/manager.rs 的目录探测）。
 
 体积门控：≤1600MB，按**目录逻辑大小**（`find -type f` 逐个 size 求和，不跟随 symlink）
-    统计。本机实测：**源产物 915MB / 6136 文件**；经 Tauri `copy_resources` 打包后约
-    1384MB / 6172 文件（该步骤会把 `Python.framework/Versions/Current` 等 36 个 symlink
-    **解引用**成真实文件副本）。两者共用 1600MB 门控，均 PASS。
+    统计。本机实测：**源产物 1011MB / 6186 文件**（含内置 llama.cpp 引擎 58MB，由
+    scripts/build-sidecar.sh 在 PyInstaller 之后拷入，不经过本 spec；T3c 之前为
+    915MB / 6136 文件）；经 Tauri `copy_resources` 打包后估约 1442MB（该步骤会把
+    `Python.framework/Versions/Current` 等 36 个 symlink **解引用**成真实文件副本，
+    engine 之前实测 1384MB）。两者共用 1600MB 门控。
     口径沿革：早期 E1 PoC 不含向量/重排依赖时 onefile 仅约 24MB、门控 80MB；引入 lancedb
     （+pyarrow/lance）、numpy、jieba、ollama/openai、sentence-transformers（离线
     embedding/rerank，拖入 torch）等**运行时硬依赖**后，onefile 压缩态约 315MB、
@@ -129,6 +131,13 @@ _hidden: list[str] = [
 # 非代码资源文件。打包态侧车经 PyInstaller 解压到 _MEI 临时目录，__file__ 相对
 # 路径不再指向源码树，必须显式收集数据文件；否则 /classify（规则引擎）在打包态
 # 会 FileNotFoundError: preset_rules.json。
+#
+# ⚠️ 内置 llama.cpp 引擎（vendor/llama/<platform>/）**不在这里收集**：
+# PyInstaller 的 COLLECT(strip=True) 会对产物里的 native 文件执行 strip（实测日志可
+# 见 `strip -S .../vendor/llama/llama-server`，文件被当作 binary 处理），而本项目有过
+# strip 破坏第三方 dll（libssl-3.dll）导致侧车 100% 起不来的前车之鉴。引擎改由
+# scripts/build-sidecar.sh 在 PyInstaller 之后直接拷进产物，完全不经过 PyInstaller
+# 的处理链（bincache / strip / 依赖分析）。
 _datas: list[tuple[str, str]] = [
     *collect_data_files("app.rules.presets", include_py_files=False),
     # TBD（后续启用 jieba 分词后加回）:

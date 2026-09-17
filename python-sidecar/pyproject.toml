@@ -90,6 +90,13 @@ module = "app.core.logging"
 warn_return_any = false
 disable_error_code = ["unused-ignore", "return-value"]
 
+[[tool.mypy.overrides]]
+# psutil 无 stubs（types-psutil 未随 requirements-dev 安装）。仅在内置 llama.cpp
+# 引擎的孤儿清理里用于「该 PID 的可执行文件是不是我们的引擎」，且整段包在宽 except
+# 中——取不到信息就保守放弃清理，故丢失类型信息无实际风险（同 jieba 处理）。
+module = "psutil"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

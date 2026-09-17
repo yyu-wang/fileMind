@@ -44,6 +44,7 @@ from app.core.loop_errors import install_client_disconnect_filter
 from app.core.parent_watchdog import watch_parent
 from app.db.lancedb_repo import LanceDBManager
 from app.middleware.hmac_auth import HMACMiddleware
+from app.services.inference_probe_service import probe_ollama
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -65,6 +66,9 @@ DEFAULT_EMBEDDING_VERSION = embedding_models.get_model_info(DEFAULT_EMBEDDING_MO
 # 数据根目录：与 SQLite (~/.filemind/data/filemind.db) 同层
 DATA_HOME = Path(os.environ.get("FILEMIND_DATA_HOME", str(Path.home() / ".filemind")))
 LANCEDB_HOME = DATA_HOME / "data" / "lancedb"
+
+#: 后台任务强引用集合（启动期后台探测等；asyncio 要求调用方持有引用防 GC）
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 def _install_disconnect_noise_filter() -> None:
@@ -145,6 +149,26 @@ def _init_lancedb() -> None:
         state.set_lancedb(None)
 
 
+def _start_local_backend_probe() -> None:
+    """步骤 4：后台判定「本地生成该用哪个后端」（不阻塞启动）。
+
+    Ollama 缺席时探测要等满超时（3s），放在启动路径上会拖慢每次冷启动；而判定结果
+    只影响后续生成请求，晚几百毫秒无妨。判定与回写逻辑在探测服务内（它是「Ollama
+    是否可用」的唯一事实来源）——未安装 Ollama 的机器据此自动回落到内置引擎。
+    """
+
+    async def _probe() -> None:
+        try:
+            await probe_ollama()
+        except Exception as exc:  # noqa: BLE001 - 探测失败不影响启动（生成阶段另有报错）
+            logger.warning("main.local_backend_probe_failed", error=str(exc))
+
+    task = asyncio.create_task(_probe())
+    # asyncio 文档要求持有任务强引用：否则任务可能在完成前被 GC 掉
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期钩子。
@@ -154,15 +178,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         1. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
         2. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
         3. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
+        4. 后台探测 Ollama 并判定本地生成后端（T3b，不阻塞启动）
 
-    shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
+    shutdown：取消后台探测任务；其余资源由 Rust 端 ``SidecarManager`` kill 回收。
     """
     _install_disconnect_noise_filter()
     _start_parent_watchdog()
     _inject_psk_from_stdin()
     _init_lancedb()
+    _start_local_backend_probe()
 
     yield
+
+    for task in list(_background_tasks):
+        task.cancel()
 
 
 app = FastAPI(

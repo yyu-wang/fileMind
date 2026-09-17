@@ -2,27 +2,49 @@
 
 不涉及真实后端：断言解析到的 Provider 类型 / 窗口数值 / 截断行为 /
 版本判定，全部纯函数级。
+
+T3b 补充：本地生成的「生效后端」分流（Ollama / 内置 llama.cpp 引擎）。
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.services.provider_factory import (  # noqa: E402
     GENERATION_RESERVE,
     MODEL_CONTEXT_LIMITS,
+    effective_local_backend,
     get_max_context,
     prompt_version_for,
+    record_local_backend,
+    reset_local_backend_cache,
     resolve_cloud_provider,
     resolve_provider,
     truncate_context,
 )
 from app.services.providers.deepseek_provider import DeepSeekProvider  # noqa: E402
+from app.services.providers.llamacpp_provider import LlamaCppProvider  # noqa: E402
 from app.services.providers.ollama_provider import OllamaProvider  # noqa: E402
 from app.services.providers.openai_provider import OpenAIProvider  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_backend(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """隔离本地后端 env 与「生效后端」模块级缓存（缓存会跨用例残留）。"""
+    monkeypatch.delenv("FILEMIND_LOCAL_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("FILEMIND_ACTIVE_CLOUD_PROVIDER", raising=False)
+    reset_local_backend_cache()
+    yield
+    reset_local_backend_cache()
 
 
 def test_model_context_limits_values() -> None:
@@ -87,3 +109,50 @@ def test_prompt_version_for() -> None:
     assert prompt_version_for("deepseek-chat") == "cloud"
     assert prompt_version_for("qwen3.8-27b") == "local"
     assert prompt_version_for("") == "local"
+
+
+# ------------------------------------------------------------------
+# T3b：本地生成后端分流
+# ------------------------------------------------------------------
+
+
+def test_local_backend_defaults_to_ollama() -> None:
+    """未判定 + 未配置 → 保持既有行为（Ollama）。"""
+    assert effective_local_backend() == "ollama"
+    assert isinstance(resolve_provider("qwen3.8-27b"), OllamaProvider)
+
+
+def test_local_backend_explicit_builtin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户显式选 builtin → 走内置引擎，且 prompt 版本仍是 local。"""
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "builtin")
+
+    provider = resolve_provider("qwen3.8-27b")
+
+    assert isinstance(provider, LlamaCppProvider)
+    assert provider.version == "local"
+    assert prompt_version_for("qwen3.8-27b") == "local"
+
+
+def test_local_backend_auto_fallback_from_probe() -> None:
+    """探测回写 builtin（Ollama 不可用且内置就绪）→ 即便配置是 ollama 也走内置。
+
+    这是「未安装 Ollama 的机器开箱可用」的关键：默认配置不动，靠探测判定生效后端。
+    """
+    record_local_backend("builtin")
+
+    assert isinstance(resolve_provider("qwen3.8-27b"), LlamaCppProvider)
+
+
+def test_probe_can_revert_backend_to_ollama() -> None:
+    """探测回写 ollama（Ollama 恢复）→ 下次解析回到 Ollama（判定可逆）。"""
+    record_local_backend("builtin")
+    record_local_backend("ollama")
+
+    assert isinstance(resolve_provider("qwen3.8-27b"), OllamaProvider)
+
+
+def test_cloud_prefix_wins_over_builtin_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """云端模型前缀优先于本地后端判定（内置后端不影响云端推理）。"""
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "builtin")
+
+    assert isinstance(resolve_provider("gpt-4o"), OpenAIProvider)

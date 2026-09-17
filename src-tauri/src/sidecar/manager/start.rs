@@ -5,13 +5,49 @@
 //! `abort_failed_start` 清理，避免留下「进程活着但未完成握手」的中间态——那会让
 //! watchdog 探活成功判 Idle 而 `AppState` 里没有匹配 PSK，所有代理请求永久 401。
 
-use super::{SidecarManager, MAX_READY_ATTEMPTS, READY_POLL_INTERVAL_MS};
+use super::{
+    CloudSidecarEnv, LocalLlmSidecarEnv, SidecarManager, MAX_READY_ATTEMPTS, READY_POLL_INTERVAL_MS,
+};
 use crate::error::{AppError, AppResult};
 use crate::security::{handshake, log_redact};
 use crate::sidecar::proxy;
 use std::io::Write;
 use std::process::Stdio;
 use std::time::Duration;
+
+/// 注入 Sidecar 需要的「自定义配置」env（云端代理 T7.4 + 本地生成后端 T3b）。
+///
+/// 独立成函数的原因：`start` 已触及 clippy 的 `too_many_lines` 阈值（60），
+/// 且这两段注入与启动流程无关，只是把 Rust 侧已知的配置翻译成 env。
+fn apply_injected_env(
+    cmd: &mut std::process::Command,
+    cloud: Option<&CloudSidecarEnv>,
+    local: Option<&LocalLlmSidecarEnv>,
+) {
+    // 云端模式注入代理地址/token/脱敏开关
+    if let Some(cloud) = cloud {
+        cmd.env("FILEMIND_CLOUD_PROXY_URL", &cloud.proxy_url);
+        cmd.env("FILEMIND_CLOUD_PROXY_TOKEN", &cloud.proxy_token);
+        cmd.env(
+            "FILEMIND_CLOUD_MASKING",
+            if cloud.masking_on { "1" } else { "0" },
+        );
+        // P-07：注入激活提供商 slug（Sidecar ProviderFactory 据此选
+        // GenericCloudProvider，空串不注入，Python 端 env 读不到即回落内置规则）
+        if !cloud.active_cloud_provider.is_empty() {
+            cmd.env(
+                "FILEMIND_ACTIVE_CLOUD_PROVIDER",
+                &cloud.active_cloud_provider,
+            );
+        }
+    }
+    // T3b：本地生成后端配置。builtin 时 Sidecar 会拉起随包分发的 llama.cpp 引擎
+    // 作为子进程；未安装 Ollama 的部署机器依赖它完成知识问答。
+    if let Some(local) = local {
+        cmd.env("FILEMIND_LOCAL_LLM_BACKEND", &local.backend);
+        cmd.env("FILEMIND_LOCAL_LLM_MODEL", &local.model);
+    }
+}
 
 impl SidecarManager {
     /// 启动 Sidecar 子进程，通过 stdin 注入 PSK，返回 PSK 给调用方。
@@ -44,23 +80,12 @@ impl SidecarManager {
         if let Ok(data_home) = std::env::var("FILEMIND_DATA_HOME") {
             cmd.env("FILEMIND_DATA_HOME", data_home);
         }
-        // T7.4：云端模式注入代理地址/token/脱敏开关（重启后经字段保持）
-        if let Some(cloud) = &self.cloud_env {
-            cmd.env("FILEMIND_CLOUD_PROXY_URL", &cloud.proxy_url);
-            cmd.env("FILEMIND_CLOUD_PROXY_TOKEN", &cloud.proxy_token);
-            cmd.env(
-                "FILEMIND_CLOUD_MASKING",
-                if cloud.masking_on { "1" } else { "0" },
-            );
-            // P-07：注入激活提供商 slug（Sidecar ProviderFactory 据此选
-            // GenericCloudProvider，空串不注入，Python 端 env 读不到即回落内置规则）
-            if !cloud.active_cloud_provider.is_empty() {
-                cmd.env(
-                    "FILEMIND_ACTIVE_CLOUD_PROVIDER",
-                    &cloud.active_cloud_provider,
-                );
-            }
-        }
+        // T7.4 + T3b：云端代理与本地生成后端的 env 注入
+        apply_injected_env(
+            &mut cmd,
+            self.cloud_env.as_ref(),
+            self.local_llm_env.as_ref(),
+        );
         // 本地服务（Ollama / Sidecar 自身）必须绕过系统代理（Clash 等），
         // 否则 httpx 读 http_proxy 走代理 → 本地 127.0.0.1 被代理拦截返回 502。
         // httpx 同时检查 NO_PROXY 与 no_proxy，双写最稳妥（不同系统读法不一）。

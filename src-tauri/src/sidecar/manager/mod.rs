@@ -108,6 +108,19 @@ pub struct CloudSidecarEnv {
     pub active_cloud_provider: String,
 }
 
+/// 本地生成后端需要注入 Sidecar 进程的 env（T3b）。
+///
+/// 由 Rust 在启动 Sidecar 前从 `app_config` 读取：Sidecar 不读 SQLite，本地生成走
+/// Ollama 还是内置 llama.cpp 引擎只能这样送进去（同 `CloudSidecarEnv` 的原因）。
+/// 未安装 Ollama 的部署机器靠 `builtin` 完成问答。
+#[derive(Clone)]
+pub struct LocalLlmSidecarEnv {
+    /// 用户配置的本地生成后端（`ollama` / `builtin`）。
+    pub backend: String,
+    /// 内置后端的 GGUF 模型标识（模型目录名，对应 Python 侧注册表）。
+    pub model: String,
+}
+
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
 pub struct SidecarManager {
     /// Sidecar 二进制绝对路径，由调用方在构造时显式注入。
@@ -124,6 +137,8 @@ pub struct SidecarManager {
     port: u16,
     /// 云端模式 env 注入（`None` = 本地模式，不注入；重启后自动保持）。
     cloud_env: Option<CloudSidecarEnv>,
+    /// 本地生成后端 env 注入（`None` = 不注入，Sidecar 用其默认值 `ollama`）。
+    local_llm_env: Option<LocalLlmSidecarEnv>,
     /// 当前 Sidecar 握手后的 PSK（`restart` 后替换为新 PSK）。
     psk: Option<Vec<u8>>,
     /// 最近重启时间戳队列：用于 `CrashLoop` 窗口阈值统计。
@@ -150,6 +165,7 @@ impl SidecarManager {
             process: None,
             port: SIDECAR_PORT,
             cloud_env: None,
+            local_llm_env: None,
             psk: None,
             recent_restarts: VecDeque::new(),
             consecutive_failures: 0,
@@ -200,6 +216,19 @@ impl SidecarManager {
     #[must_use]
     pub const fn cloud_env(&self) -> Option<&CloudSidecarEnv> {
         self.cloud_env.as_ref()
+    }
+
+    /// 设置本地生成后端 env 注入（须在 `start` 之前调用；重启自动沿用）。
+    pub fn set_local_llm_env(&mut self, env: LocalLlmSidecarEnv) {
+        self.local_llm_env = Some(env);
+    }
+
+    /// 当前本地生成后端 env 配置（未设置时为 `None`）。
+    ///
+    /// 同 [`Self::cloud_env`]：setup 重建管理器时需要克隆过去，否则打包态会丢配置。
+    #[must_use]
+    pub const fn local_llm_env(&self) -> Option<&LocalLlmSidecarEnv> {
+        self.local_llm_env.as_ref()
     }
 }
 

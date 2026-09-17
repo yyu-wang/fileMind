@@ -67,6 +67,9 @@ fn main() {
     // 端口绑定必须延迟到 setup（原因见 `sidecar_setup::configure_cloud_env` 注释）。
     let proxy_state = sidecar_setup::configure_cloud_env(&mut sidecar_manager, &database);
 
+    // T3b：本地生成后端配置（backend / GGUF 标识）——Sidecar 不读 SQLite，由此注入
+    sidecar_setup::configure_local_llm_env(&mut sidecar_manager, &database);
+
     // BE-M3：启动前清理上次异常退出残留的孤儿 Sidecar，防止旧进程占住 8765 端口
     sidecar_setup::cleanup_orphans();
 

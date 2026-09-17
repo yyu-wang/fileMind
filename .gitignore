@@ -76,6 +76,11 @@ src-tauri/.filemind-dev/
 filemind/binaries/*
 !filemind/binaries/.gitkeep
 
+# 内置 llama.cpp 引擎（llama-server 及其 dylib/dll，约 27MB；由 scripts/fetch-llama-server.sh
+# 按 pin 的 tag + sha256 现场下载，不入库）
+python-sidecar/vendor/llama/*
+!python-sidecar/vendor/llama/.gitkeep
+
 
 # T10.5 基准产物（生成的数据/中间 JSON，不入库；报告 docs/e10-bench-report.json 单独提交）
 .bench/

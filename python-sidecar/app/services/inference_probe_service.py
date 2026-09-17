@@ -30,7 +30,7 @@ from app.models import (
     _OllamaTagsResponse,
 )
 from app.rules.llm_classify import OLLAMA_HOST
-from app.services import model_download_service
+from app.services import local_llm_service, model_download_service, provider_factory
 
 #: /api/tags 探测超时（秒）——轻量查询，快速失败避免设置页卡住
 PROBE_TIMEOUT = float(os.environ.get("FILEMIND_PROBE_TIMEOUT", "3"))
@@ -60,14 +60,19 @@ async def probe_ollama() -> InferenceTestResponse:
     无关（Embedding 已改为 Sidecar 进程内 ONNX 推理，模型由设置页下载）。
     Ollama 只决定本地生成模型（``llm_models``）的可用性。
 
+    副作用（T3b）：按探测结果判定本地生成该用哪个后端并回写给 Provider 工厂——见
+    :func:`_resolve_local_backend`。探测是「Ollama 是否可用」的唯一事实来源。
+
     Returns:
         探测结果（available / llm_models / embedding_models / error_code / message）。
     """
     try:
         tags = await _fetch_ollama_tags()
     except (httpx.HTTPError, ValidationError) as exc:
+        await _resolve_local_backend(ollama_available=False)
         return _unavailable(f"Ollama 探测失败: {exc}")
 
+    await _resolve_local_backend(ollama_available=True)
     return InferenceTestResponse(
         available=True,
         status="ok",
@@ -76,6 +81,37 @@ async def probe_ollama() -> InferenceTestResponse:
         error_code=None,
         message=None,
     )
+
+
+async def _resolve_local_backend(*, ollama_available: bool) -> None:
+    """判定「本地生成该用哪个后端」并回写给 Provider 工厂。
+
+    用户配置是**偏好**而非硬开关：
+
+    - ``builtin`` → 恒用内置引擎（用户显式选择，不因 Ollama 在线而改变）；
+    - ``ollama``（默认）→ 优先 Ollama；但 Ollama 不可用且内置引擎前置条件（随包产物
+      + GGUF 权重）满足时**自动回落内置**。否则默认配置在未安装 Ollama 的部署机器上
+      依然问答不了，与「不装 Ollama 也能知识问答」的目标冲突；
+    - 两者都不可用 → 保持配置值，失败在生成阶段如实报出（不假装可用）。
+
+    Args:
+        ollama_available: 本次探测得到的 Ollama 可用性。
+    """
+    configured = local_llm_service.configured_backend()
+    if configured == local_llm_service.BACKEND_BUILTIN or ollama_available:
+        provider_factory.record_local_backend(configured)
+        return
+    ready, reason = await local_llm_service.engine_ready()
+    if ready:
+        logger.warning("inference_probe.builtin_fallback", configured=configured)
+        provider_factory.record_local_backend(local_llm_service.BACKEND_BUILTIN)
+        return
+    logger.warning(
+        "inference_probe.local_llm_unavailable",
+        configured=configured,
+        reason=reason,
+    )
+    provider_factory.record_local_backend(configured)
 
 
 async def _fetch_ollama_tags() -> list[_OllamaTagModel]:

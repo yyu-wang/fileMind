@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import httpx
 import pytest
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.core.embedding_models import MODEL_REGISTRY  # noqa: E402
-from app.services import model_download_service  # noqa: E402
+from app.services import local_llm_service, model_download_service, provider_factory  # noqa: E402
 from app.services.inference_probe_service import probe_ollama  # noqa: E402
 
 MODEL = "bge-large-zh-v1.5"
@@ -175,3 +179,93 @@ async def test_probe_malformed_response_returns_unavailable() -> None:
     assert result.status == "unavailable"
     assert result.error_code == "OLLAMA_UNAVAILABLE"
     assert len(result.embedding_models) == len(MODEL_REGISTRY)
+
+
+# ------------------------------------------------------------------
+# T3b：探测回写「本地生成该用哪个后端」
+# ------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_backend(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """隔离本地后端 env 与生效后端缓存（探测会写模块级缓存）。"""
+    monkeypatch.delenv("FILEMIND_LOCAL_LLM_BACKEND", raising=False)
+    provider_factory.reset_local_backend_cache()
+    yield
+    provider_factory.reset_local_backend_cache()
+
+
+def _ollama_down_client() -> mock.AsyncMock:
+    """Ollama 连接失败的 fake client。"""
+    client = mock.AsyncMock()
+    client.get.side_effect = httpx.ConnectError("connection refused")
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = False
+    return client
+
+
+def _patch_engine_ready(monkeypatch: pytest.MonkeyPatch, *, ready: bool) -> None:
+    """替换内置引擎前置条件检查结果。"""
+
+    async def _fake_ready() -> tuple[bool, str]:
+        return (True, "") if ready else (False, "引擎可执行文件缺失")
+
+    monkeypatch.setattr(local_llm_service, "engine_ready", _fake_ready)
+
+
+async def test_probe_records_ollama_when_available() -> None:
+    """Ollama 可用 → 生效后端记录为 ollama（不动用户配置）。"""
+    with mock.patch(
+        "app.services.inference_probe_service.httpx.AsyncClient",
+        return_value=_fake_client(TAGS_PAYLOAD),
+    ):
+        await probe_ollama()
+
+    assert provider_factory.effective_local_backend() == "ollama"
+
+
+async def test_probe_falls_back_to_builtin_when_ollama_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ollama 不可用 + 内置引擎就绪 → 生效后端自动回落 builtin。
+
+    这是「未安装 Ollama 的机器开箱可问答」的判定入口：用户配置保持默认 ollama。
+    """
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
+    _patch_engine_ready(monkeypatch, ready=True)
+    with mock.patch(
+        "app.services.inference_probe_service.httpx.AsyncClient",
+        return_value=_ollama_down_client(),
+    ):
+        await probe_ollama()
+
+    assert provider_factory.effective_local_backend() == local_llm_service.BACKEND_BUILTIN
+
+
+async def test_probe_keeps_configured_backend_when_both_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两者都不可用 → 保持配置值，不假装可用（失败在生成阶段如实报出）。"""
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
+    _patch_engine_ready(monkeypatch, ready=False)
+    with mock.patch(
+        "app.services.inference_probe_service.httpx.AsyncClient",
+        return_value=_ollama_down_client(),
+    ):
+        await probe_ollama()
+
+    assert provider_factory.effective_local_backend() == "ollama"
+
+
+async def test_probe_keeps_explicit_builtin_even_if_ollama_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户显式选 builtin → 即使 Ollama 在线也不改变（配置是偏好但显式优先）。"""
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", local_llm_service.BACKEND_BUILTIN)
+    with mock.patch(
+        "app.services.inference_probe_service.httpx.AsyncClient",
+        return_value=_fake_client(TAGS_PAYLOAD),
+    ):
+        await probe_ollama()
+
+    assert provider_factory.effective_local_backend() == local_llm_service.BACKEND_BUILTIN
