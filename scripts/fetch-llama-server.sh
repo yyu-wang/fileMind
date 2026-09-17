@@ -105,6 +105,13 @@ from pathlib import Path
 
 import httpx
 
+# Windows 控制台/管道默认按 cp1252 编码，下面的中文与 emoji 进度输出会直接抛
+# UnicodeEncodeError（实测：CI windows-latest 在「开始下载」前就退出，构建假失败）。
+# 与 scripts/go-no-go.py 同一处置：强制 UTF-8 输出。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 #: 各平台 pin 死的产物（**绝不用 latest/动态解析 tag**：引擎随安装包分发，构建必须可复现。
 #: sha256 取自 GitHub release assets API 的 digest 字段，下载后再本地复核一次。）
 #:   key → (tag, asset 文件名, sha256, 归档类型)
