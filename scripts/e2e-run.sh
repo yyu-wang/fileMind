@@ -7,9 +7,13 @@
 # 用法：
 #   bash scripts/e2e-run.sh              # 本地：E2E-001/002 + spike（真实 sidecar）
 #   RUN_E2E=1 bash scripts/e2e-run.sh    # 追加 E2E-006（真实下载 313MB 模型）
-#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 追加 E2E-003（需本机真实 Ollama 生成模型；
+#   RUN_E2E=1 bash scripts/e2e-run.sh --rag   # 追加 E2E-003（本地生成走本机真实 Ollama；
 #                                             # 进程内 Embedding 的模型文件会自动准备到
 #                                             # e2e/.cache/models，首次约 313MB）
+#   RUN_E2E=1 bash scripts/e2e-run.sh --rag --rag-builtin
+#                                            # 追加 E2E-003，但本地生成走**内置引擎**：
+#                                            # 把 Ollama 指到死端口触发应用自动回落
+#                                            # （T3），并准备 GGUF 权重（首次约 2GB）
 #   bash scripts/e2e-run.sh --ci         # CI 冒烟：只跑 E2E-001/002（stub sidecar）
 set -euo pipefail
 
@@ -18,10 +22,13 @@ cd "$ROOT"
 
 # —— 参数解析 ——
 RUN_RAG=0
+#: --rag-builtin：003 的本地生成改走内置 llama.cpp 引擎（验证「没装 Ollama 的机器」）
+RAG_BUILTIN=0
 CI_MODE=0
 for arg in "$@"; do
   case "$arg" in
     --rag) RUN_RAG=1 ;;
+    --rag-builtin) RUN_RAG=1; RAG_BUILTIN=1 ;;
     --ci) CI_MODE=1 ;;
     *) echo "未知参数: $arg" >&2; exit 2 ;;
   esac
@@ -41,8 +48,18 @@ MODEL_ENABLED=$([ "${RUN_E2E:-0}" = 1 ] && echo 1 || echo 0)
 # 跨 spec 复用的缓存，进 003 前由 scripts/e2e-prepare-models.sh 幂等准备（已就绪秒级返回）。
 # 006 刻意不注入 → 仍走全新目录真实下载，下载链路覆盖不受影响。
 MODEL_CACHE_DIR="${FILEMIND_E2E_MODEL_DIR:-$ROOT/e2e/.cache/models}"
-#: 本地生成仍走 Ollama（Embedding/Reranker 已本地化），端口与 sidecar 层 E2E 约定一致
+#: 本地生成默认走 Ollama（Embedding/Reranker 已本地化），端口与 sidecar 层 E2E 约定一致
 OLLAMA_TAGS_URL="http://127.0.0.1:11434/api/tags"
+#: 内置引擎路径（--rag-builtin）用的「死端口」：让 Sidecar 判定 Ollama 不可达 → 探测
+#: 自动回落到内置 llama.cpp 引擎（见 python-sidecar/app/services/inference_probe_service.py）。
+#: 用 1 号端口而不是去动用户本机的 Ollama 服务：E2E 不该改宿主环境。
+OLLAMA_DEAD_URL="http://127.0.0.1:1"
+#: 内置引擎产物（dev 源码树；只有随包分发的 macOS arm64 / Windows x64 两平台有）
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64)                  ENGINE_BIN="$ROOT/python-sidecar/vendor/llama/macos-arm64/llama-server" ;;
+  MINGW*/*|MSYS*/*|CYGWIN*/*)    ENGINE_BIN="$ROOT/python-sidecar/vendor/llama/win-x64/llama-server.exe" ;;
+  *)                             ENGINE_BIN="" ;;
+esac
 
 fail_count=0
 ran_any=0
@@ -109,20 +126,48 @@ for spec in e2e/specs/*.e2e.ts; do
       [ "$CI_MODE" = 1 ] && { echo "── 跳过 ${name}（CI 精简）──"; continue; }
       ;;
     003-*)
-      [ "$RAG_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1 + --rag，真实 Ollama）──"; continue; }
-      # 前置 1：Ollama 生成模型（本地生成仍走 Ollama）——快速失败，不必等 spec 120s 超时
-      if ! curl -s -m 3 "$OLLAMA_TAGS_URL" >/dev/null; then
-        echo "❌ ${name} 前置不满足：Ollama 不可达（$OLLAMA_TAGS_URL）"
-        fail_count=$((fail_count + 1))
-        ran_any=1
-        continue
-      fi
-      # 前置 2：进程内 Embedding 的模型文件（共享缓存，幂等：已就绪秒级返回）
-      if ! bash "$ROOT/scripts/e2e-prepare-models.sh" "$MODEL_CACHE_DIR"; then
-        echo "❌ ${name} 前置不满足：Embedding 模型准备失败（见上方原因）"
-        fail_count=$((fail_count + 1))
-        ran_any=1
-        continue
+      [ "$RAG_ENABLED" = 1 ] || { echo "── 跳过 ${name}（需 RUN_E2E=1 + --rag）──"; continue; }
+      # 前置：本地生成后端 + 进程内 Embedding 模型。两条路径都要求「至少有一条可用的
+      # 本地生成」，不满足就快速失败，不必等 spec 侧 120s 超时。
+      if [ "$RAG_BUILTIN" = 1 ]; then
+        # 内置引擎路径（验证「没装 Ollama 的机器」）：Ollama 指死端口 → 应用自动回落 builtin
+        OLLAMA_TAGS_URL="${OLLAMA_DEAD_URL}/api/tags"
+        if [ -z "$ENGINE_BIN" ]; then
+          echo "❌ ${name} 前置不满足：当前平台不随包分发内置引擎（仅 macOS arm64 / Windows x64）"
+          fail_count=$((fail_count + 1))
+          ran_any=1
+          continue
+        fi
+        if [ ! -x "$ENGINE_BIN" ]; then
+          echo "❌ ${name} 前置不满足：内置引擎产物缺失（$ENGINE_BIN）"
+          echo "   先执行 bash scripts/fetch-llama-server.sh"
+          fail_count=$((fail_count + 1))
+          ran_any=1
+          continue
+        fi
+        # Embedding + GGUF 一起准备（GGUF 约 2GB，首次较慢；之后幂等秒回）
+        if ! bash "$ROOT/scripts/e2e-prepare-models.sh" --with-llm "$MODEL_CACHE_DIR"; then
+          echo "❌ ${name} 前置不满足：模型准备失败（Embedding / GGUF，见上方原因）"
+          fail_count=$((fail_count + 1))
+          ran_any=1
+          continue
+        fi
+      else
+        # 前置 1：Ollama 生成模型（默认路径）
+        if ! curl -s -m 3 "$OLLAMA_TAGS_URL" >/dev/null; then
+          echo "❌ ${name} 前置不满足：Ollama 不可达（$OLLAMA_TAGS_URL）"
+          echo "   想不装 Ollama 跑本 spec：加 --rag-builtin（走内置引擎）"
+          fail_count=$((fail_count + 1))
+          ran_any=1
+          continue
+        fi
+        # 前置 2：进程内 Embedding 的模型文件（共享缓存，幂等：已就绪秒级返回）
+        if ! bash "$ROOT/scripts/e2e-prepare-models.sh" "$MODEL_CACHE_DIR"; then
+          echo "❌ ${name} 前置不满足：Embedding 模型准备失败（见上方原因）"
+          fail_count=$((fail_count + 1))
+          ran_any=1
+          continue
+        fi
       fi
       ;;
     006-*)
@@ -159,13 +204,14 @@ for spec in e2e/specs/*.e2e.ts; do
     *)                             unset FILEMIND_E2E_SKIP_ONBOARDING ;;
   esac
 
-  # 006 要等一次真实 313MB 下载：单独上调 Mocha 单测超时（config 默认 180s 不够），
-  # 其余 spec 保持默认，避免真挂住时白等半小时。
-  if [ "$name" = "006-model-download.e2e.ts" ]; then
-    export FILEMIND_E2E_MOCHA_TIMEOUT=1800000
-  else
-    unset FILEMIND_E2E_MOCHA_TIMEOUT
-  fi
+  # 006 要等一次真实 313MB 下载、003 要等生成（内置引擎冷启动实测 ~22s + 长上下文预填充，
+  # 两条用例各含 120s+120s 的显式等待），默认 180s 单测超时不够 → 单独上调 Mocha 超时。
+  # 注意：spec 里的 `this.timeout()` 抬不动 Mocha 自己的计时器（见 006 的注释），只能走这个 env。
+  case "$name" in
+    006-model-download.e2e.ts) export FILEMIND_E2E_MOCHA_TIMEOUT=1800000 ;;
+    003-rag-chat.e2e.ts)       export FILEMIND_E2E_MOCHA_TIMEOUT=600000 ;;
+    *)                         unset FILEMIND_E2E_MOCHA_TIMEOUT ;;
+  esac
 
   # 模型目录：只有「需要已就绪模型」的 spec 指向共享缓存（Rust 启动 Sidecar 时
   # 继承本进程 env，故这里 export 即可直达）；其余保持全新目录，让 006 继续覆盖
@@ -174,6 +220,17 @@ for spec in e2e/specs/*.e2e.ts; do
     export FILEMIND_MODEL_DIR="$MODEL_CACHE_DIR"
   else
     unset FILEMIND_MODEL_DIR
+  fi
+
+  # 内置引擎路径（--rag-builtin）：把 Sidecar 读到的 Ollama 地址指到死端口，触发自动回落。
+  # 必须逐 spec 复位：export 会泄漏给后续 spec，让它们的探测也误判 Ollama 不可达。
+  # FILEMIND_E2E_LOCAL_BACKEND 告诉 spec 当前后端：内置 3B 的措辞断言要放宽（见 003 文件头）。
+  if [ "$name" = "003-rag-chat.e2e.ts" ] && [ "$RAG_BUILTIN" = 1 ]; then
+    export FILEMIND_OLLAMA_URL="$OLLAMA_DEAD_URL"
+    export FILEMIND_E2E_LOCAL_BACKEND="builtin"
+  else
+    unset FILEMIND_OLLAMA_URL
+    unset FILEMIND_E2E_LOCAL_BACKEND
   fi
 
   _cleanup_sidecars
