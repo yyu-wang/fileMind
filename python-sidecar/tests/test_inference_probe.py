@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 from app.core.embedding_models import MODEL_REGISTRY  # noqa: E402
 from app.services import local_llm_service, model_download_service, provider_factory  # noqa: E402
 from app.services.inference_probe_service import probe_ollama  # noqa: E402
+from app.services.model_specs import llm_gguf_path  # noqa: E402
 
 MODEL = "bge-large-zh-v1.5"
 
@@ -204,13 +205,18 @@ def _ollama_down_client() -> mock.AsyncMock:
     return client
 
 
-def _patch_engine_ready(monkeypatch: pytest.MonkeyPatch, *, ready: bool) -> None:
-    """替换内置引擎前置条件检查结果。"""
+def _satisfy_builtin_prerequisites(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """让内置引擎的前置条件成立（引擎产物 + GGUF 权重），但不真正启动引擎。
 
-    async def _fake_ready() -> tuple[bool, str]:
-        return (True, "") if ready else (False, "引擎可执行文件缺失")
-
-    monkeypatch.setattr(local_llm_service, "engine_ready", _fake_ready)
+    刻意不 mock ``engine_prerequisites``：mock 掉它会让「前置检查按配置短路」这类缺陷
+    溜过测试（T3b 就踩过——回落判定永不生效，测试却全绿）。
+    """
+    stub = tmp_path / "llama-server"
+    stub.write_bytes(b"stub")
+    monkeypatch.setenv("FILEMIND_LLAMA_SERVER_BINARY", str(stub))
+    gguf = llm_gguf_path()
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_bytes(b"data")
 
 
 async def test_probe_records_ollama_when_available() -> None:
@@ -225,14 +231,14 @@ async def test_probe_records_ollama_when_available() -> None:
 
 
 async def test_probe_falls_back_to_builtin_when_ollama_down(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ollama 不可用 + 内置引擎就绪 → 生效后端自动回落 builtin。
+    """Ollama 不可用 + 内置引擎前置齐备 → 生效后端自动回落 builtin。
 
-    这是「未安装 Ollama 的机器开箱可问答」的判定入口：用户配置保持默认 ollama。
+    这是「未安装 Ollama 的机器开箱可问答」的判定入口（用户配置保持默认 ollama）。
     """
     monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
-    _patch_engine_ready(monkeypatch, ready=True)
+    _satisfy_builtin_prerequisites(tmp_path, monkeypatch)
     with mock.patch(
         "app.services.inference_probe_service.httpx.AsyncClient",
         return_value=_ollama_down_client(),
@@ -243,11 +249,11 @@ async def test_probe_falls_back_to_builtin_when_ollama_down(
 
 
 async def test_probe_keeps_configured_backend_when_both_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """两者都不可用 → 保持配置值，不假装可用（失败在生成阶段如实报出）。"""
+    """两者都不可用（内置前置缺失）→ 保持配置值，不假装可用（失败在生成阶段如实报出）。"""
     monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
-    _patch_engine_ready(monkeypatch, ready=False)
+    monkeypatch.setenv("FILEMIND_LLAMA_SERVER_BINARY", str(tmp_path / "absent-engine"))
     with mock.patch(
         "app.services.inference_probe_service.httpx.AsyncClient",
         return_value=_ollama_down_client(),

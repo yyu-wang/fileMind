@@ -101,7 +101,7 @@ async def _resolve_local_backend(*, ollama_available: bool) -> None:
     if configured == local_llm_service.BACKEND_BUILTIN or ollama_available:
         provider_factory.record_local_backend(configured)
         return
-    ready, reason = await local_llm_service.engine_ready()
+    ready, reason = local_llm_service.engine_prerequisites()
     if ready:
         logger.warning("inference_probe.builtin_fallback", configured=configured)
         provider_factory.record_local_backend(local_llm_service.BACKEND_BUILTIN)

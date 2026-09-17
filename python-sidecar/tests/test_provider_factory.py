@@ -28,6 +28,7 @@ from app.services.provider_factory import (  # noqa: E402
     record_local_backend,
     reset_local_backend_cache,
     resolve_cloud_provider,
+    resolve_local_provider,
     resolve_provider,
     truncate_context,
 )
@@ -156,3 +157,23 @@ def test_cloud_prefix_wins_over_builtin_backend(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "builtin")
 
     assert isinstance(resolve_provider("gpt-4o"), OpenAIProvider)
+
+
+def test_resolve_local_provider_returns_none_for_default_ollama() -> None:
+    """默认（Ollama）后端 → ``None``：调用点继续走既有 Ollama 路径（零行为变化）。"""
+    assert resolve_local_provider("qwen3.8-27b") is None
+
+
+def test_resolve_local_provider_returns_builtin_provider() -> None:
+    """生效后端为内置（探测回落）→ 返回内置 Provider，供 chat 流式路径使用。"""
+    record_local_backend("builtin")
+
+    assert isinstance(resolve_local_provider("qwen3.8-27b"), LlamaCppProvider)
+
+
+def test_resolve_local_provider_ignores_active_cloud_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """激活云端 slug env 不得影响本地选路（切回本地后 env 冻结 → 否则打到云端代理 401）。"""
+    monkeypatch.setenv("FILEMIND_ACTIVE_CLOUD_PROVIDER", "deepseek")
+    record_local_backend("builtin")
+
+    assert isinstance(resolve_local_provider("qwen3.8-27b"), LlamaCppProvider)

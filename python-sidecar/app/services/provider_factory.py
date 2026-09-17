@@ -163,6 +163,29 @@ def resolve_provider(model: str = LLM_MODEL) -> LLMProvider:
     return OllamaProvider(model=model)
 
 
+def resolve_local_provider(model: str) -> LLMProvider | None:
+    """解析**本地**生成 Provider（不参与云端判定）。
+
+    与 :func:`resolve_provider` 的分工：调用方（路由层）已按推理模式过滤过云端，这里若
+    复用 :func:`resolve_provider` 会把 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 重新带回来
+    （切回本地后 env 冻结 → 云端代理 → 缺 Key 401，见 ``routes_chat._resolve_chat_provider``
+    的注释）。
+
+    生效后端为内置引擎（T3：用户显式选 builtin，或探测发现 Ollama 不可用而自动回落）时
+    返回 :class:`LlamaCppProvider`；否则返回 ``None``，含义是「走调用点既有的 Ollama
+    路径」——用 ``None`` 而不是 ``OllamaProvider`` 是为了让默认路径**零行为变化**。
+
+    Args:
+        model: 生成模型名（本地模型名；内置引擎忽略它，用配置的 GGUF 标识）。
+
+    Returns:
+        内置引擎 Provider；默认（Ollama）后端返回 ``None``。
+    """
+    if effective_local_backend() == local_llm_service.BACKEND_BUILTIN:
+        return LlamaCppProvider()
+    return None
+
+
 def resolve_cloud_provider(model: str) -> LLMProvider | None:
     """解析云端 Provider；本地模型 / 空串返回 ``None``。
 

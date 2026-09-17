@@ -237,14 +237,35 @@ async def test_engine_error_message_is_redacted(
     assert "secret.gguf" in message, "保留末级文件名便于定位"
 
 
-async def test_engine_ready_reports_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """探测接口按前置条件逐步给出原因（不启动进程）。"""
+def test_engine_prerequisites_ignores_backend_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """前置条件检查与后端配置解耦：配置为 ollama 时同样如实报告。
+
+    回归点：原实现按配置短路返回「后端为 ollama」，而本函数的唯一调用方是探测的回落
+    判定——于是「配置 ollama + Ollama 不可用」这条路上回落永不发生，未装 Ollama 的
+    机器上默认配置问答不了（与 T3 目标相悖）。
+    """
     monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
-    assert await svc.engine_ready() == (False, "后端为 ollama")
+    assert svc.engine_prerequisites() == (False, "引擎可执行文件缺失")
 
     monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "builtin")
-    ready, reason = await svc.engine_ready()
-    assert (ready, reason) == (False, "引擎可执行文件缺失")
+    assert svc.engine_prerequisites() == (False, "引擎可执行文件缺失")
+
+
+def test_engine_prerequisites_reports_missing_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """引擎在但 GGUF 未下载 → 报权重缺失（前置的第二道）。"""
+    monkeypatch.setenv("FILEMIND_LLAMA_SERVER_BINARY", str(_write_stub_engine(tmp_path)))
+    assert svc.engine_prerequisites() == (False, f"权重未下载（{LLM_MODEL_NAME}）")
+
+
+def test_engine_prerequisites_ok_when_engine_and_weights_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """引擎产物 + GGUF 齐备 → 前置满足（这时才允许回落 builtin）。"""
+    monkeypatch.setenv("FILEMIND_LLAMA_SERVER_BINARY", str(_write_stub_engine(tmp_path)))
+    _place_gguf(tmp_path)
+    assert svc.engine_prerequisites() == (True, "")
 
 
 # ------------------------------------------------------------------
@@ -254,6 +275,26 @@ async def test_engine_ready_reports_reason(monkeypatch: pytest.MonkeyPatch) -> N
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="桩引擎依赖 shebang，Windows 不适用"
 )
+
+
+@_POSIX_ONLY
+async def test_ensure_server_allows_fallback_when_prerequisites_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置仍是 ollama 但前置齐备（探测已回落到内置）→ 允许拉起引擎。
+
+    回归：原先按配置硬拒（「内置生成后端未开启（当前 ollama）」），把探测回落路径整个
+    挡死——E2E-003 内置引擎路径实测就是卡在这里，机器上没装 Ollama 就永远问答不了。
+    """
+    stub = _write_stub_engine(tmp_path)
+    _place_gguf(tmp_path)
+    monkeypatch.setenv("FILEMIND_LLAMA_SERVER_BINARY", str(stub))
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
+
+    base_url = await svc.ensure_server()
+
+    assert base_url.startswith("http://127.0.0.1:")
+    assert svc.status().running
 
 
 @_POSIX_ONLY

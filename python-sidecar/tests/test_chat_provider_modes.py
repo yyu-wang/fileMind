@@ -25,6 +25,7 @@ from app.api.routes_chat import _resolve_chat_provider  # noqa: E402
 from app.models import ChatStreamRequest  # noqa: E402
 from app.services.providers.deepseek_provider import DeepSeekProvider  # noqa: E402
 from app.services.providers.generic_cloud_provider import GenericCloudProvider  # noqa: E402
+from app.services.providers.llamacpp_provider import LlamaCppProvider  # noqa: E402
 
 
 def _chat_request(inference_mode: str, llm_model: str) -> ChatStreamRequest:
@@ -44,9 +45,10 @@ def test_local_mode_returns_none_with_frozen_active_cloud_env(
 
     ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 冻结时，若 provider 判定只看 env，
     本地模型也会被解析成云端 Provider（→ 云端代理 → 无 Key 401）。local
-    模式必须强制回落 ``None``（本地 Ollama）。
+    模式必须强制回落本地（默认 Ollama 后端时即 ``None``）。
     """
     monkeypatch.setenv("FILEMIND_ACTIVE_CLOUD_PROVIDER", "deepseek")
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
     provider = _resolve_chat_provider(_chat_request("local", "qwen2.5:7b"))
     assert provider is None
 
@@ -56,8 +58,27 @@ def test_local_mode_forced_local_even_for_cloud_model_name(
 ) -> None:
     """local 模式携带云端前缀模型名（异常输入）也不得误走云端。"""
     monkeypatch.setenv("FILEMIND_ACTIVE_CLOUD_PROVIDER", "deepseek")
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "ollama")
     provider = _resolve_chat_provider(_chat_request("local", "deepseek-chat"))
     assert provider is None
+
+
+def test_local_mode_uses_builtin_provider_after_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归（T3 漏网）：生效后端为内置引擎时，本地模式的生成必须走内置 Provider。
+
+    此前 local 模式恒返回 ``None``（= 调用点 legacy Ollama 路径），于是「没装 Ollama
+    的机器」上探测虽已回落成 builtin，生成仍打到 Ollama 并报
+    「All connection attempts failed」——E2E-003 内置引擎路径实测就是这个症状。
+    """
+    monkeypatch.setenv("FILEMIND_ACTIVE_CLOUD_PROVIDER", "deepseek")
+    monkeypatch.setenv("FILEMIND_LOCAL_LLM_BACKEND", "builtin")
+
+    provider = _resolve_chat_provider(_chat_request("local", "qwen2.5:7b"))
+
+    assert isinstance(provider, LlamaCppProvider)
+    assert provider.version == "local"
 
 
 def test_cloud_mode_builtin_prefix_resolves_cloud_provider() -> None:

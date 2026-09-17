@@ -50,7 +50,7 @@ from app.services.generation_service import (
     stream_with_citations,
 )
 from app.services.hybrid_search import hybrid_search
-from app.services.provider_factory import resolve_cloud_provider
+from app.services.provider_factory import resolve_cloud_provider, resolve_local_provider
 from app.services.query_cache import get_query_cache
 from app.services.rerank_service import RerankResult, RerankUnavailableError, rerank
 from app.services.rewrite_service import ConversationTurn, rewrite_query
@@ -90,20 +90,24 @@ def _resolve_chat_provider(request: ChatStreamRequest) -> LLMProvider | None:
 
     推理模式（``inference_mode``）是用户当前生效选择的权威来源：仅显式
     ``cloud`` 才解析云端 Provider，其余（``local``/``hybrid``/未知值）一律
-    回落本地 Ollama（返回 ``None``）。若不先过滤 ``local``，Rust 启动
-    Sidecar 时注入的 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在
-    撤回云端同意 / 切回本地后仍然生效（Sidecar 进程不随模式切换重启，
-    env 冻结），导致本地模型名也被 :func:`resolve_cloud_provider` 判定为
-    云端并打到云端代理，最终因缺 Key 报 401。
+    走本地生成。若不先过滤 ``local``，Rust 启动 Sidecar 时注入的
+    ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在撤回云端同意 / 切回本地后
+    仍然生效（Sidecar 进程不随模式切换重启，env 冻结），导致本地模型名也被
+    :func:`resolve_cloud_provider` 判定为云端并打到云端代理，最终因缺 Key 报 401。
+
+    本地生成按**生效后端**选路（T3）：内置引擎（显式选 builtin，或探测发现
+    Ollama 不可用而自动回落）返回内置 Provider；默认（Ollama）返回 ``None``，
+    交给调用点既有的 Ollama 路径——零行为变化。
 
     Args:
         request: 流式请求（含 ``inference_mode`` 与 ``llm_model``）。
 
     Returns:
-        云端 Provider 实例；非云端模式返回 ``None``（调用方走 Ollama 路径）。
+        云端 Provider 实例；本地模式返回内置引擎 Provider 或 ``None``
+        （``None`` 表示走 Ollama 路径）。
     """
     if request.inference_mode.strip().lower() != "cloud":
-        return None
+        return resolve_local_provider(request.llm_model)
     return resolve_cloud_provider(request.llm_model)
 
 

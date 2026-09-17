@@ -254,6 +254,9 @@ async def ensure_server(model: str | None = None) -> str:
     幂等：已在运行且模型一致时直接返回（并刷新使用时间）；换模型 / 进程已退出时
     重启。并发调用由生命周期锁串行化，不会拉起多个引擎。
 
+    启动许可 = 配置为 ``builtin`` **或** 前置条件齐备（后者对应探测回落：用户配置仍是
+    ollama，但 Ollama 不可用、内置可用）。配置是偏好而非硬开关，与 T3 的整体设计一致。
+
     Args:
         model: GGUF 模型标识；``None`` 用配置值（env → 默认模型）。
 
@@ -261,14 +264,21 @@ async def ensure_server(model: str | None = None) -> str:
         引擎 base URL（如 ``http://127.0.0.1:53211``）。
 
     Raises:
-        LocalLlmUnavailableError: 后端未开启、二进制缺失、权重未下载或启动失败。
+        LocalLlmUnavailableError: 后端未开启且前置不满足、二进制缺失、权重未下载或启动失败。
     """
     target = model or configured_model()
     if configured_backend() != BACKEND_BUILTIN:
-        raise LocalLlmUnavailableError(
-            f"内置生成后端未开启（当前 {configured_backend()}）；"
-            "请在「设置」中切换为内置引擎，或改用 Ollama"
-        )
+        # 配置没开内置后端时，**前置齐备**同样允许拉起：探测发现 Ollama 不可用且内置可用
+        # 时会回落到内置（见 inference_probe_service._resolve_local_backend），此时调用方
+        # （LlamaCppProvider）正是这个场景。原先按配置硬拒，会把回落路径整个挡死——实测
+        # E2E 报「内置生成后端未开启（当前 ollama）」，机器上没装 Ollama 就永远问答不了。
+        # 未齐备则维持原错误（给可操作提示），不会偷偷起一个跑不起来的引擎。
+        ready, reason = engine_prerequisites()
+        if not ready:
+            raise LocalLlmUnavailableError(
+                f"内置生成后端未开启（当前 {configured_backend()}）且前置条件不满足：{reason}；"
+                "请在「设置」中切换为内置引擎，或改用 Ollama"
+            )
     async with _lifecycle_lock:
         _unload_if_idle()
         if _is_usable() and _state.model == target:
@@ -279,14 +289,18 @@ async def ensure_server(model: str | None = None) -> str:
         return await _start(target)
 
 
-async def engine_ready() -> tuple[bool, str]:
-    """探测内置引擎可用性（不启动进程，仅检查前置条件）。
+def engine_prerequisites() -> tuple[bool, str]:
+    """内置引擎的**前置条件**是否齐备（不启动进程，也**不看后端配置**）。
 
     Returns:
-        ``(是否可用, 说明)``：可用于设置页/健康检查展示；说明为空表示无异常。
+        ``(是否齐备, 说明)``：说明为空表示前置齐备、可直接拉起引擎。
+
+    为什么这里不判断「后端是否配置为 builtin」（原实现按配置短路，是 T3b 的真缺陷）：
+    本函数的调用方就是探测的**回落判定**——「配置为 ollama 但 Ollama 不可用」正是需要
+    它的场景。按配置短路会让回落永不发生，未安装 Ollama 的机器上默认配置依然问答不了，
+    与 T3 的目标直接相悖。mock 掉本函数的单测因此掩盖了该缺陷（见回归用例
+    ``test_probe_falls_back_to_builtin_when_ollama_down``）。
     """
-    if configured_backend() != BACKEND_BUILTIN:
-        return False, f"后端为 {configured_backend()}"
     binary = local_llm_engine.server_binary_path()
     if binary is None or not binary.is_file():
         return False, "引擎可执行文件缺失"
