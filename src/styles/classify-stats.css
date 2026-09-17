@@ -1,0 +1,143 @@
+/* 智能分类页：右侧统计面板 + 底部警告条与分类来源标签（原 classify-layout.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 classify-layout.css、classify-tree.css
+ * 之后（原文件的行序即规则优先级）；来源标签的暗色覆盖在紧随其后的
+ * classify-result.css 里，故本文件不可后移。
+ * 本文件 = 原行 185-320。
+ */
+/* 右侧统计面板（对齐原型 stats-panel） */
+.stats-panel {
+  width: 260px;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  /* 右侧固定不随左侧滚动；内容超出时仅自身独立滚动 */
+  overflow-y: auto;
+}
+
+.stats-card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+}
+
+.stats-card h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: var(--sp-2);
+}
+
+.stats-card__row {
+  margin-bottom: var(--sp-1);
+}
+
+.stats-card__row:last-child {
+  margin-bottom: var(--sp-0);
+}
+
+.stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: var(--sp-1);
+}
+
+.stat-row .label {
+  color: var(--muted);
+}
+
+.stat-row .value {
+  font-weight: 600;
+}
+
+.stat-bar {
+  height: 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg3);
+  overflow: hidden;
+}
+
+.stat-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-xs);
+}
+
+.stats-card--tip {
+  background: var(--accent-light);
+  border-color: var(--accent2);
+}
+
+.stats-card__tip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent2);
+  margin-bottom: var(--sp-2);
+}
+
+.stats-card__tip-text {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.stats-tree {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.8;
+  font-family: monospace;
+}
+
+.stats-tree__root {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.stats-tree__child {
+  padding-left: var(--sp-3);
+}
+
+/* 底部警告条（对齐原型 classify-footer，按钮已收敛到头部） */
+.classify-footer {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+  flex-shrink: 0;
+}
+
+.warning-text {
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* 分类来源标签 */
+.classify-rule-tag {
+  display: inline-block;
+  padding: var(--sp-0) var(--sp-2);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.classify-rule-tag--rule {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.classify-rule-tag--heuristic {
+  background: #e9d8fd;
+  color: #6b46c1;
+}
+
+.classify-rule-tag--pending {
+  background: #fef3c7;
+  color: var(--warn);
+}

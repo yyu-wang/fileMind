@@ -36,12 +36,20 @@
 @import './page-files-path-tree.css';
 /* T6.5 智能分类页 */
 @import './page-classify.css';
-/* 分类页双栏布局 / 预览树 / 统计面板 / 底部警告条 */
+/* 分类页双栏布局 / 预览树 / 统计面板 / 底部警告条（2026-09-17 按区域拆自原
+ * classify-layout.css，320 行逼近 CSS 强制阈值 400；相对顺序 = 原文件行序，
+ * 必须保持：布局骨架 → 树节点 → 统计面板与来源标签） */
 @import './classify-layout.css';
+@import './classify-tree.css';
+@import './classify-stats.css';
 /* 分类来源标签 / 执行进度遮罩 / 分类结果面板 */
 @import './classify-result.css';
-/* T6.6 知识问答页：头部 / 消息 / 气泡 / 引用来源 / 空态 / 建议词 */
+/* T6.6 知识问答页：头部 / 消息 / 气泡 / 引用来源 / 空态 / 建议词（2026-09-17 按区域
+ * 拆自原 page-chat.css，315 行逼近 CSS 强制阈值 400；三者的相对顺序 = 原文件行序，
+ * 必须保持：页面骨架 → 消息 → 空态） */
 @import './page-chat.css';
+@import './chat-message.css';
+@import './chat-empty.css';
 /* 聊天输入区 + 引擎未就绪提示 + 打字光标动画 */
 @import './chat-input.css';
 /* T6.7 设置页（2026-09-17 按区域拆自原 page-settings.css，357 行逼近 CSS 强制阈值 400；

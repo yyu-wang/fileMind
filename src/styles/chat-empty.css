@@ -1,0 +1,76 @@
+/* 知识问答页：空状态与建议词条（原 page-chat.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-chat.css、chat-message.css
+ * 之后（原文件的行序即规则优先级）。
+ * 本文件 = 原行 246-315。
+ */
+/* 空状态（文档 .chat-empty） */
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-10);
+}
+
+.chat-empty .icon {
+  font-size: 48px;
+  opacity: 0.5;
+}
+
+.chat-empty h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chat-empty p {
+  font-size: 14px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 360px;
+}
+
+/* 兼容旧类名 */
+.chat-page__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-10);
+}
+
+.chat-page__empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chat-page__empty-sub {
+  font-size: 14px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 360px;
+}
+
+/* 建议词条（文档 .suggestion-chip） */
+.suggestion-chip {
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid var(--rule2);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  background: var(--bg);
+}
+
+.suggestion-chip:hover {
+  border-color: var(--accent3);
+  color: var(--accent3);
+  background: var(--accent-light);
+}

@@ -1,0 +1,80 @@
+/* 智能分类页：树节点细节（原 classify-layout.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须紧随 classify-layout.css 之后、
+ * classify-stats.css 之前（原文件的行序即规则优先级）。
+ * 本文件 = 原行 110-183：展开箭头 / 子节点 / 名称与目录 / 冲突徽标。
+ */
+.tree-node .arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid currentColor;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.tree-node .arrow.expanded {
+  transform: rotate(180deg);
+}
+
+.tree-node .node-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.tree-children {
+  border-top: 1px solid var(--rule);
+}
+
+.tree-node.child {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.tree-node.child:first-child {
+  border-top: none;
+}
+
+.tree-node__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 文件名作为预览按钮：悬停高亮提示可点击 */
+.tree-node__name--preview {
+  background: none;
+  border: none;
+  padding: var(--sp-0);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-node__name--preview:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.tree-node__dir {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tree-node__conflict {
+  color: var(--danger);
+  font-size: 11px;
+  white-space: nowrap;
+}
