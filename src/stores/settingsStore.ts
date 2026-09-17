@@ -13,6 +13,7 @@
 //   ./settings/config.ts   加载配置 / 推理模式 / 更新配置 / 本地模型 / 完成引导
 //   ./settings/configMapping.ts  配置默认值 + partial↔AppConfig↔state 映射（纯函数）
 //   ./settings/cloud.ts    同意书 / API Key / 云提供商 CRUD 与激活
+//   ./settings/cloudProviders.ts  P-07 自定义云提供商动作（由 cloud.ts 展开）
 //   ./settings/ollama.ts   本地 Ollama 环境探测
 //   ./settings/modelDownload.ts  Embedding / Rerank / GGUF 下载与离线包导入
 
