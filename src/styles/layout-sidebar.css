@@ -1,0 +1,159 @@
+/* 侧边栏（原 styles/layout.css 拆出，超 200 行警告阈值）
+ *
+ * 级联顺序依赖：必须排在 layout-shell.css 之后、layout-statusbar.css 之前。
+ */
+
+/* ============ 侧边栏（设计稿 05_交互原型 §Sidebar） ============ */
+
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg);
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: var(--sp-3) var(--sp-3);
+  gap: var(--sp-0-5);
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.sidebar-brand .logo {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(26, 54, 93, 0.25);
+}
+
+.sidebar-brand .logo svg {
+  width: 20px;
+  height: 20px;
+  color: #fff;
+}
+
+.sidebar-brand .name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+}
+
+.sidebar-brand .ver {
+  font-size: 10px;
+  color: var(--muted2);
+  font-weight: 400;
+}
+
+.nav-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0-5);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s var(--ease);
+  position: relative;
+  user-select: none;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.nav-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* 激活态左侧高亮条 */
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--sp-3) * -1);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+
+.nav-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.nav-item.active svg {
+  opacity: 1;
+}
+
+.nav-item .shortcut {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted2);
+  font-family: var(--font-mono);
+}
+
+.nav-spacer {
+  flex: 1;
+}
+
+/* 响应式：窗口宽度 < 900px 时侧边栏收为 48px 图标条 */
+@media (max-width: 899px) {
+  .sidebar {
+    width: 48px;
+    padding: var(--sp-3) var(--sp-1);
+  }
+
+  .sidebar-brand .name,
+  .sidebar-brand .ver,
+  .nav-label,
+  .nav-item span:not(.shortcut),
+  .nav-item .shortcut {
+    display: none;
+  }
+
+  .sidebar-brand {
+    justify-content: center;
+    padding: var(--sp-1) 0 var(--sp-2);
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: var(--sp-3) 0;
+  }
+}

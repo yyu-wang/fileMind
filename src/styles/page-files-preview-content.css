@@ -1,0 +1,117 @@
+/* 预览内容区：HTML / 图片 / PDF 分页 / 元信息（原 page-files-preview.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须紧随 page-files-preview.css 之后、
+ * page-files-path-tree.css 之前（原文件的行序即规则优先级）。
+ * 本文件 = 原行 176-286。
+ */
+.files-preview__html-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 300px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.files-preview__html {
+  width: 100%;
+  min-height: 360px;
+  flex: 1;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.files-preview__html-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--bg2) 88%, transparent);
+  border-radius: 8px;
+  backdrop-filter: blur(2px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .files-preview__html {
+    background: #fafafa;
+  }
+}
+
+[data-theme='dark'] .files-preview__html {
+  background: #fafafa;
+}
+
+.files-preview__image {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+}
+
+.files-preview__image img {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+}
+
+.files-preview__pdf {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.files-preview__pdf canvas {
+  max-width: 100%;
+  height: auto !important;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.files-preview__pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.files-preview__pagebtn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg2);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.files-preview__pagebtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.files-preview__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.files-preview__meta-item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

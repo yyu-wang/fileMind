@@ -11,8 +11,11 @@
 
 /* :root 设计令牌 + 手动/跟随系统暗色映射 + 字体 + 工具类/panel + 滚动条 */
 @import './base.css';
-/* T6.1 应用外框 + 侧边栏 + 状态栏 */
-@import './layout.css';
+/* T6.1 应用外框 + 侧边栏 + 状态栏（2026-09-17 按区域拆自原 layout.css，388 行触警告阈值；
+ * 三者的相对顺序 = 原文件行序，必须保持：外框 → 侧边栏 → 状态栏） */
+@import './layout-shell.css';
+@import './layout-sidebar.css';
+@import './layout-statusbar.css';
 /* T6.3 按钮基础类 + .input 输入控件（含 select 暗色覆盖） */
 @import './components-form.css';
 /* T6.3 首次启动引导流 + T7.5 同意书滚动内容 */
@@ -25,8 +28,12 @@
 @import './page-files.css';
 /* 文件表格 / 类型图标 / 分类 tag / 搜索框 / 分类状态徽章 */
 @import './files-table.css';
-/* 预览抽屉 + 抽屉内文件路径树 */
+/* 预览抽屉 + 抽屉内文件路径树（2026-09-17 按区域拆自原 page-files-preview.css，
+ * 371 行逼近 CSS 强制阈值 400；三者的相对顺序 = 原文件行序，必须保持：
+ * 抽屉骨架 → 内容区 → 路径树） */
 @import './page-files-preview.css';
+@import './page-files-preview-content.css';
+@import './page-files-path-tree.css';
 /* T6.5 智能分类页 */
 @import './page-classify.css';
 /* 分类页双栏布局 / 预览树 / 统计面板 / 底部警告条 */
@@ -37,8 +44,12 @@
 @import './page-chat.css';
 /* 聊天输入区 + 引擎未就绪提示 + 打字光标动画 */
 @import './chat-input.css';
-/* T6.7 设置页 */
+/* T6.7 设置页（2026-09-17 按区域拆自原 page-settings.css，357 行逼近 CSS 强制阈值 400；
+ * 四者的相对顺序 = 原文件行序，必须保持：页面骨架 → 表单控件 → 嵌入模型列表 → 对话框） */
 @import './page-settings.css';
+@import './page-settings-form.css';
+@import './page-settings-embedding.css';
+@import './page-settings-dialog.css';
 /* T6.8 规则编辑页 */
 @import './page-rules.css';
 /* T6.9 主题切换控件 */

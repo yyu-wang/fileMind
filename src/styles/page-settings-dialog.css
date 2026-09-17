@@ -1,0 +1,62 @@
+/* 设置页云端同意书对话框与模型 combo（原 page-settings.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-settings.css、
+ * page-settings-form.css、page-settings-embedding.css 之后
+ * （原文件的行序即规则优先级）。
+ * 本文件 = 原行 303-357。
+ */
+/* 云端同意书对话框（设置页） */
+.settings-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-6);
+  z-index: 100;
+}
+
+.settings-dialog {
+  background: var(--bg2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-6);
+  max-width: 720px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* 弹窗内同意书滚动区：撑满对话框剩余高度（替代基础样式的 320px 上限），
+   窗口足够高时全文直接可见；不足时仅在滚动区内滚动，避免双层滚动条 */
+.settings-dialog .consent-agreement__scroll {
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: none;
+}
+
+.settings-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+/* 云端模型 datalist combo（手动输入 + 预设下拉） */
+.settings-model-combo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.settings-model-input {
+  width: 100%;
+}
