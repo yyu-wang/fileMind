@@ -3,7 +3,10 @@
 覆盖：待下载文件清单、就绪判定、初始/就绪状态、成功下载并落盘、
 镜像切换重试、3 次用尽置 failed（含 .part 清理）、下载中幂等、
 进度字节与总量上报、HEAD 无 Content-Length 时的不确定进度、
-失败后手动重试。
+失败后手动重试，以及 ensure_downloaded 的短路与 reset_state。
+
+传输层内部用例（Content-Range 解析 / TLS 上限 / 单文件原子写）拆到
+`test_model_download_transfer.py`；共享假件见 `model_download_fakes.py`。
 
 全部用例用假 httpx 客户端（按 URL 前缀模拟各镜像的行为），不发起真实网络请求。
 """
@@ -11,18 +14,14 @@
 from __future__ import annotations
 
 import asyncio
-import ssl
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest import mock
 
-import httpx
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Generator
+    from collections.abc import Generator
 
     from app.models import ModelDownloadStatusResponse
 
@@ -30,104 +29,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.services import model_download_service as svc  # noqa: E402
 from app.services import model_download_transfer as transfer  # noqa: E402
-
-MODEL = "bge-large-zh-v1.5"
-CONTENT = b"x" * 512
-
-
-class _FakeResponse:
-    """假响应：流式吐 chunk，HEAD 只给 headers。"""
-
-    def __init__(self, chunks: list[bytes], headers: dict[str, str], status: int = 200) -> None:
-        self._chunks = chunks
-        self.headers = headers
-        self.status_code = status
-
-    def raise_for_status(self) -> None:
-        """状态码 >= 400 时抛 HTTPStatusError（对齐 httpx 语义）。"""
-        if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "boom",
-                request=httpx.Request("GET", "http://fake"),
-                response=None,  # type: ignore[arg-type]
-            )
-
-    async def aiter_bytes(self, chunk_size: int = 0) -> AsyncIterator[bytes]:
-        """按给定的 chunk 依次产出。"""
-        for chunk in self._chunks:
-            yield chunk
-
-
-class _FakeStream:
-    """``client.stream(...)`` 返回的异步上下文管理器。"""
-
-    def __init__(self, response: _FakeResponse) -> None:
-        self._response = response
-
-    async def __aenter__(self) -> _FakeResponse:
-        return self._response
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-
-class _FakeClient:
-    """按镜像前缀分派的假 httpx 客户端。"""
-
-    def __init__(
-        self,
-        *,
-        fail_mirrors: frozenset[str] = frozenset(),
-        head_without_length: bool = False,
-    ) -> None:
-        self._fail_mirrors = fail_mirrors
-        self._head_without_length = head_without_length
-        self.head_calls: list[str] = []
-        self.range_calls: list[str] = []
-        self.stream_calls: list[str] = []
-
-    async def __aenter__(self) -> _FakeClient:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    def _fails(self, url: str) -> bool:
-        return any(url.startswith(mirror) for mirror in self._fail_mirrors)
-
-    async def head(self, url: str) -> _FakeResponse:
-        """HEAD：失败镜像抛连接错误；否则返回（可选缺失的）Content-Length。"""
-        self.head_calls.append(url)
-        if self._fails(url):
-            raise httpx.ConnectError("mirror down")
-        headers = {} if self._head_without_length else {"content-length": str(len(CONTENT))}
-        return _FakeResponse([], headers)
-
-    async def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResponse:
-        """Range 探测：HEAD 缺 Content-Length 时的兜底路径。"""
-        self.range_calls.append(url)
-        if self._fails(url):
-            raise httpx.ConnectError("mirror down")
-        return _FakeResponse([], {"content-range": f"bytes 0-0/{len(CONTENT)}"})
-
-    def stream(self, method: str, url: str) -> _FakeStream:
-        """GET 流：失败镜像返回 503（raise_for_status 抛错）。"""
-        self.stream_calls.append(url)
-        if self._fails(url):
-            return _FakeStream(_FakeResponse([], {}, status=503))
-        return _FakeStream(_FakeResponse([CONTENT], {}))
-
-
-def _patch_client(monkeypatch: pytest.MonkeyPatch, client: _FakeClient) -> None:
-    """把服务模块内的 httpx 换成只含 AsyncClient 的替身（保留异常类型）。"""
-    monkeypatch.setattr(
-        svc,
-        "httpx",
-        SimpleNamespace(
-            HTTPError=httpx.HTTPError,
-            AsyncClient=lambda **kwargs: client,
-        ),
-    )
+from tests.model_download_fakes import (  # noqa: E402
+    CONTENT,
+    MODEL,
+    FakeClient,
+    patch_client,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -234,8 +141,8 @@ async def test_download_success_writes_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """下载成功：全部文件落盘、状态 ready、进度口径为权重文件。"""
-    client = _FakeClient()
-    _patch_client(monkeypatch, client)
+    client = FakeClient()
+    patch_client(monkeypatch, client)
     status = await _run_download()
 
     assert status.status == "ready"
@@ -256,8 +163,8 @@ async def test_download_falls_back_to_second_mirror(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """首个镜像失败 → 自动切换下一个镜像并成功（attempt=2）。"""
-    client = _FakeClient(fail_mirrors=frozenset({svc.MIRRORS[0]}))
-    _patch_client(monkeypatch, client)
+    client = FakeClient(fail_mirrors=frozenset({svc.MIRRORS[0]}))
+    patch_client(monkeypatch, client)
     status = await _run_download()
 
     assert status.status == "ready"
@@ -270,8 +177,8 @@ async def test_download_fails_after_max_attempts_and_cleans_partials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """全部镜像均失败 → attempt 用尽后 failed，错误说明重试次数，无 .part 残留。"""
-    client = _FakeClient(fail_mirrors=frozenset(svc.MIRRORS))
-    _patch_client(monkeypatch, client)
+    client = FakeClient(fail_mirrors=frozenset(svc.MIRRORS))
+    patch_client(monkeypatch, client)
     status = await _run_download()
 
     assert status.status == "failed"
@@ -285,11 +192,11 @@ async def test_manual_retry_after_failure_can_succeed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """failed 后用户再次点击 → 重新计数并成功。"""
-    failing = _FakeClient(fail_mirrors=frozenset(svc.MIRRORS))
-    _patch_client(monkeypatch, failing)
+    failing = FakeClient(fail_mirrors=frozenset(svc.MIRRORS))
+    patch_client(monkeypatch, failing)
     assert (await _run_download()).status == "failed"
 
-    _patch_client(monkeypatch, _FakeClient())
+    patch_client(monkeypatch, FakeClient())
     status = await _run_download()
     assert status.status == "ready"
     assert status.attempt == 1
@@ -319,8 +226,8 @@ async def test_total_falls_back_to_content_range_when_head_lacks_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HEAD 缺 Content-Length → 用 Range 的 Content-Range 拿到总量（进度可百分比）。"""
-    client = _FakeClient(head_without_length=True)
-    _patch_client(monkeypatch, client)
+    client = FakeClient(head_without_length=True)
+    patch_client(monkeypatch, client)
     status = await _run_download()
 
     assert status.status == "ready"
@@ -334,25 +241,10 @@ async def test_probe_size_none_when_size_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HEAD 与 Range 都拿不到大小 → None（前端显示不确定进度）。"""
-    client = _FakeClient(head_without_length=True, fail_mirrors=frozenset({"https://"}))
-    _patch_client(monkeypatch, client)
+    client = FakeClient(head_without_length=True, fail_mirrors=frozenset({"https://"}))
+    patch_client(monkeypatch, client)
     size = await transfer._probe_size(client, "https://hf-mirror.com/x/y")  # noqa: SLF001
     assert size is None
-
-
-@pytest.mark.parametrize(
-    ("header", "expected"),
-    [
-        ("bytes 0-0/12345", 12345),
-        ("bytes 0-0/*", None),
-        ("bytes 0-0/", None),
-        ("garbage", None),
-        (None, None),
-    ],
-)
-def test_parse_content_range_total(header: str | None, expected: int | None) -> None:
-    """Content-Range 解析：正常、未知总量（*）、残缺、垃圾值、缺失头部。"""
-    assert transfer._parse_content_range_total(header) == expected  # noqa: SLF001
 
 
 async def test_ensure_downloaded_unknown_model_raises() -> None:
@@ -370,8 +262,8 @@ async def test_ensure_downloaded_short_circuits_when_ready(
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"data")
-    client = _FakeClient()
-    _patch_client(monkeypatch, client)
+    client = FakeClient()
+    patch_client(monkeypatch, client)
 
     status = await svc.ensure_downloaded(MODEL)
     assert status.status == "ready"
@@ -385,78 +277,3 @@ def test_reset_state_clears_status() -> None:
     svc.reset_state()
     assert not svc._states  # noqa: SLF001
     assert not svc._tasks  # noqa: SLF001
-
-
-def test_cleanup_partials_removes_leftovers(tmp_path: Path) -> None:
-    """失败重试前的清理：删除 .part 残留，不影响已就绪文件。"""
-    root = tmp_path / MODEL
-    root.mkdir(parents=True)
-    (root / "tokenizer.json").write_bytes(b"ok")
-    (root / "tokenizer.json.part").write_bytes(b"half")
-    transfer._cleanup_partials(root, ("tokenizer.json",))  # noqa: SLF001
-    assert not (root / "tokenizer.json.part").exists()
-    assert (root / "tokenizer.json").exists()
-
-
-def test_ssl_context_caps_tls12_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """默认把 TLS 上限压到 1.2（TLS 1.3 访问 hf-mirror 必现 BAD_RECORD_MAC）。"""
-    monkeypatch.delenv("FILEMIND_MODEL_TLS_MAX", raising=False)
-    assert transfer._ssl_context().maximum_version == ssl.TLSVersion.TLSv1_2  # noqa: SLF001
-
-
-def test_ssl_context_allows_tls13_when_requested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``FILEMIND_MODEL_TLS_MAX=1.3`` 时恢复默认协商（不设上限）。"""
-    monkeypatch.setenv("FILEMIND_MODEL_TLS_MAX", "1.3")
-    assert transfer._ssl_context().maximum_version == ssl.TLSVersion.MAXIMUM_SUPPORTED  # noqa: SLF001
-
-
-def test_download_one_writes_whole_file_atomically(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """单文件下载：整文件写入后原子改名，结束后无 .part 残留。"""
-    client = _FakeClient()
-    state = svc._state_for(MODEL)  # noqa: SLF001
-    dest = tmp_path / "one.bin"
-
-    async def _go() -> None:
-        await transfer._download_one(  # noqa: SLF001
-            client,
-            svc.MIRRORS[0],
-            MODEL,
-            "x/one.bin",
-            dest,
-            state,
-            count_progress=True,
-        )
-
-    with mock.patch.object(svc.os, "replace", wraps=svc.os.replace) as replace:
-        asyncio.run(_go())
-
-    assert dest.read_bytes() == CONTENT
-    assert replace.call_count == 1
-    assert state.downloaded_bytes == len(CONTENT)
-    assert not (tmp_path / "one.bin.part").exists()
-
-
-def test_download_one_skips_progress_for_aux_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """count_progress=False 时不计入进度（辅助文件不参与进度口径）。"""
-    client = _FakeClient()
-    state = svc._state_for(MODEL)  # noqa: SLF001
-    dest = tmp_path / "aux.bin"
-
-    async def _go() -> None:
-        await transfer._download_one(  # noqa: SLF001
-            client,
-            svc.MIRRORS[0],
-            MODEL,
-            "tokenizer.json",
-            dest,
-            state,
-            count_progress=False,
-        )
-
-    asyncio.run(_go())
-    assert dest.read_bytes() == CONTENT
-    assert state.downloaded_bytes == 0
