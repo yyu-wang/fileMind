@@ -79,8 +79,11 @@
 @import './theme-toggle.css';
 /* T6.10 通用状态视图（空态 / 错误） */
 @import './states.css';
-/* 分类历史列表与明细 */
+/* 分类历史：入口按钮 / 视图外壳 / 批次列表 → 批次明细
+ * （2026-09-18 拆自原 classify-history.css，205 行超 CSS 警告阈值 200；
+ * 相对顺序 = 原文件行序，必须保持） */
 @import './classify-history.css';
+@import './classify-history-detail.css';
 /* 通用确认对话框（撤销等危险操作二次确认） */
 @import './dialog.css';
 /* 通用：表单组 / 条件构造器 / 设置行 / Toggle / Card */
