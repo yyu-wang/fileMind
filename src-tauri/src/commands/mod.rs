@@ -22,6 +22,10 @@ pub mod file_ops;
 pub mod file_preview;
 /// 文件查询、搜索与统计命令。
 pub mod file_query;
+/// 文件库统计的 SQL 聚合（`file_query` 的实现模块，无命令）。
+mod file_query_stats;
+/// 文件查询命令的 IPC 响应类型（`file_query` 的实现模块，无命令）。
+mod file_query_types;
 /// 文件索引建立命令（Sidecar `/index/build` 代理）。
 pub mod index;
 /// 推理模式管理与转发命令。

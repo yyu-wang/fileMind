@@ -2,15 +2,21 @@
 //!
 //! 所有命令访问 SQLite（阻塞 IO），通过 `#[tauri::command(async)]`
 //! 声明为线程池执行；数据库锁的作用域收窄到查询完成即释放。
+//!
+//! 拆分（原单文件 375 行，逼近 Rust 模块 500 行强制阈值）：
+//!   - `commands/file_query_types.rs`  IPC 响应类型（specta 契约）
+//!   - `commands/file_query_stats.rs`  统计的 SQL 聚合
+//! 八个 `#[tauri::command]` 留在本模块，注册路径不变。
 
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::db::{
-    FileRepo, FileSearch, OperationBatchSummary, OperationLog, OperationRepo, SearchResult,
+use crate::commands::file_query_stats::query_stats;
+use crate::commands::file_query_types::{
+    BatchDetailResponse, FileListResponse, FileStats, OperationHistoryResponse,
 };
+use crate::db::{FileRepo, FileSearch, OperationRepo, SearchResult};
 use crate::error::{AppError, AppResult};
 use crate::services::undo_window;
 use crate::{AppState, FileInfo};
@@ -137,63 +143,16 @@ pub fn search_by_filename(
 
 /// 获取文件库统计信息（总数、已分类、重复组、总大小）。
 ///
+/// 聚合 SQL 见 `file_query_stats::query_stats`。
+///
 /// # Errors
 ///
 /// 数据库锁中毒或统计查询失败时返回 `DB-U-001`。
 #[tauri::command(async)]
 #[specta::specta]
 pub fn get_file_stats(state: State<'_, AppState>) -> Result<FileStats, String> {
-    let file_stats = {
-        let db = lock_db(&state.db)?;
-
-        let total: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM files WHERE is_deleted = 0",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
-
-        let categorized: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM files WHERE is_deleted = 0 AND category IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
-
-        let duplicates: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) - COUNT(DISTINCT content_hash) FROM files
-             WHERE is_deleted = 0 AND content_hash IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
-
-        let total_size: i64 = db
-            .conn()
-            .query_row(
-                "SELECT COALESCE(SUM(file_size), 0) FROM files WHERE is_deleted = 0",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("DB-U-001:统计失败 ({e})"))?;
-        drop(db);
-
-        FileStats {
-            total_files: total,
-            categorized_files: categorized,
-            uncategorized_files: total - categorized,
-            duplicate_groups: duplicates,
-            total_size_bytes: total_size,
-        }
-    };
-
-    Ok(file_stats)
+    let db = lock_db(&state.db)?;
+    query_stats(db.conn()).map_err(|e| format!("DB-U-001:统计失败 ({e})"))
 }
 
 /// 更新指定文件的分类标签。
@@ -228,42 +187,6 @@ fn lock_db(
         log::error!("DB lock poisoned: {e}");
         "DB-U-001:数据读取失败，请重启应用".to_string()
     })
-}
-
-/// 分页文件列表响应。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct FileListResponse {
-    /// 当前页文件。
-    pub files: Vec<FileInfo>,
-    /// 满足条件的总条数。
-    #[specta(type = specta_typescript::Number)]
-    pub total: i64,
-    /// 当前页码（从 0 开始）。
-    #[specta(type = specta_typescript::Number)]
-    pub page: i64,
-    /// 每页条数（实际生效值）。
-    #[specta(type = specta_typescript::Number)]
-    pub page_size: i64,
-}
-
-/// 文件库统计。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct FileStats {
-    /// 文件总数。
-    #[specta(type = specta_typescript::Number)]
-    pub total_files: i64,
-    /// 已分类文件数。
-    #[specta(type = specta_typescript::Number)]
-    pub categorized_files: i64,
-    /// 未分类文件数。
-    #[specta(type = specta_typescript::Number)]
-    pub uncategorized_files: i64,
-    /// 疑似重复文件组数。
-    #[specta(type = specta_typescript::Number)]
-    pub duplicate_groups: i64,
-    /// 文件总大小（字节）。
-    #[specta(type = specta_typescript::Number)]
-    pub total_size_bytes: i64,
 }
 
 // ----------------------------------------------------------------------
@@ -348,28 +271,5 @@ pub fn get_batch_detail(
     clippy::unnecessary_wraps,
     clippy::significant_drop_tightening
 )]
-#[cfg(test)]
 #[path = "file_query_tests.rs"]
 mod tests;
-
-/// 操作历史响应（API §2-2d 返回值）。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct OperationHistoryResponse {
-    /// 批次摘要列表。
-    pub batches: Vec<OperationBatchSummary>,
-    /// 当前页码（从 1 开始）。
-    #[specta(type = specta_typescript::Number)]
-    pub page: i64,
-    /// 每页条数（实际生效值）。
-    #[specta(type = specta_typescript::Number)]
-    pub page_size: i64,
-}
-
-/// 批次详情响应（API §2-2d `batch_id` 分支返回值）。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct BatchDetailResponse {
-    /// 批次 ID。
-    pub batch_id: String,
-    /// 批次内所有日志行（按 `created_at` 升序）。
-    pub logs: Vec<OperationLog>,
-}
