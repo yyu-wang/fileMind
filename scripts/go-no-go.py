@@ -5,6 +5,8 @@
   * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <2048MB（7）
   * SKIP：崩溃重启（5，需 Tauri app + watchdog 线程）、三平台（6，需 T1.2+T1.3 产物）
 
+启动项含 P3-3 耗时门禁：打包态「spawn → /health 首次 200」≤ STARTUP_BUDGET_MS（热盘口径）。
+
 用法：
   ``python3 scripts/go-no-go.py --all``      跑全部 7 项
   ``python3 scripts/go-no-go.py --test 1``   只跑第 1 项（单测调试）
@@ -56,9 +58,21 @@ DEMO_BIN_DIR: Path = ROOT_DIR / "filemind" / "binaries"
 SIDECAR_PORT: int = 8765
 SIDECAR_BASE: str = f"http://127.0.0.1:{SIDECAR_PORT}"
 
+# P3-3 启动耗时门禁（毫秒）：「进程 spawn → /health 首次 200」整段耗时的预算。
+# 依据 docs/packaging-implementation-plan.md「P3」小节实测（打包态 1133 / 1237ms）留约 60% 余量。
+# ⚠️ 只对**热盘**成立：安装后首启需冷读 ~1.4GB 产物（P2-2 记录约 15s），那条留在发布前人工检查，
+#    不进自动门禁（15s 也顶穿打包态 15s 启动超时窗口，自动化里无法稳定区分冷/热）。
+# ⚠️ 只判**打包态**：dev 模式（python -m uvicorn）实测 1.4~3.2s，不代表用户路径，只报数不判定。
+STARTUP_BUDGET_MS: int = 2000
+
 # 7 项定义（顺序与 10_开发任务拆解与排期 第 380 行一致）
 TEST_ITEMS: list[tuple[int, str, str]] = [
-    (1, "启动", "拉起 dev uvicorn 或 onedir Sidecar，/health 在 10~15s 内返回 200（打包态放宽）"),
+    (
+        1,
+        "启动",
+        "拉起 dev uvicorn 或 onedir Sidecar，/health 在 10~15s 内返回 200（打包态放宽）；"
+        + f"打包态整段启动耗时 ≤{STARTUP_BUDGET_MS}ms（P3-3，热盘口径）",
+    ),
     (2, "握手", "POST /handshake 带 nonce + HMAC-SHA256，双向 proof 验证通过"),
     (3, "IPC", "POST /shutdown 带签名 → 200 shutting_down，进程在 3s 内自退并释放端口"),
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
@@ -320,11 +334,14 @@ def start_sc(sc: DevSidecar) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _start_and_wait_health(timeout_binary: float = 15.0, timeout_dev: float = 10.0) -> tuple[str, httpx.Response | None, DevSidecar]:
+def _start_and_wait_health(
+    timeout_binary: float = 15.0, timeout_dev: float = 10.0
+) -> tuple[str, httpx.Response | None, DevSidecar, float | None]:
     """带自动 fallback 的启动+等 /health：优先 ACTIVE_BINARY（打包态）→ 失败则回退 dev。
 
-    返回：(mode_label, response_or_None, sc)。
+    返回：(mode_label, response_or_None, sc, startup_ms)。
     mode_label ∈ {"打包二进制", "dev stdin-PIPE", "<failed>"}。
+    startup_ms = 「spawn → /health 首次 200」整段耗时（毫秒，P3-3 门禁用；全程失败为 None）。
     调用方不想要 DevSidecar.stop 误杀时，可把 sc.proc = None 解除所有权（global cleanup 兜底）。
     """
     modes: list[tuple[bool, str, float]] = []
@@ -339,6 +356,8 @@ def _start_and_wait_health(timeout_binary: float = 15.0, timeout_dev: float = 10
             if not use_binary:
                 globals()["ACTIVE_BINARY"] = None
             sc = _new_sc()
+            # P3-3：量程起点——start_sc 内部即 spawn 子进程
+            spawned_at = time.monotonic()
             try:
                 start_sc(sc)
             except RuntimeError:
@@ -346,7 +365,7 @@ def _start_and_wait_health(timeout_binary: float = 15.0, timeout_dev: float = 10
                 continue
             resp = _wait_health(to)
             if resp is not None and resp.status_code == 200:
-                return mode, resp, sc
+                return mode, resp, sc, (time.monotonic() - spawned_at) * 1000
             last_resp = resp
             sc.stop()
         except Exception:  # noqa: BLE001 - 任何模式启动异常都 try 下一个
@@ -354,12 +373,26 @@ def _start_and_wait_health(timeout_binary: float = 15.0, timeout_dev: float = 10
                 sc.stop()
         finally:
             globals()["ACTIVE_BINARY"] = prev
-    return ("<failed>", last_resp, DevSidecar())
+    return ("<failed>", last_resp, DevSidecar(), None)
 
 
 def run_t1_start() -> TestResult:
     t0 = time.time()
-    mode, resp, sc = _start_and_wait_health()
+    mode, resp, sc, startup_ms = _start_and_wait_health()
+    # P3-3 冷盘容错：打包态首次启动可能需冷读 ~1.4GB 产物（P2-2 记录约 15s，本机实测同样顶穿
+    # 打包态 15s 超时窗口），会误报成启动回归。超预算就重启一次——产物此时已进页缓存，
+    # 第二次量的才是门禁口径（热盘）；冷盘值如实记进 detail，便于看趋势。
+    cold_ms: float | None = None
+    if (
+        resp is not None
+        and resp.status_code == 200
+        and mode == "打包二进制"
+        and startup_ms is not None
+        and startup_ms > STARTUP_BUDGET_MS
+    ):
+        cold_ms = startup_ms
+        sc.stop()
+        mode, resp, sc, startup_ms = _start_and_wait_health()
     # 启动成功则保留进程：T2/T3 要继续复用同一个 Sidecar（握手 / shutdown IPC）
     if resp is not None and resp.status_code == 200 and sc.proc is not None:
         try:
@@ -371,9 +404,25 @@ def run_t1_start() -> TestResult:
     if resp.status_code == 200:
         fallback = "（打包态构建漂移→回退 dev stdin-PIPE 模式验证；与 Rust manager 真实路径等价）" \
             if mode == "dev stdin-PIPE" and ACTIVE_BINARY is not None else ""
-        return TestResult(1, "启动", "PASS",
-                          f"/health 200 [{mode}]（{resp.elapsed.total_seconds()*1000:.0f}ms 达到）{fallback}",
-                          time.time() - t0)
+        detail = f"/health 200 [{mode}]（{resp.elapsed.total_seconds()*1000:.0f}ms 达到）{fallback}"
+        # P3-3 门禁：只判打包态（热盘口径），dev 模式只报数——见 STARTUP_BUDGET_MS 注释
+        if mode == "打包二进制" and startup_ms is not None:
+            cold_note = f"冷盘首次 {cold_ms:.0f}ms → " if cold_ms is not None else ""
+            detail += (
+                f"；{cold_note}整段启动耗时 {startup_ms:.0f}ms"
+                f"（预算 {STARTUP_BUDGET_MS}ms，热盘口径）"
+            )
+            if startup_ms > STARTUP_BUDGET_MS:
+                return TestResult(
+                    1,
+                    "启动",
+                    "FAIL",
+                    f"打包态热盘启动耗时 {startup_ms:.0f}ms 超出预算 {STARTUP_BUDGET_MS}ms"
+                    + (f"（冷盘首次 {cold_ms:.0f}ms）" if cold_ms is not None else ""),
+                    time.time() - t0,
+                    {"startup_ms": round(startup_ms), "budget_ms": STARTUP_BUDGET_MS},
+                )
+        return TestResult(1, "启动", "PASS", detail, time.time() - t0)
     return TestResult(1, "启动", "FAIL", f"/health 返回 {resp.status_code} [{mode}]", time.time() - t0,
                       {"body_100": resp.text[:100], "mode": mode})
 
@@ -465,7 +514,7 @@ def run_t3_ipc_via_shutdown() -> TestResult:
 def run_t4_health() -> TestResult:
     t0 = time.time()
     # t3 把 Sidecar 关了，再起一份（打包态优先 → dev fallback）；保持进程给 t7 内存测试复用
-    mode, resp, sc = _start_and_wait_health()
+    mode, resp, sc, _startup_ms = _start_and_wait_health()
     if resp is not None and resp.status_code == 200 and sc.proc is not None:
         try:
             sc.proc = None  # 保持 Sidecar 活着给 t7 用
@@ -846,7 +895,7 @@ def run_t7_memory() -> TestResult:
     # （典型：T4 为了 T7 留活的进程被 T5 _cleanup_any_sidecar 提前清理），再 fallback 起一份。
     mode_label_used: str | None = None
     if _free_port():
-        _mode, _resp, _sc = _start_and_wait_health()
+        _mode, _resp, _sc, _startup_ms = _start_and_wait_health()
         if _resp is None or _resp.status_code != 200:
             return TestResult(7, name, "FAIL",
                               "T7 前置：Sidecar 不可用且 fallback 启动失败", time.time() - t0)

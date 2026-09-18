@@ -282,6 +282,68 @@
 - 已知代价：onedir 目录 6172 个文件，首次安装后首启需冷读 ~1.4GB；macOS 未来做签名/公证时
   需对 `Resources/sidecar/` 内的可执行文件一并签名。
 
+### P3：启动耗时埋点与基线（P3-1 / P3-2，2026-09-18）
+
+- 背景：P1（窗口秒开 + splash）与 P2（重依赖惰性导入 + onedir）落地后，「引擎可用」的耗时
+  只存在于人工实测与文档数字里——没有代码级埋点、没有基线、也没有防退化门禁（即 P3）。
+- **P3-1 埋点**（改动 `src-tauri/src/sidecar/manager/mod.rs`、`manager/start.rs`、
+  `manager_tests/start_tests.rs`）：`start_with_handshake` 分三段独立计时——`spawn`
+  （PSK 生成 + `Command::spawn` + stdin 注入）、`ready`（spawn 返回 → `/health` 首次 200）、
+  `handshake`（nonce + proof 校验）；成功后写入 `SidecarManager::last_startup`
+  （`StartupTimings`）并按 `rules/observability.md` 的 `sidecar.startup_ms` 口径打一条 info 日志：
+
+  ```
+  Sidecar 启动耗时（sidecar.startup_ms）: total_ms=1237 spawn_ms=2 ready_ms=1234 handshake_ms=0
+  ```
+
+  失败路径进入即清空该记录，保证「读到 `Some` 即代表本次启动成功」（回归用例
+  `test_failed_start_clears_stale_startup_timings`）。首启与 watchdog 重启共用本路径，
+  每次启动都会记一条，可直接 grep `sidecar.startup_ms`。
+  取舍：`rules/observability.md` 的指标清单是结构性描述，全仓并无指标聚合后端
+  （`metrics::record` 零命中），故按结构化日志落地，不新建一个空转的 metrics 模块。
+
+- **观测前提（P3-3 起已消除）**：Rust 日志默认级别是 `warn`，而这条埋点是 info——原先取数
+  必须 `RUST_LOG=info`。现按 target 放行（`log_file.rs::STARTUP_LOG_TARGET` =
+  `filemind_lib::sidecar::manager::start`），该模块的 info 默认落盘，其余模块仍按 `warn` 抑制；
+  显式 `RUST_LOG` 依旧优先（放行写在 `parse_default_env` 之前）。实测：不带 `RUST_LOG` 启动，
+  日志里稳定出现「准备启动 Sidecar / 握手成功 / sidecar.startup_ms」三行，而迁移、种子等
+  其他 info 不出现。
+- **P3-2 基线**（本机 aarch64；口径＝从 `start_with_handshake` 进入至握手成功）：
+
+  | 场景                                                               | 口径             | total                            | spawn | ready              | handshake |
+  | ------------------------------------------------------------------ | ---------------- | -------------------------------- | ----- | ------------------ | --------- |
+  | dev（`binaries/filemind-sidecar-dev` → `python sidecar_entry.py`） | 5 次             | 3225 / 1748 / 1441 / 1758 / 1239 | 0~1   | 同 total（差 1~3） | 1~3       |
+  | 打包态（`Contents/Resources/sidecar/` onedir）                     | 全新数据目录首启 | 1237 ms                          | 2     | 1234               | 0         |
+  | 打包态（同上）                                                     | 复用数据目录再启 | 1133 ms                          | 1     | 1130               | 0         |
+  - 结论：**`ready` 段占 ≈99.9%**，`spawn` 与 `handshake` 都是个位数毫秒——后续若还要压启动，
+    只有 ready 段（Python 解释器拉起 + 依赖导入 + LanceDB 建表）值得动。
+  - 与 P2-2 记录同量级：P2-2 用外部探测测得稳态 `/health` 就绪 ≈1.0s，本次 Rust 侧（含握手）
+    1.13~1.24s。
+  - 局限：本次**未复现「安装后首启冷读」口径**（P2-2 记录 ~15s，冷读 ~1.4GB 产物）。原因是
+    `.app` 与 onedir 产物刚在本机构建，页缓存尚热；要拿冷数需 `purge` / 重启机器或真机新装。
+  - 三档差异实测（同一产物，仅页缓存状态不同）：**全冷 >15s**（go-no-go 打包态超时 15s 被顶穿、
+    退回 dev 模式；单独跑 12s 仍未就绪）→ **半热 ~~2~~3s** → **全热 1.13~1.24s**。
+    这就是 P3-3 门禁必须冷盘容错、只判热盘的依据。
+  - 复现命令（打包态；须从 `/tmp` 启动以避开 dev 布局的 cwd 兜底，见
+    `sidecar/manager/paths.rs::find_in_dev_layout`）：
+
+    ```
+    cd /tmp && FILEMIND_DATA_HOME=/tmp/p3-home RUST_LOG=info \
+      /path/to/FileMind.app/Contents/MacOS/filemind
+    grep sidecar.startup_ms /tmp/p3-home/logs/filemind.log
+    ```
+
+- **P3-3 门禁已落地**（`scripts/go-no-go.py`）：T1（启动）新增 `STARTUP_BUDGET_MS = 2000` 断言，
+  量「spawn → `/health` 首次 200」整段耗时；**只判打包态**（dev 实测 1.2~3.2s，不代表用户路径，
+  只报数）。CI 不需要新步骤——merge-build 的 `Smoke check Sidecar runtime (/health)` 本来就是
+  `go-no-go.py --test 1 --binary <bundle 内 sidecar 目录>`（见 `.github/workflows/merge-build.yml`）。
+  - **冷盘容错**：首次启动若超预算（冷读 ~1.4GB 产物，实测 >15s），脚本**重启一次**并用第二次
+    （热盘）数字判定，冷盘值记进 detail。即「判热盘、观测冷盘」，否则 CI 首次运行会因页缓存冷而假失败。
+  - 本机实测：`python3 scripts/go-no-go.py --test 1 --binary filemind/binaries/filemind-sidecar-aarch64-apple-darwin`
+    → `[T1 启动] PASS — /health 200 [打包二进制]（3ms 达到）；整段启动耗时 1129ms（预算 2000ms，热盘口径）`
+    （与 Rust 侧埋点 1133ms 同量级，两条独立链路互证）。
+  - 冷启口径仍留人工发布前检查（`purge` / 重启或真机新装后量），不进自动门禁。
+
 ---
 
 ### W3：Windows 安装包配置补齐（2026-09-14）

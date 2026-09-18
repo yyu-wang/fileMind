@@ -6,14 +6,15 @@
 //! watchdog 探活成功判 Idle 而 `AppState` 里没有匹配 PSK，所有代理请求永久 401。
 
 use super::{
-    CloudSidecarEnv, LocalLlmSidecarEnv, SidecarManager, MAX_READY_ATTEMPTS, READY_POLL_INTERVAL_MS,
+    CloudSidecarEnv, LocalLlmSidecarEnv, SidecarManager, StartupTimings, MAX_READY_ATTEMPTS,
+    READY_POLL_INTERVAL_MS,
 };
 use crate::error::{AppError, AppResult};
 use crate::security::{handshake, log_redact};
 use crate::sidecar::proxy;
 use std::io::Write;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// 注入 Sidecar 需要的「自定义配置」env（云端代理 T7.4 + 本地生成后端 T3b）。
 ///
@@ -193,6 +194,8 @@ impl SidecarManager {
     /// - 清零连续失败计数
     /// - 记录一次重启到窗口队列（便于后续 `CrashLoop` 判定，首次启动也计入
     ///   不影响，因为 `CRASH_LOOP_MAX_RESTARTS` 足够大）
+    /// - 记录本次分阶段耗时到 [`SidecarManager::last_startup`]（P3-1），
+    ///   并按 `sidecar.startup_ms` 口径打一条 info 日志（首启与 watchdog 重启共用本路径）
     ///
     /// 失败时（BE-M6）：统一走 [`Self::abort_failed_start`]——杀掉刚拉起的
     /// 进程并清除未验证的 PSK。不允许出现「进程活着但未完成握手」的中间
@@ -203,20 +206,47 @@ impl SidecarManager {
     ///
     /// 任何启动或握手步骤失败时返回对应错误（进程已被清理）。
     pub async fn start_with_handshake(&mut self) -> AppResult<Vec<u8>> {
+        // P3-1：进入即清空上次记录，失败路径不再回填——下游读到的 `Some` 一定是本次成功
+        self.last_startup = None;
+        let started = Instant::now();
+
+        let spawn_started = Instant::now();
         let psk = self.start()?;
+        let spawn = spawn_started.elapsed();
+
+        let ready_started = Instant::now();
         // 就绪轮询 / 握手任一失败：杀进程 + 清未验证 PSK，让下一轮重启走完整流程
         if let Err(e) = self.wait_ready().await {
             self.abort_failed_start();
             return Err(e);
         }
+        let ready = ready_started.elapsed();
+
+        let handshake_started = Instant::now();
         if let Err(e) = self.handshake(&psk).await {
             self.abort_failed_start();
             return Err(e);
         }
+        let handshake_elapsed = handshake_started.elapsed();
+
         // 握手成功：记一次 restart 窗口事件 + 清零相关计数
         self.record_restart();
         self.consecutive_failures = 0;
+        let timings = StartupTimings {
+            spawn,
+            ready,
+            handshake: handshake_elapsed,
+            total: started.elapsed(),
+        };
+        self.last_startup = Some(timings);
         log::info!("Sidecar 握手成功");
+        log::info!(
+            "Sidecar 启动耗时（sidecar.startup_ms）: total_ms={} spawn_ms={} ready_ms={} handshake_ms={}",
+            timings.total.as_millis(),
+            timings.spawn.as_millis(),
+            timings.ready.as_millis(),
+            timings.handshake.as_millis()
+        );
         Ok(psk)
     }
 
