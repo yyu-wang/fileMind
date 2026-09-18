@@ -26,9 +26,8 @@ from app.models import (
     EmbeddingModelAvailability,
     InferenceTestResponse,
     OllamaModelInfo,
-    _OllamaTagModel,
-    _OllamaTagsResponse,
 )
+from app.models.system import _OllamaTagModel, _OllamaTagsResponse
 from app.rules.llm_classify import OLLAMA_HOST
 from app.services import local_llm_service, model_download_service, provider_factory
 

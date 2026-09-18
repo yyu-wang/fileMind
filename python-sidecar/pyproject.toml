@@ -22,7 +22,9 @@ disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = "app.models"
+# app.models 已拆为包（classify/chat/index/embedding/system）：pydantic.mypy 对
+# BaseModel 字段的 Field(...) 生成显式 Any __init__ 语义，故整包沿用既有 override
+module = ["app.models", "app.models.*"]
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
