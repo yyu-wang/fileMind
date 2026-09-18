@@ -6,12 +6,15 @@
 **子进程**拉起，对外提供 OpenAI 兼容 HTTP 接口，实现「不装 Ollama 也能知识问答」。
 
 本模块只负责**运行态与生命周期编排**（谁在跑、跑在哪个端口、当前是哪个模型、
-空闲是否该卸载）；产物定位与子进程操作等无状态原语在
-:mod:`app.services.local_llm_engine`（含「为什么用子进程而不是 llama-cpp-python」）。
+空闲是否该卸载）；配置读取、权重定位与前置条件判定已按职责拆至
+:mod:`app.services.local_llm_config`（2026-09-18，原文件 313 行超 Python 警告阈值
+300），产物定位与子进程操作等无状态原语在 :mod:`app.services.local_llm_engine`
+（含「为什么用子进程而不是 llama-cpp-python」）。
 
 启动条件（全满足才拉起）：后端开关为 ``builtin``（env ``FILEMIND_LOCAL_LLM_BACKEND``，
 Rust 从 app_config 注入）且 GGUF 权重已下载到本机。任一不满足 → 抛
-:class:`LocalLlmUnavailableError`，由调用方回落（Ollama 可用则用 Ollama）。
+:class:`LocalLlmUnavailableError`，由调用方回落（Ollama 可用则用 Ollama）；判定见
+:func:`app.services.local_llm_config.engine_prerequisites`。
 
 生命周期要点：
 
@@ -34,26 +37,40 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.logging import getLogger
-from app.services import local_llm_engine, model_download_service
+from app.services import local_llm_engine
+from app.services.local_llm_config import (
+    BACKEND_BUILTIN,
+    _gguf_for,
+    configured_backend,
+    configured_model,
+    engine_prerequisites,
+)
 
 # 显式再导出：调用方（provider / probe）按「引擎不可用」这一概念捕获本异常，
 # 而异常的归属模块是 engine（无状态层），故在此按 PEP 484 的显式再导出写法暴露。
 from app.services.local_llm_engine import LocalLlmUnavailableError as LocalLlmUnavailableError
-from app.services.model_specs import LLM_MODEL_NAME, llm_gguf_path
 
 if TYPE_CHECKING:
     import subprocess
-    from pathlib import Path
+
+# 显式导出：配置与前置条件查询（`local_llm_config`）继续由本模块对外暴露，
+# 调用方（provider_factory / inference_probe_service / 设置页）的导入路径不变。
+__all__ = [
+    "BACKEND_BUILTIN",
+    "IDLE_UNLOAD",
+    "LocalLlmStatus",
+    "LocalLlmUnavailableError",
+    "auth_headers",
+    "configured_backend",
+    "configured_model",
+    "engine_prerequisites",
+    "ensure_server",
+    "reset_state",
+    "status",
+    "stop_server",
+]
 
 logger = getLogger("filemind.local_llm")
-
-#: 后端开关 env（Rust 从 app_config.local_llm_backend 注入）
-_ENV_BACKEND = "FILEMIND_LOCAL_LLM_BACKEND"
-#: 内置 GGUF 模型标识 env（Rust 从 app_config.local_llm_model 注入）
-_ENV_MODEL = "FILEMIND_LOCAL_LLM_MODEL"
-
-#: 内置后端开关取值
-BACKEND_BUILTIN = "builtin"
 
 #: 空闲卸载阈值（秒，env 可覆盖；默认 600s = 10min 无推理即停掉子进程释放内存）
 IDLE_UNLOAD = float(os.environ.get("FILEMIND_LLAMA_IDLE_UNLOAD", "600") or "600")
@@ -113,21 +130,6 @@ def reset_state() -> None:
     _state = _ServerState()
 
 
-def _env(name: str, default: str = "") -> str:
-    """读取 env（去首尾空白）。"""
-    return os.environ.get(name, "").strip() or default
-
-
-def configured_backend() -> str:
-    """当前配置的本地生成后端（``ollama`` / ``builtin``）。"""
-    return _env(_ENV_BACKEND, "ollama").lower()
-
-
-def configured_model() -> str:
-    """当前配置的内置 GGUF 模型标识。"""
-    return _env(_ENV_MODEL, LLM_MODEL_NAME)
-
-
 def _process() -> object | None:
     """当前子进程句柄（未运行时 ``None``）。"""
     return _state.process
@@ -163,24 +165,6 @@ def auth_headers() -> dict[str, str]:
     if _is_usable() and _state.api_key:
         return {"Authorization": f"Bearer {_state.api_key}"}
     return {}
-
-
-def _gguf_for(model: str) -> Path:
-    """校验模型已注册且权重已下载，返回 GGUF 路径。
-
-    Raises:
-        LocalLlmUnavailableError: 模型未注册，或权重文件缺失。
-    """
-    try:
-        gguf = llm_gguf_path(model)
-    except ValueError as exc:
-        raise LocalLlmUnavailableError(str(exc)) from exc
-    if not gguf.is_file():
-        raise LocalLlmUnavailableError(
-            f"内置生成模型权重未下载: {model}（缺少 {gguf.name}）；"
-            "请在「设置 → 本地生成模型（GGUF）」下载或导入"
-        )
-    return gguf
 
 
 def stop_server() -> None:
@@ -287,27 +271,6 @@ async def ensure_server(model: str | None = None) -> str:
         # 换模型 / 进程已退出：先停干净再起，避免两个引擎同时占内存
         stop_server()
         return await _start(target)
-
-
-def engine_prerequisites() -> tuple[bool, str]:
-    """内置引擎的**前置条件**是否齐备（不启动进程，也**不看后端配置**）。
-
-    Returns:
-        ``(是否齐备, 说明)``：说明为空表示前置齐备、可直接拉起引擎。
-
-    为什么这里不判断「后端是否配置为 builtin」（原实现按配置短路，是 T3b 的真缺陷）：
-    本函数的调用方就是探测的**回落判定**——「配置为 ollama 但 Ollama 不可用」正是需要
-    它的场景。按配置短路会让回落永不发生，未安装 Ollama 的机器上默认配置依然问答不了，
-    与 T3 的目标直接相悖。mock 掉本函数的单测因此掩盖了该缺陷（见回归用例
-    ``test_probe_falls_back_to_builtin_when_ollama_down``）。
-    """
-    binary = local_llm_engine.server_binary_path()
-    if binary is None or not binary.is_file():
-        return False, "引擎可执行文件缺失"
-    model = configured_model()
-    if not model_download_service.model_ready(model):
-        return False, f"权重未下载（{model}）"
-    return True, ""
 
 
 atexit.register(stop_server)
