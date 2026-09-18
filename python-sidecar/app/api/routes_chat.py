@@ -25,12 +25,14 @@ from fastapi.responses import StreamingResponse
 
 from app import state
 from app.api.chat_answer import _answer_events, _sse
-from app.api.chat_pipeline import (
+from app.api.chat_answer_events import (
     AnswerAccumulator,
     AnswerContext,
+    final_events,
+)
+from app.api.chat_pipeline import (
     RetrieveFailure,
     elapsed_ms,
-    final_events,
     no_result_events,
     search_events,
 )

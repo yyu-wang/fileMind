@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from app.api.chat_pipeline import (
+from app.api.chat_answer_events import (
     AnswerAccumulator,
     AnswerContext,
     token_events,
