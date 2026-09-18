@@ -2,6 +2,9 @@
 
 /// 云端 LLM 请求代理（Sidecar → Rust → 云端，Key 不经过 Python）。
 pub mod cloud_proxy;
+/// 云端代理传输层：共享 Client / 转发 / 服务启动（2026-09-18 拆自 `cloud_proxy.rs`，
+/// 经 `cloud_proxy::spawn_proxy_server` 对外暴露）。
+mod cloud_proxy_server;
 /// Sidecar 握手协议与请求签名（HMAC-SHA256 + nonce + 序号防重放）。
 pub mod handshake;
 /// API Key 安全存储（系统 Keychain）。
