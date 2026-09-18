@@ -43,6 +43,9 @@
 @import './page-files-path-tree.css';
 /* T6.5 智能分类页 */
 @import './page-classify.css';
+/* 分类预览树（2026-09-18 拆自 page-classify.css，必须先于下游 classify-* 导入
+ * 以保持原文件规则顺序） */
+@import './page-classify-preview.css';
 /* 分类页双栏布局 / 预览树 / 统计面板 / 底部警告条（2026-09-17 按区域拆自原
  * classify-layout.css，320 行逼近 CSS 强制阈值 400；相对顺序 = 原文件行序，
  * 必须保持：布局骨架 → 树节点 → 统计面板与来源标签） */
