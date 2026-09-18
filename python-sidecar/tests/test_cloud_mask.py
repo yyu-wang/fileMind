@@ -31,7 +31,7 @@ from app.models import ClassifyItem
 from app.rules.llm_classify import ClassifyResult, build_classify_prompt
 from app.services import classify_service
 from app.services.classify_service import _run_llm_pass
-from app.services.generation_service import (
+from app.services.rag_prompt import (
     SourceChunk,
     build_rag_prompt,
     format_context_blocks,

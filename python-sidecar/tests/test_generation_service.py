@@ -24,12 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # noqa: E402
 
 from app.rules.llm_classify import LLMUnavailableError  # noqa: E402
 from app.services.generation_service import (  # noqa: E402
-    CONTENT_MAX,
-    SourceChunk,
-    build_rag_prompt,
     reset_clients,
     stream_generate,
     stream_with_citations,
+)
+from app.services.rag_prompt import (  # noqa: E402
+    CONTENT_MAX,
+    SourceChunk,
+    build_rag_prompt,
 )
 
 

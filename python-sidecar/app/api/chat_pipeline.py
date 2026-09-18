@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.core.logging import getLogger
-from app.services.generation_service import SourceChunk
+from app.services.rag_prompt import SourceChunk
 from app.services.rerank_service import RerankCandidate
 
 if TYPE_CHECKING:

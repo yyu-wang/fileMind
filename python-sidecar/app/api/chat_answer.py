@@ -17,10 +17,12 @@ from app.api.chat_pipeline import (
 from app.core.logging import getLogger
 from app.rules.llm_classify import LLMUnavailableError
 from app.services.generation_service import (
-    build_rag_prompt,
-    format_context_blocks,
     stream_generate,
     stream_with_citations,
+)
+from app.services.rag_prompt import (
+    build_rag_prompt,
+    format_context_blocks,
 )
 from app.services.self_correct_service import validate_answer
 

@@ -24,7 +24,7 @@ import time
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from app.services.generation_service import SourceChunk
+from app.services.rag_prompt import SourceChunk
 
 if TYPE_CHECKING:
     from collections.abc import Callable
