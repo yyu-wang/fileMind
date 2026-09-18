@@ -8,7 +8,7 @@
 
 use crate::sidecar::proxy;
 
-use super::super::shutdown::matches_sidecar_comm;
+use super::super::orphan_cleanup::matches_sidecar_comm;
 use super::super::*;
 use super::support::*;
 

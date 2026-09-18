@@ -19,7 +19,8 @@
 //! 模块划分（原单文件 1111 行按职责拆分，各文件 < 300 行，见 `rules/complexity.md`）：
 //!   - `start`    spawn + PSK 注入、就绪轮询、握手与失败回滚
 //!   - `watchdog` `/health` 探活、指数退避、重启与崩溃循环窗口
-//!   - `shutdown` 优雅停止、硬杀、`Drop` 兜底、孤儿进程清理
+//!   - `shutdown` 优雅停止、硬杀、`Drop` 兜底
+//!   - `orphan_cleanup` 启动前清理上次残留的孤儿进程（身份匹配 + 孤儿判定 + 终止）
 //!   - `paths`    triple 推断与 dev / bundle 布局解析（纯函数）
 //!
 //! 本文件保留类型与门面。`SidecarManager` 的状态必须定义在这里：测试模块
@@ -31,6 +32,7 @@ use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+mod orphan_cleanup;
 mod paths;
 mod shutdown;
 mod start;
@@ -40,11 +42,11 @@ mod watchdog;
 // 子模块承载实现，类型与自由函数在这里再导出，使 `sidecar::manager::X` 的既有路径
 // （`sidecar/mod.rs` 的再导出、`bootstrap.rs` 的直接引用、测试模块的通配导入）保持不变。
 // 方法无需再导出：`impl` 块在 crate 内、方法本身 `pub`，即自动对调用方可见。
+pub use orphan_cleanup::cleanup_orphan_sidecar;
 pub use paths::{
     current_target_triple, resolve_bundle_binary_path, resolve_bundle_from_resources,
     resolve_bundle_from_roots, resolve_dev_binary_path,
 };
-pub use shutdown::cleanup_orphan_sidecar;
 pub use watchdog::WatchdogAction;
 
 // crate 内可见项：`bootstrap.rs` 用的是 `main_exe_in_dir`，原先在本文件里，拆分后
