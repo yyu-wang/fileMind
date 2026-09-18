@@ -27,10 +27,15 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    # 保险阀：实测为下载产物 + 生成清单，分钟级
-    timeout-minutes: 30
+    # 保险阀：未开签名时是「下载产物 + 生成清单」的分钟级任务；开启签名后要上传/下载
+    # 约 656MB 安装包、等 SignPath 处理（策略若要求人工审批还要等审批），故放宽到 90min。
+    # 只是上限，不影响未启用签名的路径。
+    timeout-minutes: 90
     permissions:
+      # job 级 permissions 会覆盖默认值：未列出的 scope 一律变为 none，
+      # 因此 SignPath action 读取本次运行 artifact 所需的 actions:read 必须显式写出。
       contents: write # 创建 Release 并上传资产
+      actions: read # SignPath action 下载待签名 artifact
     steps:
       - uses: actions/checkout@v7
 
@@ -44,10 +49,93 @@ jobs:
         with:
           path: dist
 
-      # ⚠️ W4（SignPath 签名）插入点：签名步骤必须放在本步骤**之前**，并在签名后
-      #    用 `tauri signer sign` 重新生成受影响安装包的 .sig —— 签名会改变安装包
-      #    字节，构建阶段产出的旧 .sig 会立即失效（用户端更新报「签名不匹配」）。
-      #    门控约定：`if: vars.SIGNPATH_ENABLED == 'true'`。
+      # ── W4：SignPath 签名（仅 Windows 需要 Authenticode；macOS 走 Apple 签名+公证）──
+      # 整段由仓库 variable SIGNPATH_ENABLED 门控：未设置时全部跳过，发布行为与 W2 一致。
+      # ⚠️ 顺序是硬约束：签名会改变安装包字节 → 构建阶段产出的 .sig 立即失效 →
+      #    必须在本段最后的「Re-sign updater artifacts」之后才生成 latest.json。
+      - uses: actions/setup-node@v7
+        if: vars.SIGNPATH_ENABLED == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Collect Windows installers
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          # 只送安装器本体：.sig 是本机私钥产物，被第三方改动后必须重新生成
+          mkdir -p signpath/unsigned
+          find dist -type f \( -name '*.msi' -o -name '*-setup.exe' \) \
+            -exec cp -v {} signpath/unsigned/ \;
+          ls -l signpath/unsigned
+
+      # 上传目录（GitHub artifact 是 zip，安装器落在 zip 根）→ 对应
+      # .signpath/artifact-configuration.xml 最外层的 <zip-file> 容器
+      - name: Upload unsigned installers
+        if: vars.SIGNPATH_ENABLED == 'true'
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: signpath-unsigned
+          path: signpath/unsigned
+          if-no-files-found: error
+
+      - name: SignPath signing request
+        if: vars.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # 签名策略若要求人工审批，本步骤会一直等到审批完成，故把等待上限放到 30min
+          # （必须小于本 job 的 timeout-minutes）
+          wait-for-completion-timeout-in-seconds: '1800'
+          # 不指定则不下载签名结果；指定后 action 会自动解压到该目录
+          output-artifact-directory: signpath/signed
+
+      - name: Replace installers with signed ones
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' signed; do
+            name="$(basename "$signed")"
+            target="$(find dist -type f -name "$name" -print -quit)"
+            if [[ -z "$target" ]]; then
+              echo "::error::产物目录中找不到与签名结果同名的文件：$name"
+              exit 1
+            fi
+            cp -v "$signed" "$target"
+          done < <(find signpath/signed -type f \( -name '*.msi' -o -name '*-setup.exe' \) -print0)
+
+      - name: Install Tauri CLI
+        if: vars.SIGNPATH_ENABLED == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Re-sign updater artifacts
+        if: vars.SIGNPATH_ENABLED == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # 签名改动了安装包字节 → 覆盖构建阶段那份 .sig，否则 latest.json 里的
+          # signature 与安装包不匹配，用户端更新会报「签名不匹配」而直接失败。
+          #
+          # ⚠️ 必须显式传 -p：`tauri signer sign` 在没有密码入参时会去读 TTY 提示，
+          #    CI 无终端 → 报 `incorrect updater private key password: Device not
+          #    configured (os error 6)`。密码为空的密钥传 -p '' 即可。
+          #   （构建阶段的 bundler 走库调用、不提示，故那里只需 TAURI_SIGNING_PRIVATE_KEY。）
+          while IFS= read -r -d '' f; do
+            rm -f "${f}.sig"
+            npx tauri signer sign -p "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" "$f"
+          done < <(find dist -type f \( -name '*.msi' -o -name '*-setup.exe' \) -print0)
+          find dist -type f -name '*.sig' -exec ls -l {} +
+
+      # ─────────────────────────────────────────────────────────────────────────
       - name: Generate latest.json + release notes
         run: |
           set -euo pipefail

@@ -1,7 +1,11 @@
-// 本地 Ollama 相关动作：环境探测（含 TTL 节流）与 Embedding 模型安装。
+// 本地 Ollama 环境探测（设置页「Ollama 环境」区块）。
 //
-// 与 store 分离的原因：两者共享同一组瞬态字段（ollamaProbing / installingModel /
-// lastOllamaProbeAt），且安装成功后需要强制绕过探测节流刷新列表。
+// 与 store 分离的原因：探测带瞬态字段（ollamaProbing / lastOllamaProbeAt），且结果
+// 回写三个 modelOptions 字段；模型状态变化后还要能触发刷新。
+//
+// 职责边界：本文件只负责「探测 + 结果写入」。模型下载与离线包导入见
+// ./modelDownload.ts——自 T3 起内置 llama.cpp 引擎也是本地生成的一条路，Ollama
+// 不再是唯一选项，但探测结果仍决定设置页展示，故保留独立模块。
 
 import { fileIpc } from '@/lib/ipc';
 import type { SettingsGet, SettingsSet, SettingsState } from './types';
@@ -10,24 +14,24 @@ import type { SettingsGet, SettingsSet, SettingsState } from './types';
 const PROBE_TTL_MS = 60_000;
 
 /**
- * 生成 Ollama 相关动作（供 store 展开进 create 的返回对象）。
+ * 生成 Ollama 探测动作（供 store 展开进 create 的返回对象）。
  *
  * Args:
  *   deps: store 注入的 set / get
  *
  * Returns:
- *   探测与模型安装两个动作
+ *   探测动作（probeOllama）
  */
 export function createOllamaActions(deps: {
   set: SettingsSet;
   get: SettingsGet;
-}): Pick<SettingsState, 'probeOllama' | 'installModel'> {
+}): Pick<SettingsState, 'probeOllama'> {
   const { set, get } = deps;
   return {
     probeOllama: async (force = false) => {
       // TTL 节流：60s 内已成功探测则复用（探测是真实 HTTP 往返，进出设置页
       // 反复触发会明显拖慢切页）。失败不缓存（lastOllamaProbeAt 不更新），
-      // 下次调用照常重探；force 绕过节流（重新检测按钮 / 安装模型后）。
+      // 下次调用照常重探；force 绕过节流（重新检测按钮 / 模型状态变化后）。
       if (
         !force &&
         get().ollamaStatus !== null &&
@@ -50,27 +54,6 @@ export function createOllamaActions(deps: {
         }
       } finally {
         set({ ollamaProbing: false });
-      }
-    },
-
-    installModel: async (modelName) => {
-      set({ installingModel: modelName, installError: null });
-      try {
-        const result = await fileIpc.installEmbeddingModel(modelName);
-        if (result.status === 'ok') {
-          if (result.data.success) {
-            // 模型列表已变，强制绕过探测节流
-            await get().probeOllama(true);
-          } else {
-            set({ installError: result.data.message });
-          }
-        } else {
-          set({ installError: result.error });
-        }
-      } catch (e) {
-        set({ installError: e instanceof Error ? e.message : String(e) });
-      } finally {
-        set({ installingModel: null });
       }
     },
   };

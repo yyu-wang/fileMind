@@ -7,6 +7,11 @@
 错误策略：
     - 单文件读取/非文本/空内容 → 计入 skipped，不中断整体
     - Ollama Embedding 不可用 → 抛 :class:`EmbeddingUnavailableError`（整体失败）
+
+模块划分（原单文件 378 行，逼近 Python 模块 500 行强制阈值，见 `rules/complexity.md`）：
+    - :mod:`app.services.ingest_text`    扩展名判定 / 正文读取 / 分块（「文件 → 文本块」）
+    - :mod:`app.services.ingest_vectors` 已存在向量行的删除与路径同步
+    - 本模块：Embedding 分批与建索引编排（``build_index`` 是唯一入口）
 """
 
 from __future__ import annotations
@@ -17,49 +22,13 @@ from pathlib import Path
 
 from app.core.logging import getLogger, sanitize_path
 from app.db.lancedb_repo import DocumentChunk, LanceDBManager
-from app.services.doc_extract import (
-    DocumentExtractError,
-    extract_document_text,
-    is_binary_document,
-)
+from app.services.doc_extract import DocumentExtractError
 from app.services.embedding_service import EMBEDDING_MODEL, embed_texts
+from app.services.ingest_text import chunk_text, read_indexable_text
+from app.services.ingest_vectors import _delete_stale_chunks
 
 logger = getLogger("filemind.ingest")
 
-#: 支持索引的文本扩展名（与 file_preview.rs 文本类对齐）
-TEXT_EXTENSIONS: set[str] = {
-    "txt",
-    "md",
-    "log",
-    "json",
-    "yaml",
-    "yml",
-    "csv",
-    "xml",
-    "toml",
-    "ini",
-    "conf",
-    "ts",
-    "tsx",
-    "js",
-    "jsx",
-    "py",
-    "rs",
-    "go",
-    "java",
-    "c",
-    "h",
-    "cpp",
-    "css",
-    "html",
-    "sh",
-    "sql",
-}
-
-#: 单文件读取上限（50MB）。超限截断，避免超大文本耗尽内存/embedding 预算
-MAX_FILE_BYTES: int = 50 * 1024 * 1024
-#: 分块目标长度（字符），对齐 P-03 上下文片段 CONTENT_MAX=500
-CHUNK_TARGET_CHARS: int = 500
 #: 单次 Embedding 调用最大文本条数（对齐并发/内存预算）
 EMBED_BATCH_SIZE: int = 20
 
@@ -76,95 +45,6 @@ class BuildIndexResult:
 
     indexed_file_ids: tuple[str, ...] = ()
     """实际写入向量的 file_id（供 Rust 回写索引状态标记）。"""
-
-
-def _extension(path: Path) -> str:
-    """返回小写扩展名（无扩展名返回空串）。"""
-    return path.suffix.lstrip(".").lower() if path.suffix else ""
-
-
-def is_supported_text(path: Path) -> bool:
-    """文件扩展名是否属于可索引文本类。"""
-    return _extension(path) in TEXT_EXTENSIONS
-
-
-def read_indexable_text(path: Path) -> str | None:
-    """按扩展名读取可索引正文：纯文本直读或二进制文档抽取。
-
-    - 文本类（TEXT_EXTENSIONS）：直接 UTF-8 读取（见 :func:`read_text`）；
-    - 二进制文档（pdf/docx/xlsx/pptx）：经 :func:`extract_document_text` 抽取；
-    - 其余类型返回 ``None``（调用方跳过）。
-
-    Args:
-        path: 文件绝对路径。
-
-    Returns:
-        可索引正文；非索引类型返回 ``None``。
-
-    Raises:
-        OSError: 文本文件不可读（非 UTF-8 字节按替换符降级）。
-        DocumentExtractError: 二进制文档解析失败。
-    """
-    if _extension(path) in TEXT_EXTENSIONS:
-        return read_text(path)
-    if is_binary_document(path):
-        return extract_document_text(path)
-    return None
-
-
-def read_text(path: Path) -> str:
-    """读取文本文件内容（截断到 :data:`MAX_FILE_BYTES`）。
-
-    非 UTF-8 字节用 ``errors="replace"`` 降级，避免单文件编码异常中断整体。
-
-    Args:
-        path: 文件绝对路径。
-
-    Raises:
-        OSError: 文件不可读（调用方计入 skipped）。
-    """
-    with path.open("rb") as fh:
-        data = fh.read(MAX_FILE_BYTES)
-    return data.decode("utf-8", errors="replace")
-
-
-def chunk_text(text: str, target: int = CHUNK_TARGET_CHARS) -> list[str]:
-    """把文本按行累积切分为 ~target 字符的块。
-
-    空行作为段落边界：空行处必切（当前块非空时），保证段落不被拆散；
-    无空行时按行累积到超 target 才切。行长度含换行符（``len(line) + 1``），
-    使块内容长度（含换行）贴近 target。
-
-    Args:
-        text: 原始文本。
-        target: 单块目标字符数。
-
-    Returns:
-        分块列表；空文本返回空列表。
-    """
-    if not text.strip():
-        return []
-    blocks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for line in text.splitlines():
-        # 空行 = 段落边界：结束当前块（空行本身不进入块内容）
-        if line.strip() == "":
-            if current:
-                blocks.append("\n".join(current))
-                current = []
-                current_len = 0
-            continue
-        line_cost = len(line) + 1  # 含行尾换行
-        if current and current_len + line_cost > target:
-            blocks.append("\n".join(current))
-            current = []
-            current_len = 0
-        current.append(line)
-        current_len += line_cost
-    if current:
-        blocks.append("\n".join(current))
-    return blocks
 
 
 def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
@@ -206,6 +86,18 @@ def _read_and_chunk(files: list[tuple[str, str]]) -> list[DocumentChunk]:
     return docs
 
 
+async def _embed_docs(docs: list[DocumentChunk], embedding_model: str) -> None:
+    """分批 Embedding，向量就地写回 ``doc.vector``（网络 IO，事件循环友好）。"""
+    for start in range(0, len(docs), EMBED_BATCH_SIZE):
+        batch = docs[start : start + EMBED_BATCH_SIZE]
+        vectors = await embed_texts(
+            [d.chunk_text for d in batch],
+            model=embedding_model,
+        )
+        for doc, vector in zip(batch, vectors, strict=True):
+            doc.vector = vector
+
+
 async def build_index(
     files: list[tuple[str, str]],
     table_name: str,
@@ -243,23 +135,10 @@ async def build_index(
 
     if not docs:
         return BuildIndexResult(indexed=0, skipped=skipped)
-    # 阶段 2：分批 Embedding（网络 IO，事件循环友好）
-    for start in range(0, len(docs), EMBED_BATCH_SIZE):
-        batch = docs[start : start + EMBED_BATCH_SIZE]
-        vectors = await embed_texts(
-            [d.chunk_text for d in batch],
-            model=embedding_model,
-        )
-        for doc, vector in zip(batch, vectors, strict=True):
-            doc.vector = vector
-
+    # 阶段 2：分批 Embedding
+    await _embed_docs(docs, embedding_model)
     # 阶段 3（SC-C3）：先删旧行再写入——失败可整体重跑，无重复行
-    for file_id in indexed_file_ids:
-        if not _is_safe_file_id(file_id):
-            logger.warning("ingest.delete_stale_skipped", file_id=file_id)
-            continue
-        mgr.delete_chunks_by_file_id(table_name, file_id)
-
+    _delete_stale_chunks(mgr, table_name, indexed_file_ids)
     # 阶段 4：写入（LanceDB add 同步写盘，下沉线程池）
     await asyncio.to_thread(mgr.add_chunks, table_name, docs)
     logger.info(
@@ -274,90 +153,3 @@ async def build_index(
         skipped=skipped,
         indexed_file_ids=tuple(sorted(indexed_file_ids)),
     )
-
-
-def _is_safe_file_id(value: str) -> bool:
-    """file_id 白名单校验：仅允许字母/数字/连字符。
-
-    用于拼入 ``chunk_id LIKE '{file_id}-%'`` 谓词前的防御性检查——
-    挡掉引号、空格、``%``/``_`` 通配符、``;`` 等注入/误匹配字符；
-    真实 file_id（uuid 十六进制+连字符）必过。命中异常值时跳过该条。
-    """
-    return bool(value) and all(ch.isalnum() or ch == "-" for ch in value)
-
-
-def update_paths(
-    table_name: str,
-    mappings: list[tuple[str, str]],
-    mgr: LanceDBManager,
-) -> int:
-    """把指定文件的最新路径同步到向量索引（chunk_id 前缀匹配，不重新 embedding）。
-
-    分类移动/撤销后调用：SQLite 的 ``files.path`` 已是新路径，但向量行里的
-    ``file_path`` 仍是旧路径（增量索引只认 created/modified/deleted，无移动语义）。
-    这里按 ``chunk_id = {file_id}-{seq}`` 前缀原地更新 ``file_path``，向量不变。
-    表不存在（从未建索引）或 ``mappings`` 为空时返回 0（静默跳过）。
-
-    Args:
-        table_name: 目标向量表名（``documents_{model}_v{version}``）。
-        mappings: ``(file_id, 最新路径)`` 列表。
-        mgr: LanceDB 管理器。
-
-    Returns:
-        成功更新路径的文件数（一个文件可对应多个分块行）。
-    """
-    if not mappings:
-        return 0
-    if not mgr.is_table_exists(table_name):
-        return 0
-
-    tbl = mgr.open_table(table_name)
-    updated = 0
-    for file_id, path in mappings:
-        if not _is_safe_file_id(file_id):
-            logger.warning("ingest.update_paths_skipped", file_id=file_id)
-            continue
-        # SC-m16：LIKE 前缀加边界——chunk_id 格式是 {file_id}-{seq}，
-        # file_id 是 UUID（含连字符），{file_id}- 已含分隔符，
-        # 但显式 ESCAPE 防御 file_id 是另一个 id 前缀的极端场景
-        tbl.update(
-            where=f"chunk_id = '{file_id}' OR chunk_id LIKE '{file_id}-%' ESCAPE '\\'",
-            values={"file_path": path},
-        )
-        updated += 1
-    # SC-m16：updated 计数是有效映射数（LanceDB update 不返回影响行数）
-    return updated
-
-
-def delete_by_file_ids(
-    table_name: str,
-    file_ids: list[str],
-    mgr: LanceDBManager,
-) -> int:
-    """从向量索引中删除指定文件的全部向量行（目录级移除用）。
-
-    逐个调用 :meth:`LanceDBManager.delete_chunks_by_file_id`，表不存在或
-    ``file_ids`` 为空时返回 0（静默跳过）。非法 file_id 跳过并告警，
-    不中断整体。
-
-    Args:
-        table_name: 目标向量表名（``documents_{model}_v{version}``）。
-        file_ids: 待删除向量的文件 ID 列表。
-        mgr: LanceDB 管理器。
-
-    Returns:
-        成功删除向量的文件数（一个文件对应多个分块行，计数按文件计）。
-    """
-    if not file_ids:
-        return 0
-    if not mgr.is_table_exists(table_name):
-        return 0
-
-    deleted = 0
-    for file_id in file_ids:
-        if not _is_safe_file_id(file_id):
-            logger.warning("ingest.delete_by_file_ids_skipped", file_id=file_id)
-            continue
-        mgr.delete_chunks_by_file_id(table_name, file_id)
-        deleted += 1
-    return deleted

@@ -48,6 +48,29 @@ pub struct AppConfig {
     /// 升级前用户为空，默认选择 `deepseek` 或列表首个非删除项。
     #[serde(default)]
     pub active_cloud_provider: Option<CloudProvider>,
+    /// 本地生成后端：`ollama`（默认，沿用既有行为）或 `builtin`（Sidecar 内置
+    /// llama.cpp 引擎）。未安装 Ollama 的部署机器靠 `builtin` 完成知识问答。
+    #[serde(default = "default_local_llm_backend")]
+    pub local_llm_backend: String,
+    /// 内置后端的 GGUF 模型标识（模型目录名，如 `qwen2.5-3b-instruct`）。
+    ///
+    /// 与 `llm_model` 分属两个命名空间（Ollama 模型名 vs GGUF 标识），故不共用一列：
+    /// 否则切换后端时同一列会在两种命名之间漂移。
+    #[serde(default = "default_local_llm_model")]
+    pub local_llm_model: String,
+}
+
+/// 本地生成后端默认值（`ollama`：不改变既有用户的推理路径）。
+fn default_local_llm_backend() -> String {
+    "ollama".to_string()
+}
+
+/// 内置 GGUF 模型标识默认值。
+///
+/// 须与 `python-sidecar/app/services/model_specs.py` 的 `LLM_MODEL_NAME` 及
+/// `V019__add_local_llm_backend.sql` 的列默认值一致（三处静态默认值）。
+fn default_local_llm_model() -> String {
+    "qwen2.5-3b-instruct".to_string()
 }
 
 impl Default for AppConfig {
@@ -69,6 +92,8 @@ impl Default for AppConfig {
             cloud_consent_signed_at: None,
             cloud_model: String::new(),
             active_cloud_provider: None,
+            local_llm_backend: default_local_llm_backend(),
+            local_llm_model: default_local_llm_model(),
         }
     }
 }

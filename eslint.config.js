@@ -25,15 +25,26 @@ const FILE_LIMITS = {
 /** 圈复杂度强制阈值（rules/complexity.md §函数复杂度限制：警告 10 / 强制 15）。 */
 const COMPLEXITY_LIMIT = 15;
 
+/** 函数行数强制阈值（rules/complexity.md §函数复杂度限制：警告 40 / 强制 60）。 */
+const FUNCTION_LINES_LIMIT = 60;
+
 /**
- * 读取文件行数基线（scripts/file-size-baseline.txt）。
+ * 测试与 e2e 的函数行数阈值：按 2× 放宽。
  *
- * 与 `scripts/check-file-size.sh` 读**同一份**基线而非在 ESLint 里另抄一份：
- * 两套门禁的口径必须一致，否则会出现「脚本说通过、ESLint 说超限」的矛盾。
- * 基线文件缺失时返回空数组（此时标准阈值生效，超限文件会直接报错，问题可见）。
+ * `describe` 块天然收纳大量用例，把它拆开只是把用例挪到另一个文件，不产生真实收益；
+ * 与文件行数对测试给到 600 行（源侧 300）的比例一致。超过 2× 的仍要拆。
  */
-function loadSizeBaseline() {
-  const baselineFile = path.join(CONFIG_DIR, 'scripts/file-size-baseline.txt');
+const FUNCTION_LINES_LIMIT_TEST = 120;
+
+/**
+ * 读取基线文件（行格式 `<仓库相对路径> <数值>`，`#` 开头与空行忽略）。
+ *
+ * 文件行数与函数行数两套门禁共用同一读取逻辑，与对应的脚本读**同一份**基线，
+ * 否则会出现「脚本说通过、ESLint 说超限」的矛盾。基线文件缺失时返回空数组
+ * （此时标准阈值生效，超限文件会直接报错，问题可见）。
+ */
+function loadBaseline(relativePath) {
+  const baselineFile = path.join(CONFIG_DIR, relativePath);
   if (!existsSync(baselineFile)) return [];
   return readFileSync(baselineFile, 'utf8')
     .split('\n')
@@ -46,10 +57,13 @@ function loadSizeBaseline() {
     .filter((entry) => entry.target !== undefined && Number.isFinite(entry.max));
 }
 
-const SIZE_BASELINE = loadSizeBaseline()
+const SIZE_BASELINE = loadBaseline('scripts/file-size-baseline.txt')
   // 只挑 .ts/.tsx：其余（.rs/.py/.css）ESLint 不解析，行数由 scripts/check-file-size.sh 管控；
   // 若把 .css 条目也转成 files 模式，ESLint 会把 globals.css 当成待 lint 文件 → 解析报错
   .filter(({ target }) => /\.(?:ts|tsx)$/.test(target));
+
+/** 函数行数历史欠账（scripts/function-size-baseline.txt）：登记值 = 该文件当前最长函数行数。 */
+const FUNCTION_BASELINE = loadBaseline('scripts/function-size-baseline.txt');
 
 export default [
   js.configs.recommended,
@@ -82,6 +96,8 @@ export default [
         CustomEvent: 'readonly',
         KeyboardEvent: 'readonly',
         __dirname: 'readonly',
+        // vite.config.ts 的 define 注入（package.json version），见 src/vite-env.d.ts
+        __APP_VERSION__: 'readonly',
       },
     },
     plugins: {
@@ -112,6 +128,12 @@ export default [
       // 圈复杂度（rules/complexity.md §函数复杂度限制）：超限请拆函数，不要靠
       // 拆条件表达式糊弄——阈值针对的就是分支数量本身
       complexity: ['error', COMPLEXITY_LIMIT],
+      // 函数行数（rules/complexity.md §函数复杂度限制）：与文件行数同口径，不传
+      // skipBlankLines/skipComments（计原始行数），避免靠堆注释把长函数「写短」
+      'max-lines-per-function': [
+        'error',
+        { max: FUNCTION_LINES_LIMIT, skipBlankLines: false, skipComments: false },
+      ],
       // 参数个数 / 嵌套深度 / 嵌套回调（同表）：启用时全仓零违规，纯预防性门禁
       'max-params': ['error', 4],
       'max-depth': ['error', 4],
@@ -141,6 +163,17 @@ export default [
     files: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     rules: { 'max-lines': ['error', FILE_LIMITS.test] },
   },
+  {
+    // 函数行数：测试与 e2e 按 2× 放宽（见 FUNCTION_LINES_LIMIT_TEST 的说明）。
+    // 仍排在通用 .tsx 块之后，覆盖掉源码侧 60 的阈值。
+    files: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'e2e/**/*.{ts,tsx}'],
+    rules: {
+      'max-lines-per-function': [
+        'error',
+        { max: FUNCTION_LINES_LIMIT_TEST, skipBlankLines: false, skipComments: false },
+      ],
+    },
+  },
   // ---- 历史欠账：文件行数 ----
   // 来源 scripts/file-size-baseline.txt（与 scripts/check-file-size.sh 共用同一份）：
   // 允许保持到登记行数，但不得增长；拆分到阈值内后从该文件删行即消账。
@@ -149,20 +182,30 @@ export default [
     files: [target],
     rules: { 'max-lines': ['error', max] },
   })),
+  // ---- 历史欠账：函数行数 ----
+  // 来源 scripts/function-size-baseline.txt（登记值 = 该文件当前最长函数行数，只降不升）：
+  // 把长函数拆到阈值内后从该文件删行即消账。同样须排在分类块与测试块之后才算「覆盖」。
+  ...FUNCTION_BASELINE.map(({ target, max }) => ({
+    files: [target],
+    rules: {
+      'max-lines-per-function': ['error', { max, skipBlankLines: false, skipComments: false }],
+    },
+  })),
   // ---- 历史欠账：圈复杂度 ----
-  // 登记值为该文件当前最大复杂度 = 现状上限：只允许下降，不允许上升。
-  // 消账方式：把函数拆到 15 以内后删除对应行。
-  { files: ['src/pages/ClassifyPage.tsx'], rules: { complexity: ['error', 38] } },
-  {
-    files: ['src/components/settings/CloudProviderFormCard.tsx'],
-    rules: { complexity: ['error', 30] },
-  },
-  { files: ['src/lib/format.ts'], rules: { complexity: ['error', 22] } },
-  { files: ['src/components/rules/RuleForm.tsx'], rules: { complexity: ['error', 20] } },
-  { files: ['src/pages/ChatPage.tsx'], rules: { complexity: ['error', 19] } },
-  // 注：settingsStore.ts(18) 与 chatStore.ts(16) 两条欠账已在拆分 store 时消掉——
-  // updateConfig 的字段合并抽成 mergeAppConfig、handleChatEvent 的事件分发抽成
-  // dispatchChatEvent，两者各自的复杂度都回到 15 以内，故覆盖块一并删除
+  // 规则：登记值 = 该文件当前最大复杂度（现状上限，只允许降不允许升）；消账方式是把函数
+  // 拆到 15 以内后删除对应行。当前已无登记项，历史欠账全部消账：
+  //   - format.ts(22)：getFileTypeMeta 的判断链改为有序规则表，扩展名数据表移入
+  //     lib/fileExtensions.ts，函数复杂度回到 3
+  //   - RuleForm.tsx(20)：草稿状态与校验收进 useRuleForm，启用开关行拆为 RuleEnabledToggle
+  //     组件复杂度回到 4
+  //   - CloudProviderFormCard.tsx(30)：状态收进 useCloudProviderForm，校验移入
+  //     lib/cloudProviderValidation.ts，五行字段改用 ui/SettingsInputRow，回到 7
+  //   - ChatPage.tsx(19)：引用跳转流程收进 hooks/useCitationPreview，头部与输入区拆为
+  //     ChatHeader / ChatInputArea，回到 7
+  //   - ClassifyPage.tsx(38)：判定收进 lib/classifyView.ts，区域拆为 ClassifyHeader /
+  //     ClassifyIntroPanel / ClassifyHistoryView / ClassifyPreviewSection，回到 9
+  //   - settingsStore.ts(18) 与 chatStore.ts(16)：字段合并抽成 mergeAppConfig、
+  //     事件分发抽成 dispatchChatEvent
   // T9.5 E2E：spec 由 @wdio/globals 注入隐式全局（describe/it/$/browser 等运行时可用，
   // 不需要也不能显式 import；仅声明防止 no-undef 误报）。
   {

@@ -1,9 +1,19 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+/**
+ * package.json 的 version 字段：编译期注入 `__APP_VERSION__`，让前端版本号
+ * （侧边栏 / 状态栏 / 设置页关于区）只有 package.json 一个来源，不再各处手抄。
+ */
+const { version: APP_VERSION } = JSON.parse(
+  readFileSync(path.resolve(import.meta.dirname, './package.json'), 'utf8'),
+) as { version: string };
+
 export default defineConfig({
   plugins: [react()],
+  define: { __APP_VERSION__: JSON.stringify(APP_VERSION) },
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),

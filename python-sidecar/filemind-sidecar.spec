@@ -9,9 +9,11 @@ P2-2（2026-09-11）由 ``--onefile`` 改为 ``--onedir``：
     （见 src-tauri/tauri.conf.json + sidecar/manager.rs 的目录探测）。
 
 体积门控：≤1600MB，按**目录逻辑大小**（`find -type f` 逐个 size 求和，不跟随 symlink）
-    统计。本机实测：**源产物 915MB / 6136 文件**；经 Tauri `copy_resources` 打包后约
-    1384MB / 6172 文件（该步骤会把 `Python.framework/Versions/Current` 等 36 个 symlink
-    **解引用**成真实文件副本）。两者共用 1600MB 门控，均 PASS。
+    统计。本机实测：**源产物 1011MB / 6186 文件**（含内置 llama.cpp 引擎 58MB，由
+    scripts/build-sidecar.sh 在 PyInstaller 之后拷入，不经过本 spec；T3c 之前为
+    915MB / 6136 文件）；经 Tauri `copy_resources` 打包后估约 1442MB（该步骤会把
+    `Python.framework/Versions/Current` 等 36 个 symlink **解引用**成真实文件副本，
+    engine 之前实测 1384MB）。两者共用 1600MB 门控。
     口径沿革：早期 E1 PoC 不含向量/重排依赖时 onefile 仅约 24MB、门控 80MB；引入 lancedb
     （+pyarrow/lance）、numpy、jieba、ollama/openai、sentence-transformers（离线
     embedding/rerank，拖入 torch）等**运行时硬依赖**后，onefile 压缩态约 315MB、
@@ -32,11 +34,24 @@ P2-2（2026-09-11）由 ``--onefile`` 改为 ``--onedir``：
 
 跨平台：target_arch 由 ``scripts/build-sidecar.sh`` 用 ``PYINSTALLER_TARGET_ARCH`` 传参，
 此处不硬编码；``name="filemind-sidecar"`` 统一（Windows 会自动加 .exe 后缀）。
+
+Windows 专项修复（2026-09-15，本机 Windows 11 26100 实机排障；见文件末尾「Windows 两处
+打包缺陷」注释块）：
+1. **不进包构建机 CPython 自带的向下兼容 UCRT**（``ucrtbase.dll``）：它会被 PyInstaller
+   主动加载（bootloader 源码 pyi_pythonlib.c 有专为此写的 ``pyi_utils_dlopen(ucrtbase)``），
+   在系统 UCRT 比构建机新的目标机上会让 ``python312.dll`` 加载失败 →
+   ``[PYI-1628:ERROR] Failed to load Python DLL ... LoadLibrary: 找不到指定的模块``。
+2. **Windows 关闭 ``strip``**：CI 在 Git Bash（MSYS）里构建，PATH 中有 binutils
+   ``strip.exe``，PyInstaller 的 ``strip=True`` 会真的对每个 DLL/.pyd 执行它，
+   把 PE 尾部 Authenticode 签名截断却留下指向 EOF 之外的证书表目录项；打包产物里
+   ``libssl-3.dll`` 已实测在装载时因重定位处理崩溃（Win32 998 ``内存位置访问无效``），
+   导致 ``_ssl`` 导入失败、侧车启动即退出。
 """
 
 from __future__ import annotations
 
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -116,6 +131,13 @@ _hidden: list[str] = [
 # 非代码资源文件。打包态侧车经 PyInstaller 解压到 _MEI 临时目录，__file__ 相对
 # 路径不再指向源码树，必须显式收集数据文件；否则 /classify（规则引擎）在打包态
 # 会 FileNotFoundError: preset_rules.json。
+#
+# ⚠️ 内置 llama.cpp 引擎（vendor/llama/<platform>/）**不在这里收集**：
+# PyInstaller 的 COLLECT(strip=True) 会对产物里的 native 文件执行 strip（实测日志可
+# 见 `strip -S .../vendor/llama/llama-server`，文件被当作 binary 处理），而本项目有过
+# strip 破坏第三方 dll（libssl-3.dll）导致侧车 100% 起不来的前车之鉴。引擎改由
+# scripts/build-sidecar.sh 在 PyInstaller 之后直接拷进产物，完全不经过 PyInstaller
+# 的处理链（bincache / strip / 依赖分析）。
 _datas: list[tuple[str, str]] = [
     *collect_data_files("app.rules.presets", include_py_files=False),
     # TBD（后续启用 jieba 分词后加回）:
@@ -164,6 +186,40 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# --- Windows 两处打包缺陷的修复 ------------------------------------------------
+# 缺陷 1：构建机（actions/setup-python 的 toolcache CPython）在安装目录里自带一份
+#   「向下兼容 UCRT」（ucrtbase.dll + api-ms-win-crt-*.dll 转发桩），PyInstaller 会把它
+#   当普通依赖收进 _internal。bootloader 启动时**主动** dlopen 这份 ucrtbase.dll
+#   （pyi_pythonlib.c：为「目标机未装 UCRT 更新」的老系统准备），于是后面 python312.dll
+#   的 api-ms-win-crt-* → ucrtbase 绑定到这份**比目标机系统更旧**的副本上，加载直接失败
+#   （实测：CI 产物 ucrtbase 10.0.26100.1742 vs 本机系统 10.0.26100.9444）。
+#   修复：Windows 明确剔除它，改用目标机系统 UCRT（Win10+ 是 Tauri 2 的下限，必然具备）。
+#   api-ms-win-crt-*.dll 转发桩保留（实测无害：无本包 ucrtbase 时经系统 API set 解析）。
+#   验证方式见文件末尾注释块。
+_WIN_BIN_EXCLUDES: frozenset[str] = frozenset({"ucrtbase.dll"})
+if sys.platform.startswith("win"):
+    _dropped_bins = sorted(
+        os.path.basename(entry[0]).lower()
+        for entry in a.binaries
+        if os.path.basename(entry[0]).lower() in _WIN_BIN_EXCLUDES
+    )
+    if _dropped_bins:
+        # 必须纯 ASCII：spec 由 PyInstaller 在 Windows runner 上 exec，此时 stdout 是
+        # cp1252（非 UTF-8），打印中文（如全角冒号）会抛 UnicodeEncodeError 中断打包。
+        print(f"[spec] Windows: dropped build-machine UCRT copies {sorted(set(_dropped_bins))}")
+    a.binaries = [
+        entry for entry in a.binaries if os.path.basename(entry[0]).lower() not in _WIN_BIN_EXCLUDES
+    ]
+
+# 缺陷 2：Windows 关闭 strip。CI（merge-build.yml）用 `shell: bash` 在 Git Bash 里跑
+#   build-sidecar.sh，PATH 中带 MSYS 的 strip.exe，因此 PyInstaller 的 strip=True 在
+#   Windows 上**真的会执行** binutils strip（PyInstaller 文档本就标注 Windows 不推荐）。
+#   实测后果：产物目录里 300+ 个 DLL/.pyd 全部丢了尾部 Authenticode 签名，但 PE
+#   data directory 的 security 项仍指向 EOF 之外的偏移（SecOffset == 文件长度），
+#   且 libssl-3.dll 在装载时重定位处理崩溃（Win32 998「内存位置访问无效」）→
+#   `import _ssl` 失败 → 侧车启动即退出。macOS 保留 strip（既有产物已实机验证可用）。
+_STRIP: bool = not sys.platform.startswith("win")
+
 # P2-2 onedir：EXE 只含 bootloader + PYZ；二进制作业/数据交给 COLLECT 落到
 # 同级的 ``_internal/``，启动时原地读取（不再解压到临时目录）。
 exe = EXE(
@@ -174,7 +230,7 @@ exe = EXE(
     name="filemind-sidecar",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=_STRIP,
     upx=False,
     console=True,
     disable_windowed_traceback=False,
@@ -188,8 +244,42 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=True,
+    strip=_STRIP,
     upx=False,
     upx_exclude=[],
     name="filemind-sidecar",
 )
+
+# ---------------------------------------------------------------------------
+# Windows 两处打包缺陷：现象、复现与回归验证（2026-09-15 实机排障记录）
+# ---------------------------------------------------------------------------
+# 现象（用户安装到 D:\FileMind 后双击 filemind.exe）：
+#   a. 状态栏/问答页永久停在「AI 引擎启动中，就绪后可开始问答…」；
+#   b. 弹出控制台窗口并打印
+#      [PYI-1628:ERROR] Failed to load Python DLL
+#      'D:\FileMind\sidecar\_internal\python312.dll'. LoadLibrary: 找不到指定的模块。
+#
+# 复现（无需起 Tauri）：直接跑安装目录里的侧车主程序，stderr 即上述 PYI 报错：
+#   PS> D:\FileMind\sidecar\filemind-sidecar.exe
+#
+# 定位结论（本机实测，两条独立缺陷）：
+#   1. 把 _internal\ucrtbase.dll 改名后，bootloader 立刻能加载 python312.dll 并进入
+#      Python（说明 DLL 本身与依赖都完好，问题在这份「构建机旧版 UCRT 副本」）；
+#   2. 去掉它之后 Python 起得来但倒在 `import _ssl`：998 = ERROR_NOACCESS
+#      「内存位置访问无效」；单独验证 `_ssl.pyd` 的依赖链，最终锁定 _internal\libssl-3.dll
+#      —— 该文件 LoadLibraryEx(默认) 必失败 998，LoadLibraryEx(LOAD_LIBRARY_AS_DATAFILE)
+#      正常（镜像可映射），清掉其 reloc 目录项后又能正常装载 ⇒ 装载期重定位处理崩溃，
+#      即 PE 镜像被 strip 类工具改坏；全目录 300+ 个 DLL 的 security 目录项都指向 EOF
+#      之外，是同一批 strip 操作的指纹。
+#
+# 回归验证（Windows 打包后必做，CI 目前只做「文件存在」结构层校验，抓不到本类问题）：
+#   1. 产物目录里 `dir _internal\ucrtbase.dll` 应不存在（本 spec 已剔除）；
+#   2. 直接运行 `dist\filemind-sidecar\filemind-sidecar.exe`：不应出现 PYI-1628，
+#      且应稳定跑起来（stderr 无 ImportError: DLL load failed while importing _ssl）；
+#   3. 冒烟：设 PSK_HEX=<64 hex> SIDECAR_PORT=8799 后 `GET /health` 应 200。
+#   4. 校验签名未被破坏：
+#      `Get-ChildItem _internal -Include *.dll,*.pyd -Recurse | Where-Object {
+#         $b=[IO.File]::ReadAllBytes($_.FullName); $pe=[BitConverter]::ToInt32($b,0x3C);
+#         [BitConverter]::ToInt32($b,$pe+24+112+32) -eq $b.Length } | Measure-Object`
+#      期望 Count = 0（=0 表示没有「证书表指向 EOF 之外」的残留）。
+

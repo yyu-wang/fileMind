@@ -26,16 +26,16 @@
 
 ### 现状证据（为什么必须做）
 
-| 事实                                                                              | 证据                                                                          | 影响                                        |
-| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------- |
-| `tauri.conf.json` 中 `externalBin=[]`、`resources=[]`                             | [tauri.conf.json](src-tauri/tauri.conf.json) L52-53                           | Sidecar 不进安装包                          |
-| 打包态从 `resource_dir` 找 `filemind-sidecar-{triple}`                            | [manager.rs](src-tauri/src/sidecar/manager.rs) L735-794                       | 包内无该文件 → 启动即缺引擎退出             |
-| `filemind/binaries/*` 被 gitignore，CI 全新检出无二进制                           | [.gitignore](.gitignore) L75-77                                               | 需在构建期现场生成                          |
-| CI `merge-build.yml` 4 平台矩阵无 `build-sidecar.sh` 步骤                         | [merge-build.yml](.github/workflows/merge-build.yml) L44-83                   | 产出残缺安装包                              |
-| 现有 `filemind-sidecar-aarch64-apple-darwin` = **315MB**                          | filemind/binaries/                                                            | 远超 80MB 门控，见 D1                       |
-| 硬依赖集：lancedb/pyarrow/numpy/jieba/ollama/sentence-transformers(torch)         | [requirements.txt](python-sidecar/requirements.txt)                           | 315MB 是真实需要，无法靠 excludes 压回 80MB |
-| spec `_excludes` 与 docstring 已脱节（docstring 称 exclude 重型模块，实现已不含） | [filemind-sidecar.spec](python-sidecar/filemind-sidecar.spec) L1-14, L100-116 | 门控与实现需一起对齐                        |
-| 主程序 bundle 路径切换逻辑已写好（setup 内）                                      | [main.rs](src-tauri/src/main.rs) L488-555                                     | 只需让文件真实存在即可命中                  |
+| 事实                                                                              | 证据                                                                                                                                                                    | 影响                                        |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `tauri.conf.json` 中 `externalBin=[]`、`resources=[]`                             | [tauri.conf.json](src-tauri/tauri.conf.json) L52-53                                                                                                                     | Sidecar 不进安装包                          |
+| 打包态从 `resource_dir` 找 `filemind-sidecar-{triple}`                            | [manager.rs](src-tauri/src/sidecar/manager.rs) L735-794                                                                                                                 | 包内无该文件 → 启动即缺引擎退出             |
+| `filemind/binaries/*` 被 gitignore，CI 全新检出无二进制                           | [.gitignore](.gitignore) L75-77                                                                                                                                         | 需在构建期现场生成                          |
+| CI `merge-build.yml` 4 平台矩阵无 `build-sidecar.sh` 步骤                         | [merge-build.yml](.github/workflows/merge-build.yml) L44-83                                                                                                             | 产出残缺安装包                              |
+| 现有 `filemind-sidecar-aarch64-apple-darwin` = **315MB**                          | filemind/binaries/                                                                                                                                                      | 远超 80MB 门控，见 D1                       |
+| 硬依赖集：lancedb/pyarrow/numpy/jieba/ollama/sentence-transformers(torch)         | [requirements.txt](python-sidecar/requirements.txt)                                                                                                                     | 315MB 是真实需要，无法靠 excludes 压回 80MB |
+| spec `_excludes` 与 docstring 已脱节（docstring 称 exclude 重型模块，实现已不含） | [filemind-sidecar.spec](python-sidecar/filemind-sidecar.spec) L1-14, L100-116                                                                                           | 门控与实现需一起对齐                        |
+| 主程序 bundle 路径切换逻辑已写好（setup 内）                                      | [sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) `resolve_binary()`（dev 未命中→留空）+ [bootstrap.rs](src-tauri/src/sidecar/bootstrap.rs) `resolve_bootstrap_path()` | 只需让文件真实存在即可命中                  |
 
 ---
 
@@ -103,7 +103,7 @@
 - 联动：`Makefile` 新增目标（如 `build:sidecar`）并在 `build` 前置调用 `scripts/build-sidecar.sh`；`package.json` 增补对应 npm script（不改动核心依赖）
 - **关键验证点（本任务真正的 DoD）**：本机构建后，解包/运行打包 app，确认：
   1. dmg 内 `Contents/Resources/` 出现 `filemind-sidecar-aarch64-apple-darwin`
-  2. 运行 app 日志出现 `命中 bundle Sidecar 路径`（[main.rs](src-tauri/src/main.rs) L504-506），而非 `未命中...回退 dev`
+  2. 运行 app 日志出现 `Sidecar 引导使用路径: …/Contents/Resources/filemind-sidecar-aarch64-apple-darwin`（[bootstrap.rs](src-tauri/src/sidecar/bootstrap.rs) `bootstrap_worker`），而非 dev 目录路径；dev 侧未命中时会先出现 `dev 模式未找到 Sidecar 二进制，交由后台引导按 bundle 路径解析`（[sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) `resolve_binary`）
   3. Sidecar `/health` 正常、RAG 冒烟可用
 - ⚠️ 若验证点 1 中文件实际落到**非 resource_dir 目录**（Tauri 版本行为差异），备选方案：改 `resolve_bundle_binary_path` 用 `tauri_plugin_shell` 的 sidecar 解析 API，或按实际落地目录修正探测点（小改动，执行时现场定）
 - DoD：本地 `npm run build:tauri` 产出可运行 dmg；app 全程不依赖 dev 目录（`CARGO_MANIFEST_DIR` 布局）即能启动
@@ -138,7 +138,7 @@
 > **T3 执行记录（2026-09-04 完成代码改动，待真实 runner 验证）**
 >
 > - [merge-build.yml](.github/workflows/merge-build.yml) 重写为**原生三 job 矩阵**：`windows-latest`(msi+nsis 双产出) / `macos-14`(arm64) / `macos-13`(x64 Intel，PyInstaller 无法跨 mac 架构)
-> - **移除 Linux job**：打包态 Sidecar 解析（main.rs defer_to_bundle）当前仅 macOS/Windows，Linux 分发改后续版本（工作流注释说明）
+> - **移除 Linux job**：打包态 Sidecar 解析（[sidecar_setup.rs](src-tauri/src/sidecar_setup.rs) 的 `can_bundle` 分支）当前仅 macOS/Windows，Linux 分发改后续版本（工作流注释说明）
 > - 每 job 新流程：setup-python 3.12 → 建 venv + 装 requirements/requirements-dev → gen:ipc → `build-sidecar.sh --target <native triple>` → `tauri build --bundles msi nsis|dmg` → **Smoke check（bundle 内必须存在 filemind-sidecar，否则显式失败）** → 上传 artifact
 > - `build-sidecar.sh` 兼容 Windows venv 布局（`.venv/Scripts/python.exe`）
 > - 本地自检：bash -n 通过、YAML `{{ }}` 配对 13/13
@@ -252,6 +252,20 @@
      引入）同样早已停发 macOS x86_64 wheel。结合 Apple 已停 Intel 支持、GitHub 将于 macOS 15
      之后（2027 秋）退役 Intel runner，本轮起**只分发 macOS arm64 + Windows**；
      将来若仍需 Intel 包，路径是为该平台单独降级 lancedb/torch（运行时行为分叉，需实测）
+  9. **引擎取包纳入 PR 门禁**（2026-09-17，T3 引擎分发链路暴露的漏网之鱼）：`build-check` 用
+     `stub-sidecar-product.sh` 占位、不走 `build-sidecar.sh`，故「取引擎产物 → 入产物」这条链路
+     只有 merge-build 才真正跑到。实测后果：`fetch-llama-server.sh` 的内嵌 Python 在 Windows runner
+     上按 cp1252 输出 ⏳/中文，`print` 抛 UnicodeEncodeError，脚本在「开始下载」前即退出 →
+     merge-build Windows job 4.5min 假失败、其后三段引擎冒烟全部 skipped，而 PR 侧全绿。
+     处置：脚本在打印前 `reconfigure(encoding="utf-8")`（与 [go-no-go.py](scripts/go-no-go.py) 同一
+     写法），并在 `build-check` 补一步「取引擎 + 断言产物存在」——每 PR 每平台 +1 次下载（macOS
+     27MB / Windows 45MB，约 1 分钟）；PyInstaller 与入产物仍只由 merge-build 覆盖。
+     ✅ **已验证（2026-09-17）**：PR Check run `35184498769` 两平台 `build-check` 全绿，新步骤真跑——
+     Windows `[engine] 目标平台 win-x64` → `✅ sha256 校验通过（17.6 MB）` →
+     `内置引擎取包 OK: python-sidecar/vendor/llama/win-x64/llama-server.exe`；macOS 同（10.6 MB）。
+     实测代价远低于预估：引擎下载在 CI 上约 1 秒，整轮 PR Check 仍约 7min。同轮 merge-build
+     （`ce309a0`）另证编码修复后 Windows 三段引擎冒烟（产物断言 / 打包侧车 `/health` / 引擎 `--version`）
+     全部通过。
 - E2E-002 失败定位（同批修好）：取证快照显示「6 成功 / 0 失败」但扫描根被清空——分类产物
   落点是扫描根**同级**的收纳根 `<扫描根名>_已分类`（`classifier::sibling_output_root`，扫描目录
   只留待整理文件），而 002 断言的是扫描目录内部，属**断言语义过期**（非产品缺陷）。改为按
@@ -269,6 +283,27 @@
   需对 `Resources/sidecar/` 内的可执行文件一并签名。
 
 ---
+
+### W3：Windows 安装包配置补齐（2026-09-14）
+
+- 背景：发版链路（W1/W2）打通后，`bundle.windows` 段仍为空 —— WebView2 安装方式、NSIS
+  安装模式与语言都取框架默认值，属发布前必须显式拍板的三项。
+- 决策：
+  1. **`webviewInstallMode`：先试 `offlineInstaller`，实测后回退为 `downloadBootstrapper`**。
+     实测（merge-build Windows job）：artifact 压缩包 **653.9MB → 1082.4MB（+428MB）**，
+     按 v1.0.0-1 资产尺寸反推即每个安装器 +214MB（NSIS 273→~487MB、MSI 382→~596MB），
+     官方文档「约 127MB」偏乐观。而 **updater 下载的就是 NSIS 那个 exe**，等于每次自动更新
+     也要多下 214MB；反观 WebView2 在 Windows 11 已内置、Windows 10 由 Windows Update
+     推送，真正缺它的机器极少，故不值得。现显式写出 `downloadBootstrapper` 固定该默认值，
+     避免将来框架默认值变动带来体积突变。
+  2. **`nsis.installMode`：显式固定为 `currentUser`**（也是框架默认）：装到用户目录、只写
+     `HKCU`、全程不要管理员权限，updater 静默替换文件也不需要提权。
+  3. **`nsis.languages`：`["SimpChinese", "English"]`**：中文系统显示中文安装界面，系统
+     语言不在列表时回落第一项（即中文）。
+- 验证：merge-build Windows job 全绿，`light`（MSI）与 `makensis`（NSIS）均正常产出，
+  4 个产物（msi / nsis.exe / 两个 .sig）齐备。
+- 备注：安装器体积即更新下载体积（`latest.json` 的 `windows-x86_64` 指向 NSIS exe），
+  后续若要压缩更新体积，应优先考虑 sidecar 产物体积（onedir 源产物 915MB）而非安装器格式。
 
 ## 3. 验收门控汇总
 

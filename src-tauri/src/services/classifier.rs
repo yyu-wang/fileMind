@@ -10,17 +10,23 @@
 //! 避免在扫描目录内新建分类子目录、保持源目录只留待整理文件。目标子目录
 //! `categories.target_dir` 经 `security::validate_relative_subpath` 校验后才与收纳根拼接；
 //! 目标路径冲突用 `ConflictStrategy::Skip` 提前标记，冲突项由执行层跳过（不覆盖、不改名）。
+//!
+//! 拆分（原单文件 407 行，逼近 Rust 模块 500 行强制阈值）：
+//!   - `services/classifier_engine.rs` 判定引擎（规则 / 启发式 / 待确认）
+//!   - `services/classifier_paths.rs`  目标路径拼接与冲突标记
+//!
+//! 本文件留对外契约（来源标签 + 三个 specta 类型）与编排（生成计划 / LLM 兜底合并 / 统计）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::db::models::{Category, FileRecord, Rule};
-use crate::error::{AppError, AppResult};
-use crate::security;
-use crate::services::conflict_resolver::{self, ConflictStrategy, ConflictType, PlanStatus};
+use crate::error::AppResult;
+use crate::services::classifier_engine::{decide, CategoryDecision};
+use crate::services::classifier_paths::{build_target_path, resolve_conflict};
+use crate::services::conflict_resolver::{ConflictType, PlanStatus};
 
 /// 规则匹配来源标签前缀（`rule:<规则名>`），前端据此区分 规则/启发式/待确认。
 pub(crate) const RULE_SOURCE_PREFIX: &str = "rule:";
@@ -32,45 +38,10 @@ pub(crate) const PENDING_SOURCE: &str = "pending";
 pub(crate) const LLM_SOURCE: &str = "llm";
 /// 待人工确认来源标签（T6.11：LLM 兜底命中但置信度低于阈值）。
 pub(crate) const NEEDS_REVIEW_SOURCE: &str = "needs_review";
-/// 收纳目录命名后缀：扫描根同级目录名为 `<扫描根名>_已分类`。
-pub(crate) const SIBLING_SUFFIX: &str = "_已分类";
 
-/// 内置启发式映射：扩展名分组 → 内置分类名。
-///
-/// 分类名与 `category_repo.rs` 的 `BUILTIN_CATEGORIES` 种子保持一致；
-/// 目标分类不在 `categories` 中时启发式不生效（交给待确认）。
-const HEURISTIC_EXT_MAP: &[(&str, &[&str])] = &[
-    (
-        "图片",
-        &[
-            "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif", "heic",
-        ],
-    ),
-    ("文档", &["pdf"]),
-    (
-        "视频",
-        &["mp4", "mkv", "mov", "avi", "wmv", "flv", "webm", "m4v"],
-    ),
-    ("音乐", &["mp3", "wav", "flac", "aac", "ogg", "m4a"]),
-    ("压缩包", &["zip", "rar", "7z", "tar", "gz", "bz2", "xz"]),
-    (
-        "办公文档",
-        &[
-            "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
-        ],
-    ),
-    (
-        "代码",
-        &[
-            "txt", "md", "ts", "tsx", "js", "jsx", "py", "rs", "java", "c", "h", "cpp", "css",
-            "html", "sh", "sql", "go", "json", "yaml", "yml", "toml", "xml", "log",
-        ],
-    ),
-    ("数据文件", &["csv", "tsv"]),
-    ("安装包", &["dmg", "pkg", "exe", "msi", "deb", "rpm", "apk"]),
-    ("字体", &["ttf", "otf", "woff", "woff2"]),
-    ("电子书", &["epub", "mobi", "azw3"]),
-];
+// 收纳根计算已移到 classifier_paths，此处再导出以保持既有调用路径
+// （commands/classify.rs 与 classifier_tests.rs 的 `classifier::sibling_output_root`）。
+pub use crate::services::classifier_paths::sibling_output_root;
 
 /// 单个文件的分类计划项。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -124,37 +95,6 @@ pub struct ClassifyPreview {
     pub items: Vec<ClassifyPlanItem>,
     /// 汇总统计。
     pub stats: ClassifyStats,
-}
-
-/// 单文件的分类决策结果。
-enum CategoryDecision {
-    /// 规则命中（携带目标分类 + 规则名）。
-    Rule {
-        category: Category,
-        rule_name: String,
-    },
-    /// 启发式命中。
-    Heuristic { category: Category },
-    /// 无匹配，进入待确认。
-    Pending,
-}
-
-/// 计算扫描根同级收纳目录路径：`<扫描根父目录>/<扫描根名>_已分类`。
-///
-/// 分类输出统一落到收纳目录（而非扫描目录内部），保持源目录只留待整理文件。
-/// 仅在扫描根名无法确定（如文件系统根 `/`）时返回错误。
-///
-/// # Errors
-///
-/// 扫描根为文件系统根、无法取父级目录名时返回 `InvalidInput`。
-pub fn sibling_output_root(scan_root: &Path) -> AppResult<PathBuf> {
-    let name = scan_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .filter(|n| !n.is_empty())
-        .ok_or_else(|| AppError::InvalidInput("无法为扫描根生成同级收纳目录名".to_string()))?;
-    let parent = scan_root.parent().unwrap_or_else(|| Path::new("/"));
-    Ok(parent.join(format!("{name}{SIBLING_SUFFIX}")))
 }
 
 /// 为一批文件生成分类计划（纯计算，不落盘、不动 DB）。
@@ -222,110 +162,6 @@ pub fn generate_plan(
         });
     }
     Ok(items)
-}
-
-/// 按 规则 → 启发式 → 待确认 顺序判定单个文件的分类。
-fn decide(file_name: &str, rules: &[Rule], categories: &[Category]) -> CategoryDecision {
-    for rule in rules {
-        if match_rule(file_name, rule) {
-            if let Some(category) = rule
-                .target_category
-                .as_deref()
-                .and_then(|id| category_by_id(categories, id))
-            {
-                return CategoryDecision::Rule {
-                    category: category.clone(),
-                    rule_name: rule.name.clone(),
-                };
-            }
-            // 规则命中但目标分类不存在 → 视为未命中，继续下一规则
-        }
-    }
-
-    let ext = file_extension(file_name).to_ascii_lowercase();
-    if let Some(name) = heuristic_category_name(&ext) {
-        if let Some(category) = categories.iter().find(|c| c.name == name) {
-            return CategoryDecision::Heuristic {
-                category: category.clone(),
-            };
-        }
-    }
-
-    CategoryDecision::Pending
-}
-
-/// 判断文件名是否命中单条规则。
-///
-/// `magic_number` / `size` 需读取文件内容/元数据，属 E4 补充范围，此处不匹配（跳过）。
-fn match_rule(file_name: &str, rule: &Rule) -> bool {
-    let pattern = rule.pattern.trim();
-    if pattern.is_empty() {
-        return false;
-    }
-    match rule.rule_type.as_str() {
-        "extension" => {
-            let ext = file_extension(file_name).to_ascii_lowercase();
-            pattern.split(',').any(|token| {
-                let token = token.trim().trim_start_matches('.').to_ascii_lowercase();
-                !token.is_empty() && token == ext
-            })
-        }
-        "path_keyword" => file_name.contains(pattern),
-        "regex" => Regex::new(pattern).is_ok_and(|re| re.is_match(file_name)),
-        _ => false,
-    }
-}
-
-/// 取文件扩展名（不含点，小写判断由调用方决定；无扩展名返回空串）。
-fn file_extension(file_name: &str) -> &str {
-    file_name.rfind('.').map_or("", |pos| &file_name[pos + 1..])
-}
-
-/// 内置启发式：扩展名 → 分类名。
-fn heuristic_category_name(ext: &str) -> Option<&'static str> {
-    HEURISTIC_EXT_MAP
-        .iter()
-        .find(|(_, exts)| exts.contains(&ext))
-        .map(|(name, _)| *name)
-}
-
-/// 按 id 查分类。
-fn category_by_id<'a>(categories: &'a [Category], id: &str) -> Option<&'a Category> {
-    categories.iter().find(|c| c.id == id)
-}
-
-/// 拼接目标绝对路径：`收纳根/target_dir/file_name`。
-///
-/// `target_dir` 为空的分类 → 目标就是 `scan_root/file_name`（不移动，执行时因目标
-/// 与源相同被 `Skip` 跳过，仅用于语义占位）。
-///
-/// # Errors
-///
-/// `target_dir` 未通过 `validate_relative_subpath` 时返回 `UnsafePath`。
-fn build_target_path(
-    scan_root: &Path,
-    output_root: &Path,
-    category: &Category,
-    file_name: &str,
-) -> AppResult<PathBuf> {
-    if category.target_dir.trim().is_empty() {
-        return Ok(scan_root.join(file_name));
-    }
-    let sub = security::validate_relative_subpath(&category.target_dir)?;
-    Ok(output_root.join(sub).join(file_name))
-}
-
-/// 用 `Skip` 策略解析目标冲突：目标已存在 → `Conflict/SameName`（执行时跳过）。
-fn resolve_conflict(
-    target_path: &Path,
-    file_name: &str,
-    original_path: &Path,
-) -> (Option<PathBuf>, PlanStatus, Option<ConflictType>) {
-    let target_dir = target_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("/"));
-    conflict_resolver::resolve(file_name, original_path, target_dir, ConflictStrategy::Skip)
 }
 
 /// 聚合分类统计。

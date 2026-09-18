@@ -1,20 +1,21 @@
-// 分批执行引擎：chunk 循环 + 暂停/取消 + 执行令牌校验 + 打标限并发。
+// 分批执行引擎：chunk 循环 + 暂停/取消 + 执行令牌校验 + 异常收尾。
 //
 // 与 store 分离的原因：循环本身是纯编排（无响应式状态），抽出来后 store 只负责
 // 「状态写入 + 生命周期」，异常收尾的部分结果也随返回值一起回到 store，
 // 不会被 try/catch 边界吞掉。
+//
+// 同目录拆分（原单文件 177 行，逼近 .ts 警告阈值 150）：
+//   - ./executionPlan.ts   预览 → 计划/汇总的纯映射（buildSummary / toPlanItem）
+//   - ./chunkLabeling.ts   chunk 执行结果的分类打标（限并发 + 失败上报）
+// 本文件保留循环本体与对外的 ExecControl / ExecutionOutcome 契约。
 
-import { mapWithConcurrency } from '@/lib/concurrency';
 import { fileIpc } from '@/lib/ipc';
 import { ipcErrorMessage } from '@/lib/ipcError';
-import type { ClassifyPlanItem, ClassifyPreview, PlanItem } from '@/types/ipc';
-import type { ClassifyExecMode, ClassifyExecSummary } from './types';
+import type { ClassifyPlanItem, PlanItem } from '@/types/ipc';
+import { labelChunkResults } from './chunkLabeling';
 
 /** 单块执行的文件数上限（分批调用避免单次 IPC 过久）。 */
 const CHUNK_SIZE = 50;
-
-/** chunk 内打标（updateFileCategory）并发数：SQLite 单写者下单条 UPDATE 安全，5 路已显著快于串行。 */
-const LABEL_CONCURRENCY = 5;
 
 /** 执行循环控制（非响应式：暂停/取消通过它中断 chunk 循环）。 */
 export interface ExecControl {
@@ -33,33 +34,6 @@ export interface ExecutionOutcome {
   success: number;
   failed: number;
   lastBatchId: string | null;
-}
-
-/** 汇总执行结果（pending/total 来自预览，success/failed 来自实际执行）。 */
-export function buildSummary(
-  preview: ClassifyPreview,
-  success: number,
-  failed: number,
-): ClassifyExecSummary {
-  return {
-    success,
-    failed,
-    pending: preview.items.filter((item) => item.category_name == null).length,
-    total: preview.items.length,
-  };
-}
-
-/** 分类计划项 → T3.x 执行用 PlanItem（按 mode 选 Move 移动 / Copy 复制）。 */
-export function toPlanItem(item: ClassifyPlanItem, mode: ClassifyExecMode): PlanItem {
-  return {
-    file_id: item.file_id,
-    file_name: item.file_name,
-    original_path: item.original_path,
-    new_path: item.target_path,
-    operation: mode === 'copy' ? 'Copy' : 'Move',
-    status: item.status,
-    conflict_type: item.conflict_type,
-  };
 }
 
 /** 暂停期间阻塞当前 chunk；返回时是否已被取消。 */
@@ -131,28 +105,7 @@ export async function runBatchedExecution(args: {
         onError(result.error);
         break;
       }
-      // chunk 内打标限并发（LABEL_CONCURRENCY）：原逐项串行 await 最多 50 次
-      // 顺序 IPC 往返；结果统计在并发完成后按同序汇总，语义与串行版一致。
-      const outcomes = await mapWithConcurrency(
-        result.data.results,
-        LABEL_CONCURRENCY,
-        async (r) => {
-          if (!r.success) return false;
-          const execItem = execItems.find((item) => item.file_id === r.file_id);
-          // 移动/复制两种模式都打标签到原文件：移动=标记已整理的落库路径，
-          // 复制=原文件原地保留但标记已分类（软排除，避免再次被批量选中）
-          if (execItem?.category_name) {
-            const label = await fileIpc.updateFileCategory(r.file_id, execItem.category_name);
-            // FE-C6：打标失败不得静默——文件已移动但 category 未落库会使
-            // isOrganized 失效，下轮「全部分类」重复整理；计入失败并提示。
-            if (label.status === 'error') {
-              onError(`文件已移动但分类标签写入失败：${label.error}`);
-              return false;
-            }
-          }
-          return true;
-        },
-      );
+      const outcomes = await labelChunkResults(result.data.results, execItems, onError);
       for (const ok of outcomes) {
         if (ok) {
           success += 1;

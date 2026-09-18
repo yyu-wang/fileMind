@@ -7,9 +7,61 @@
 #
 # ⚠️ 禁止为了「让新代码过关」而在本文件新增条目——新增条目必须能在评审里
 #    说明为何无法拆分（例如生成物/单文件协议常量表），否则应改为拆分文件。
+#
+# 修订记录（2026-09-15，Embedding 进程内 ONNX 改造分支）：
+#   - main.rs 702 → 703、commands/file_ops.rs 1392 → 1395：本分支的必要净增
+#     （main.rs 是 IPC 命令注册清单，移除 1 个命令、新增 2 个下载命令，净 +1；
+#      file_ops.rs 是把 3 处硬编码向量表名收敛为 resolve 调用，净 +3）。
+#     两者均为「清单/调用点」型增量，无法从文件内拆出；真正的解法是拆分这两个
+#     文件本身（main.rs 已列为独立任务；file_ops.rs 已于 2026-09-16 拆分，见下）。
+#   - sidecar/manager.rs 1086 → 1111：**非本分支引入**。来自早先合并的
+#     fix/windows-sidecar-runtime（93bbc81，合并于 15a84f3），该分支未同步更新
+#     基线，属遗留欠账；此处一并消账以免阻塞后续 dev → main 的 PR。
+#
+# 修订记录（2026-09-16，file_ops 拆分消账）：
+#   - 删除 `commands/file_ops.rs 1395` 条目：该文件已按 component-split 拆为
+#     `commands/file_ops/` 目录（mod.rs + 8 个职责子模块），最大 preview.rs 289 行，
+#     全部落在 rules/complexity.md 的 300 行**警告**阈值内（强制阈值 500）。
+#     命令注册路径随之改为子模块全路径（`file_ops::scan::scan_directory` 等），
+#     原因见 commands/file_ops/mod.rs 顶部注释。main.rs 的 +1 仍属「IPC 注册清单」
+#     型增量，保留在基线中，其拆分另行处理。
+#
+# 修订记录（2026-09-16，main.rs 拆分消账）：
+#   - 删除 `main.rs 703` 条目：入口已拆为 main.rs（薄装配编排，176 行）+
+#     startup / sidecar_setup / watchdog / window / ipc_handler 五个 bin crate 模块，
+#     最大 172 行，全部落在 300 行警告阈值内。IPC 命令注册清单移到 ipc_handler.rs，
+#     绑定方式不变（仍是 `generate_handler!`；路径必须写子模块全路径，原因同 file_ops）。
+#
+# 修订记录（2026-09-16，file_repo 拆分消账）：
+#   - 删除 `db/file_repo.rs 638` 条目：已拆为 `db/file_repo/` 目录（mod.rs 84 行 +
+#     read / upsert / mutate / paths / embedding 五个子模块，最大 164 行）。
+#     全部方法是「接收外部 Connection」的无状态仓库方法，跨模块的 `impl FileRepo` 块
+#     共同构成同一类型的方法集合，故调用方（30+ 处）与 `file_repo_tests.rs` 均无需改动。
 
-src-tauri/src/commands/file_ops.rs 1392
-src-tauri/src/db/file_repo.rs 638
-src-tauri/src/main.rs 702
-src-tauri/src/sidecar/manager.rs 1086
-src/styles/globals.css 4680
+#
+# 修订记录（2026-09-16，清理 ProgressOverlay 死代码）：
+#   - globals.css 4680 → 4608：删除无消费者的 `.progress-*` 样式块（72 行，原属已删除的
+#     `src/components/ui/ProgressOverlay.tsx`）。按「只允许下降」把上限一并下调，防止回涨。
+
+#
+# 修订记录（2026-09-16，sidecar/manager 拆分消账）：
+#   - 删除 `src-tauri/src/sidecar/manager.rs 1111` 条目：已拆为 `sidecar/manager/` 目录
+#     （mod.rs + start / watchdog / shutdown / paths 四个子模块，最大 paths.rs 283 行），
+#     全部落在 rules/complexity.md 的 300 行警告阈值内（强制阈值 500）。类型与常量仍留在
+#     mod.rs——测试模块直接读写 `SidecarManager` 的私有字段，字段可见性依赖定义位置；
+#     子模块的公开项由 mod.rs 再导出，故 `sidecar::manager::X` 与各调用方路径均未改动。
+
+# 修订记录（2026-09-16，styles/globals.css 拆分消账 → 基线清空）：
+#   - 删除 `src/styles/globals.css 4608` 条目：已按「层 / 通用组件 / 页面区块」拆为
+#     `src/styles/` 下 22 个分区文件（base、layout、components-form、components-overlay、
+#     components-controls、onboarding、motion、page-files、files-table、
+#     page-files-preview、page-classify、classify-layout、classify-result、classify-history、
+#     page-chat、chat-input、page-settings、page-rules、theme-toggle、states、dialog、
+#     settings-widgets）+ `index.css` 清单，最大 layout.css 389 行，全部落在 .css 的
+#     强制阈值 400 行内（警告阈值 200）。
+#   - 拆分纪律：每个分区都是原文件的**连续切片**（内容与原行段一致，仅按 prettier 规则
+#     去掉切片末尾空行），`index.css` 的 @import 顺序 = 原文件行序（CSS 同特异性下后者
+#     胜出，跨区搬动会改变覆盖关系）；等价性由「构建产物 CSS 与拆分前逐字节一致」证明。
+#     过渡文件 `components.css` 的内容并入末段（其加载位置原本就在最后）后删除。
+#   - 本文件自此**无在册条目**：当前无文件超过强制拆分阈值。
+

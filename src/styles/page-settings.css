@@ -1,0 +1,119 @@
+/* T6.7 设置页（原 page-settings.css 拆出，357 行逼近 CSS 强制阈值 400）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-settings-form.css、
+ * page-settings-embedding.css、page-settings-dialog.css 之前（原文件的行序
+ * 即规则优先级）。
+ * 本文件 = 原行 1-107：页面骨架 / 布局 / 区块 / 设置行 / 模式徽章。
+ */
+/* ========== T6.7 设置页（对齐交互原型 §设置） ========== */
+/* 文档结构：
+   .page.settings-page > .main-header + .main-content > .settings-layout
+     ├ .settings-section（h3 + section-desc + 内容）
+     │   ├ .mode-selector > .mode-option.local/cloud/hybrid（mode-icon + mode-info + radio-dot）
+     │   ├ .setting-row（setting-label + setting-control）
+     │   └ .model-item（model-info + 切换按钮）
+*/
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-layout {
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.settings-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0-5);
+}
+
+.settings-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-page__desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-page__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 720px;
+}
+
+.settings-section {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.settings-section__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.settings-section__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-section__desc {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-section__consent-info {
+  margin-top: var(--sp-2);
+  font-size: 12px;
+  color: var(--success);
+}
+
+.settings-section__error {
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.settings-row--actions {
+  margin-top: var(--sp-2);
+  justify-content: flex-start;
+}
+
+.settings-mode-badge {
+  padding: var(--sp-1-5) var(--sp-3);
+  border-radius: var(--radius-full);
+  background: var(--accent-light);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-mode-badge--empty {
+  background: var(--rule);
+  color: var(--muted);
+}

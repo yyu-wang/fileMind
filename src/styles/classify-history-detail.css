@@ -1,0 +1,70 @@
+/* 分类历史的批次明细（打开某个历史批次后显示的逐文件操作记录）
+ * （2026-09-18 按区域拆自 classify-history.css，205 行超 CSS 警告阈值 200；
+ * 入口按钮 / 视图外壳 / 批次列表仍在 classify-history.css，导入顺序 = 原文件行序） */
+
+/* 批次明细 */
+.history-detail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-detail__item {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-detail__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-detail__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-detail__op {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.history-detail__paths {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-detail__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-detail__arrow {
+  flex-shrink: 0;
+  color: var(--muted);
+}

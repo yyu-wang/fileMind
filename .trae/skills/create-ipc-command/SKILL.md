@@ -65,20 +65,26 @@ pub async fn {command_name}({params}) -> Result<{return_type}, String> {
 
 ### 5. Register Command
 
-Add to `src-tauri/src/main.rs` invoke_handler:
+Add to the command table in `src-tauri/src/ipc_handler.rs`（**不是** `src-tauri/src/main.rs`——清单已独立成 bin 模块，main.rs 只调用 `ipc_handler::build()`）:
 
 ```rust
-.invoke_handler(tauri::generate_handler![
+tauri::generate_handler![
     // ... existing commands
     commands::{module}::{command_name},
-])
+]
 ```
 
-Add to `src-tauri/src/bin/export_specta.rs`:
+Add to `src-tauri/src/bin/export_specta.rs`（`collect_commands!`；与上面清单保持同一顺序，便于对照维护）:
 
 ```rust
 commands::{module}::{command_name},
 ```
+
+> ⚠️ 路径必须是**命令定义所在的子模块全路径**（如 `commands::file_ops::scan::scan_directory`），
+> 不能用再导出后的短路径（`commands::file_ops::scan_directory`）。
+> `#[tauri::command]` / `#[specta::specta]` 生成的隐藏辅助项（`__tauri_command_name_*` /
+> `__cmd__*` / `__specta__fn__*`）只存在于命令定义所在模块，宏按「给定路径的父模块」
+> 查找它们，`pub use` 再导出带不过去，编译会报 `cannot find __cmd__xxx`。
 
 ### 6. Generate Test Scaffold
 

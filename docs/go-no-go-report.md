@@ -5,6 +5,20 @@
 > onefile 真实体积约 315MB（2026-08-24 本机实测），无法靠 excludes 压回 80MB。
 > 决策与后续任务见 `docs/packaging-implementation-plan.md`（D1）。
 
+> **门控修订记录（2026-09-15）**：本报告 T7 的 `<500MB` 内存门控已上调为 `<2048MB`。
+> 原因：Embedding 由「本地 Ollama HTTP」改为「Sidecar 进程内 ONNX int8 推理」
+> （`Xenova/bge-large-zh-v1.5` int8，1024 维；为让未安装 Ollama 的机器也能做知识问答），
+> 实测（`benchmarks/onnx_embedding_mem_probe.py`，关内存池）模型加载后 0.55GB、
+> 稳态推理 0.85GB（300 字分块）~~1.18GB（500 字生产分块，峰值 1.31GB），叠加
+> Sidecar 基线 161MB 后约 1.0~~1.4GB，500MB 无法容纳。
+> 口径：门控仍按**冷启动**判定（embedding/rerank 均惰性加载，冷启动不触碰权重），
+> 2048MB 作为运行期上限用于卡住后续回归。
+> 同批复测（T7）：E5 召回门控 **98.0%**（门禁 80%，与旧 Ollama GGUF 报告一致）；
+> 索引吞吐 202.6 分块/分钟（500 字分块）→ `EST_FILES_PER_MINUTE` 500 → 100。
+> 同步改动：`rules/performance.md`、`scripts/go-no-go.py`（T7 阈值）、
+> `python-sidecar/app/api/routes_metrics.py`（`DEFAULT_MEMORY_THRESHOLD_MB`）、
+> `benchmarks/README.md`、`python-sidecar/app/core/embedding_models.py`。
+
 - 生成时间：2026-08-18 03:16:17
 
 - 统计：**7 PASS · 0 FAIL · 0 SKIP** （共 7 项）

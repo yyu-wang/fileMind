@@ -93,8 +93,12 @@ async def test_rerank_empty_candidates() -> None:
 # ------------------------------------------------------------------
 
 
-async def test_pipeline_lazy_singleton_constructed_once() -> None:
+async def test_pipeline_lazy_singleton_constructed_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """连续两次 rerank → CrossEncoder 只构造一次。"""
+    # 本用例断言「默认加载目标 = HF 仓库 id」，故固定本地副本为不存在：
+    # 真实机器上模型可能已下载到 `{models_root}/bge-reranker-v2-m3`，
+    # 此时默认目标会是本地目录（该分支由 test_resolve_load_target_* 覆盖）
+    monkeypatch.setattr(rerank_service, "model_ready", lambda _model: False)
     _reset_pipeline()
     constructs: list[str] = []
 
@@ -108,6 +112,28 @@ async def test_pipeline_lazy_singleton_constructed_once() -> None:
         await rerank("q", candidates)
 
     assert constructs == ["BAAI/bge-reranker-v2-m3"]
+
+
+# ------------------------------------------------------------------
+# 加载目标解析（本地副本优先）
+# ------------------------------------------------------------------
+
+
+def test_resolve_load_target_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FILEMIND_RERANK_MODEL 非空 → 直接采用（兼容自带模型的部署）。"""
+    monkeypatch.setenv("FILEMIND_RERANK_MODEL", "/custom/rerank-model")
+    assert rerank_service.resolve_load_target() == "/custom/rerank-model"
+
+
+def test_resolve_load_target_falls_back_to_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本地缺失且无 env 覆盖 → 回退 HF 仓库 id。
+
+    「本地副本就绪 → 用本地目录」这一分支需要真实模型目录，见
+    ``test_model_download_rerank.py::test_load_target_prefers_local_copy``。
+    """
+    monkeypatch.delenv("FILEMIND_RERANK_MODEL", raising=False)
+    monkeypatch.setattr(rerank_service, "model_ready", lambda _model: False)
+    assert rerank_service.resolve_load_target() == "BAAI/bge-reranker-v2-m3"
 
 
 # ------------------------------------------------------------------

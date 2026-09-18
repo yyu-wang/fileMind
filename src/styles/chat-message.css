@@ -1,0 +1,99 @@
+/* 知识问答页：消息行 / 头像 / 气泡 / 引用来源 / 流式光标（原 page-chat.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须紧随 page-chat.css 之后、chat-empty.css
+ * 之前（原文件的行序即规则优先级）。
+ * 本文件 = 原行 152-244。
+ */
+/* 消息行（文档 .msg） */
+.msg {
+  display: flex;
+  gap: var(--sp-3);
+  max-width: 80%;
+  animation: msgIn 0.3s var(--ease-out);
+}
+
+.msg.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+/* 头像（文档 .msg-avatar，渐变背景） */
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.msg-avatar svg {
+  width: 16px;
+  height: 16px;
+}
+
+.msg.user .msg-avatar {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+}
+
+.msg.ai .msg-avatar {
+  background: linear-gradient(135deg, var(--purple), var(--purple-deep));
+  color: #fff;
+}
+
+/* 气泡（文档 .msg-bubble） */
+.msg-bubble {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.msg.user .msg-bubble {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: var(--sp-0-5);
+}
+
+.msg.ai .msg-bubble {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-bottom-left-radius: var(--sp-0-5);
+}
+
+.msg.ai .msg-bubble strong {
+  color: var(--accent2);
+  font-weight: 700;
+}
+
+/* 引用来源（文档 .citations / .citation-chip） */
+.citations {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--rule);
+}
+
+.citations-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: var(--sp-2);
+  font-weight: 600;
+}
+
+/* 流式光标（重命名 chat-bubble__cursor → streaming-cursor） */
+.streaming-cursor,
+.chat-bubble__cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: var(--sp-0-5);
+  vertical-align: -2px;
+  background: var(--accent2);
+  animation: blink 1s steps(2, start) infinite;
+}

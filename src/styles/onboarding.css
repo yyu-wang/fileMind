@@ -1,0 +1,160 @@
+/* ========== T6.3 首次启动引导流（对齐交互原型 §Onboarding） ==========
+ *
+ * 拆分（2026-09-17，原 277 行超 CSS 警告阈值 200）：按步骤拆出
+ *   - ./onboarding-directory.css 目录选择步骤（dropzone / 已选目录）
+ *   - ./onboarding-consent.css   同意书步骤（提供商 / 勾选 / 错误条 / 滚动内容）
+ * 本文件留引导流骨架、步骤容器与通用 callout（后者由 components/ui/Callout 复用于其它页面）。
+ */
+.onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-10);
+}
+
+.onboarding-card {
+  max-width: 560px;
+  width: 100%;
+  text-align: center;
+}
+
+.onboarding-card .logo {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  margin: var(--sp-0) auto var(--sp-5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(26, 54, 93, 0.3);
+  animation: logoIn 0.5s var(--ease-spring);
+}
+
+.onboarding-card .logo svg {
+  width: 36px;
+  height: 36px;
+  color: #fff;
+}
+
+.onboarding-card h1 {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: var(--sp-2);
+}
+
+.onboarding-card .subtitle {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 28px;
+}
+
+/* step-dots: 原型圆点进度指示器 */
+.step-dots {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: center;
+  margin: var(--sp-6) var(--sp-0);
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--rule2);
+  transition: all 0.2s var(--ease);
+}
+
+.step-dot.active {
+  background: var(--accent);
+  width: 24px;
+  border-radius: var(--radius-xs);
+}
+
+/* onboarding-step: 步骤内容容器，active 时显示并入场动画 */
+.onboarding-step {
+  display: none;
+}
+
+.onboarding-step.active {
+  display: block;
+  animation: stepIn 0.4s var(--ease-out);
+}
+
+.onboarding-step h3 {
+  font-size: 18px;
+  color: var(--accent);
+  margin-bottom: var(--sp-2);
+}
+
+.onboarding-step .step-desc {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: var(--sp-5);
+}
+
+.onboarding-step .step-actions {
+  display: flex;
+  margin-top: var(--sp-5);
+}
+
+.onboarding-step .step-actions--end {
+  justify-content: flex-end;
+}
+
+.onboarding-step .step-actions--between {
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* callout: 原型信息提示框（warn/success/info/amber） */
+.callout {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  border-left: 4px solid;
+  font-size: 13px;
+  margin: var(--sp-3) var(--sp-0);
+  text-align: left;
+}
+
+.callout.warn {
+  background: var(--warn-light);
+  border-color: var(--warn);
+}
+
+.callout.success {
+  background: var(--success-light);
+  border-color: var(--success);
+}
+
+.callout.info {
+  background: var(--accent-light);
+  border-color: var(--accent2);
+}
+
+.callout.amber {
+  background: var(--amber-light);
+  border-color: var(--amber);
+}
+
+.callout-title {
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
+}
+
+.callout ul {
+  font-size: 13px;
+  color: var(--muted);
+  margin: var(--sp-1-5) var(--sp-0) var(--sp-1-5) calc(var(--sp-4) + var(--sp-0-5));
+  line-height: 1.8;
+}
+
+.callout p {
+  margin: var(--sp-1-5) var(--sp-0);
+}

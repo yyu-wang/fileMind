@@ -20,17 +20,29 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from app.core.logging import getLogger
 from app.rules.llm_classify import LLM_MODEL
+from app.services import local_llm_service
 from app.services.providers.deepseek_provider import DeepSeekProvider
 from app.services.providers.generic_cloud_provider import GenericCloudProvider
+from app.services.providers.llamacpp_provider import LlamaCppProvider
 from app.services.providers.ollama_provider import OllamaProvider
 from app.services.providers.openai_provider import OpenAIProvider
 
 if TYPE_CHECKING:
     from app.services.cloud_provider import LLMProvider, PromptVersion
 
+logger = getLogger("filemind.provider")
+
 #: Rust 启动 Sidecar 时注入的激活云提供商 slug（对应 DB active_cloud_provider）
 _ACTIVE_CLOUD_PROVIDER_ENV = "FILEMIND_ACTIVE_CLOUD_PROVIDER"
+
+#: 本地生成「实际生效后端」的缓存（由探测服务回写；``None`` = 尚未判定）
+#:
+#: 为什么不在这里探测：:func:`resolve_provider` 是同步函数（调用点遍布路由与规则层），
+#: 不能在其中发网络请求。判定的唯一事实来源是探测服务（启动时后台探一次 + 设置页
+#: 「重新检测」），它同时知道 Ollama 可用性与内置引擎前置条件，回写结果供此处只读。
+_effective_local_backend: str | None = None
 
 #: 生成模型名 → 上下文窗口（token）；未收录模型回落保守本地值
 #: （08-§6 模型差异矩阵：本地 32K / gpt-4o 128K / deepseek-chat 64K）
@@ -63,6 +75,33 @@ def active_cloud_provider_slug() -> str | None:
     value = os.environ.get(_ACTIVE_CLOUD_PROVIDER_ENV, "")
     stripped = value.strip()
     return stripped if stripped else None
+
+
+def record_local_backend(backend: str) -> None:
+    """回写「本地生成实际该用哪个后端」（仅供探测服务调用）。
+
+    Args:
+        backend: ``ollama`` 或 ``builtin``（``local_llm_service`` 的取值）。
+    """
+    global _effective_local_backend
+    if _effective_local_backend != backend:
+        logger.info("provider.local_backend_resolved", backend=backend)
+    _effective_local_backend = backend
+
+
+def effective_local_backend() -> str:
+    """当前生效的本地生成后端。
+
+    尚未判定（探测未跑或未回写）时回落用户配置值——保持「默认走 Ollama」的既有
+    行为，不会因为探测迟到就改变语义。
+    """
+    return _effective_local_backend or local_llm_service.configured_backend()
+
+
+def reset_local_backend_cache() -> None:
+    """清空生效后端缓存（仅测试用）。"""
+    global _effective_local_backend
+    _effective_local_backend = None
 
 
 def get_max_context(model: str) -> int:
@@ -99,11 +138,14 @@ def truncate_context(context: str, model: str) -> str:
 def resolve_provider(model: str = LLM_MODEL) -> LLMProvider:
     """按模型名解析 Provider 实例。
 
-    判定顺序（P-07 改造后）：
+    判定顺序（T3b 改造后）：
     1. 命中内置前缀 ``gpt-`` / ``deepseek-`` → 分别用 OpenAIProvider / DeepSeekProvider
     2. 存在激活云提供商 slug（env ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 非空）
        → 使用 :class:`GenericCloudProvider`，按 slug 代理路由
-    3. 其余情况回落本地 OllamaProvider
+    3. 其余为本地生成，按生效后端分流：
+       - ``builtin``（用户显式选择，或探测发现 Ollama 不可用而自动回落）
+         → :class:`LlamaCppProvider`（Sidecar 内置 llama.cpp 引擎）
+       - 其余 → :class:`OllamaProvider`（既有默认行为）
 
     Args:
         model: 生成模型名（默认 ``LLM_MODEL``）。
@@ -116,7 +158,32 @@ def resolve_provider(model: str = LLM_MODEL) -> LLMProvider:
             return provider_cls(model=model)
     if active_cloud_provider_slug() is not None:
         return GenericCloudProvider(model=model)
+    if effective_local_backend() == local_llm_service.BACKEND_BUILTIN:
+        return LlamaCppProvider()
     return OllamaProvider(model=model)
+
+
+def resolve_local_provider(model: str) -> LLMProvider | None:
+    """解析**本地**生成 Provider（不参与云端判定）。
+
+    与 :func:`resolve_provider` 的分工：调用方（路由层）已按推理模式过滤过云端，这里若
+    复用 :func:`resolve_provider` 会把 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 重新带回来
+    （切回本地后 env 冻结 → 云端代理 → 缺 Key 401，见 ``routes_chat._resolve_chat_provider``
+    的注释）。
+
+    生效后端为内置引擎（T3：用户显式选 builtin，或探测发现 Ollama 不可用而自动回落）时
+    返回 :class:`LlamaCppProvider`；否则返回 ``None``，含义是「走调用点既有的 Ollama
+    路径」——用 ``None`` 而不是 ``OllamaProvider`` 是为了让默认路径**零行为变化**。
+
+    Args:
+        model: 生成模型名（本地模型名；内置引擎忽略它，用配置的 GGUF 标识）。
+
+    Returns:
+        内置引擎 Provider；默认（Ollama）后端返回 ``None``。
+    """
+    if effective_local_backend() == local_llm_service.BACKEND_BUILTIN:
+        return LlamaCppProvider()
+    return None
 
 
 def resolve_cloud_provider(model: str) -> LLMProvider | None:

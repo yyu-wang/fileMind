@@ -16,6 +16,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod log_file;
 pub mod security;
 pub mod services;
 pub mod sidecar;

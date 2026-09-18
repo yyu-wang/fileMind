@@ -16,12 +16,15 @@
 #   2. 每个目录总体积 ≤1600MB（脚本 assert，超标 exit 5）。
 #      ⚠️ 门控口径变更（P2-2 2026-09-11）：onefile 时代门控 400MB 量的是**压缩态**
 #      单文件（319MB）；onedir 是**解压落地态**目录，故改按解压态绝对值设门控。
-#      实测（本机 aarch64）：源产物 915MB / 6136 文件（保留 PyInstaller 的 symlink），
+#      实测（本机 aarch64，2026-09-16 含 T3c 内置引擎）：源产物 1011MB / 6186 文件
+#      （保留 PyInstaller 的 symlink），其中内置 llama.cpp 引擎占 58MB（B 步拷入，
+#      不走 PyInstaller）；T3c 之前为 915MB / 6136 文件。
 #      用户实际下载体积 tar.gz 317MB（与原 onefile 319MB 持平），故门控取 1600MB。
-#      ⚠️ 打包后体积更大（约 1384MB / 6172 文件）：Tauri `copy_resources` 会把源产物里的
-#      symlink（Python.framework 的 Versions/Current 等 36 个）**解引用**成真实文件副本。
-#      本脚本量的是**源产物**（915MB），scripts/verify-packaged-app.sh 量的是**打包后**
-#      （1384MB），两者共用 1600MB 门控，均 PASS。
+#      ⚠️ 打包后体积更大（engine 之前实测 1384MB / 6172 文件）：Tauri `copy_resources`
+#      会把源产物里的 symlink（Python.framework 的 Versions/Current 等 36 个）**解引用**
+#      成真实文件副本；加引擎后估约 1442MB，仍在 1600MB 门控内（未重测 bundle）。
+#      本脚本量的是**源产物**（1011MB），scripts/verify-packaged-app.sh 量的是**打包后**，
+#      两者共用 1600MB 门控。
 #      ⚠️ 体积一律按**逻辑大小**（`find -type f` 逐个 size 求和，不跟随 symlink）统计，
 #      不用 `du`：APFS 上 clone/硬链接共享块会让同一棵树的不同副本给出不一致读数。
 #   3. 三平台都额外提供默认名路径 filemind/binaries/filemind-sidecar（macOS/Linux 软链接、
@@ -117,10 +120,10 @@ if [[ $VALID -ne 1 ]]; then
   echo "[ERROR] target ${TARGET} 不在支持列表:" >&2; printf '  - %s\n' "${SUPPORTED[@]}" >&2; exit 2
 fi
 case "${TARGET}" in
-  aarch64-apple-darwin)        ARCH_PYI="arm64"   ; EXE_EXT=""   ;;
-  x86_64-apple-darwin)         ARCH_PYI="x86_64"  ; EXE_EXT=""   ;;
-  x86_64-pc-windows-msvc)      ARCH_PYI="x86_64"  ; EXE_EXT=".exe" ;;
-  x86_64-unknown-linux-gnu)    ARCH_PYI="x86_64"  ; EXE_EXT=""   ;;
+  aarch64-apple-darwin)        ARCH_PYI="arm64"   ; EXE_EXT=""   ; ENGINE_KEY="macos-arm64" ;;
+  x86_64-apple-darwin)         ARCH_PYI="x86_64"  ; EXE_EXT=""   ; ENGINE_KEY="" ;;
+  x86_64-pc-windows-msvc)      ARCH_PYI="x86_64"  ; EXE_EXT=".exe" ; ENGINE_KEY="win-x64" ;;
+  x86_64-unknown-linux-gnu)    ARCH_PYI="x86_64"  ; EXE_EXT=""   ; ENGINE_KEY="" ;;
 esac
 
 # ---------- 环境：venv + pyinstaller ----------
@@ -144,6 +147,16 @@ fi
 }
 
 mkdir -p "${BINARIES_DIR}"
+
+# ---------- 内置 llama.cpp 引擎（T3c） ----------
+# T3 的目标是「未安装 Ollama 的部署机器也能知识问答」，靠的是随包分发的预编译
+# llama-server（Sidecar 在需要时作为子进程拉起）。产物不入库（macOS 27MB / Windows
+# 45MB），故构建前现取；pin 的 tag + sha256 见 scripts/fetch-llama-server.sh。
+# 幂等：已就绪时秒级跳过。失败即中断——漏带引擎的安装包在目标机器上完全不可用，
+# 必须在这里停下（spec 侧还有一道同样的断言，双保险）。
+echo "[build] 准备内置 llama.cpp 引擎（${TARGET}）"
+bash "${ROOT_DIR}/scripts/fetch-llama-server.sh" --target "${TARGET}"
+
 echo "[build] 进入 python-sidecar"
 cd "${PYSIDE_DIR}"
 
@@ -176,6 +189,29 @@ if [[ ! -d "${SRC_DIR}" || ! -f "${SRC}" ]]; then
   echo "[FATAL] 期望产物不存在: ${PYSIDE_DIR}/${SRC_DIR}/（需含主可执行 filemind-sidecar${EXE_EXT}）" >&2
   exit 4
 fi
+# ---------- 内置引擎入产物（T3c，不经 PyInstaller） ----------
+# 为什么不放进 spec 的 datas：PyInstaller 的 COLLECT(strip=True) 会对产物里的 native
+# 文件执行 strip（实测日志见 `strip -S .../vendor/llama/llama-server`），而本项目有过
+# strip 破坏第三方 dll（libssl-3.dll）导致侧车 100% 起不来的前车之鉴——这是 Windows
+# 分发路径上最贵的失败模式，故让引擎完全不经过 PyInstaller 的处理链（bincache / strip /
+# 依赖分析），在这里直接拷贝。运行时由 local_llm_service.server_binary_path() 经
+# sys._MEIPASS 定位（onedir 下即 _internal/vendor/llama/）。
+# 未分发平台（Linux / macOS x64）无引擎产物，跳过。
+if [[ -n "${ENGINE_KEY}" ]]; then
+  ENGINE_SRC="${PYSIDE_DIR}/vendor/llama/${ENGINE_KEY}"
+  ENGINE_DST="${SRC_DIR}/_internal/vendor/llama"
+  if [[ ! -x "${ENGINE_SRC}/llama-server${EXE_EXT}" ]]; then
+    echo "[FATAL] 缺少内置引擎产物：${ENGINE_SRC}/llama-server${EXE_EXT}" >&2
+    echo "        先执行 bash scripts/fetch-llama-server.sh --target ${TARGET}" >&2
+    exit 6
+  fi
+  rm -rf "${ENGINE_DST}"
+  mkdir -p "$(dirname "${ENGINE_DST}")"
+  cp -R "${ENGINE_SRC}" "${ENGINE_DST}"
+  rm -f "${ENGINE_DST}/.asset"   # 构建输入标记，不进产物
+  echo "[build] 内置引擎入产物 → _internal/vendor/llama/（${ENGINE_KEY}）"
+fi
+
 SIZE_MB="$(tree_size_mb "${SRC_DIR}")"
 FILE_COUNT="$(find "${SRC_DIR}" -type f | wc -l | tr -d ' ')"
 

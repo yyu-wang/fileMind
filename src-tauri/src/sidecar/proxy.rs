@@ -79,7 +79,27 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
     Ok(body)
 }
 
-/// 转发 JSON POST 请求到 Sidecar 并返回响应文本。
+/// 普通 Sidecar POST 的超时：10 分钟，防止索引构建等长任务挂起。
+pub const DEFAULT_POST_TIMEOUT: Duration = Duration::from_mins(10);
+
+/// 离线模型包导入的超时：1 小时。
+///
+/// 为什么单独放宽：导入是**同步**本地拷贝，包可达数 GB（rerank 权重 2.2GB），而部署机
+/// 常见「包放在网络共享盘」。按 3MB/s 估算 2GB 需约 11 分钟——10 分钟必然触顶，用户在界面
+/// 上只看到一句失败，Sidecar 侧其实还在拷（响应已被丢弃）。放宽到 1 小时可覆盖 ≥1MB/s 的
+/// 共享盘；保留上限是因为共享盘掉线时不能永远占着界面上的「导入中…」。
+pub const IMPORT_POST_TIMEOUT: Duration = Duration::from_hours(1);
+
+/// 转发 JSON POST 请求到 Sidecar 并返回响应文本（超时取 [`DEFAULT_POST_TIMEOUT`]）。
+///
+/// # Errors
+///
+/// 同 [`forward_post_with_timeout`]。
+pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppResult<String> {
+    forward_post_with_timeout(path, body, psk, seq, DEFAULT_POST_TIMEOUT).await
+}
+
+/// 转发 JSON POST 请求到 Sidecar 并返回响应文本（自定义超时）。
 ///
 /// Sidecar 返回非 2xx（如 503 Embedding 不可用）时，错误体为
 /// `{"detail": "..."}`，与成功响应形状不同。此处直接以
@@ -89,7 +109,13 @@ pub async fn forward_get(path: &str, psk: &[u8], seq: u64) -> AppResult<String> 
 /// # Errors
 ///
 /// 签名计算、请求发送、响应读取失败，或 Sidecar 返回非 2xx 时返回 `SidecarUnavailable`。
-pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppResult<String> {
+pub async fn forward_post_with_timeout(
+    path: &str,
+    body: &str,
+    psk: &[u8],
+    seq: u64,
+    timeout: Duration,
+) -> AppResult<String> {
     let url = format!("{SIDECAR_BASE_URL}{path}");
     let canonical = handshake::build_request_canonical("POST", path, body, seq);
     let signature = handshake::sign(psk, &canonical)?;
@@ -100,7 +126,7 @@ pub async fn forward_post(path: &str, body: &str, psk: &[u8], seq: u64) -> AppRe
         .header(handshake::SIGNATURE_HEADER, &signature)
         .header(handshake::REQUEST_SEQ_HEADER, seq.to_string())
         .body(body.to_string())
-        .timeout(Duration::from_mins(10)) // 10 分钟超时，防止索引构建等长任务挂起
+        .timeout(timeout)
         .send()
         .await
         .map_err(|e| AppError::SidecarUnavailable(format!("Sidecar POST 失败: {e}")))?;
@@ -219,81 +245,5 @@ pub async fn forward_shutdown(psk: &[u8], seq: u64) -> AppResult<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    /// `FastAPI` 标准错误体含 `detail` → 提取 `detail` 作为真实错误原因。
-    #[test]
-    fn sidecar_error_detail_extracts_detail_field() {
-        let err = sidecar_error_detail(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"detail":"建立索引失败: Embedding 模型未拉取"}"#,
-        );
-        assert!(
-            err.to_string()
-                .contains("建立索引失败: Embedding 模型未拉取"),
-            "错误信息应包含 detail 原文，实际: {err}"
-        );
-    }
-
-    /// 响应体不是 JSON 且缺少 detail → 截取原文兜底。
-    #[test]
-    fn sidecar_error_detail_falls_back_to_raw_body() {
-        let err = sidecar_error_detail(reqwest::StatusCode::BAD_GATEWAY, "Bad Gateway");
-        assert!(
-            err.to_string().contains("Bad Gateway"),
-            "非 JSON 错误体应原样呈现，实际: {err}"
-        );
-    }
-
-    /// 空响应体 → 占位提示，不 panic。
-    #[test]
-    fn sidecar_error_detail_handles_empty_body() {
-        let err = sidecar_error_detail(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "");
-        assert!(
-            err.to_string().contains("空响应体"),
-            "空响应体应给出占位提示，实际: {err}"
-        );
-    }
-
-    /// `reqwest::Response` 可由 `http::Response` 直接转换，无需真实网络。
-    fn mock_response(status: u16, body: &str) -> reqwest::Response {
-        http::Response::builder()
-            .status(status)
-            .body(body.to_string())
-            .unwrap()
-            .into()
-    }
-
-    /// BE-C5：非 2xx + `FastAPI` 错误体 → Err 提取 detail 与状态码。
-    #[tokio::test]
-    async fn stream_non_2xx_with_detail_becomes_error() {
-        let resp = mock_response(401, r#"{"detail":"HMAC 验签失败"}"#);
-        let err = ensure_stream_success(resp)
-            .await
-            .expect_err("401 应转为 Err");
-        let msg = err.to_string();
-        assert!(msg.contains("401"), "应包含状态码: {msg}");
-        assert!(msg.contains("HMAC 验签失败"), "应提取 detail: {msg}");
-    }
-
-    /// 非 2xx + 非 JSON body → 截取原文兜底（不 panic、不空消息）。
-    #[tokio::test]
-    async fn stream_non_2xx_non_json_body_falls_back_to_text() {
-        let resp = mock_response(503, "Service Unavailable");
-        let err = ensure_stream_success(resp)
-            .await
-            .expect_err("503 应转为 Err");
-        assert!(err.to_string().contains("503"));
-        assert!(err.to_string().contains("Service Unavailable"));
-    }
-
-    /// 2xx 原样放行，body 未被消费（调用方继续 `bytes_stream`）。
-    #[tokio::test]
-    async fn stream_success_passes_through() {
-        let resp = mock_response(200, "");
-        let passed = ensure_stream_success(resp).await.expect("200 应放行");
-        assert_eq!(passed.status(), reqwest::StatusCode::OK);
-    }
-}
+#[path = "proxy_tests.rs"]
+mod tests;

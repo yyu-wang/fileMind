@@ -1,0 +1,114 @@
+/* 智能分类页：页面头部与双栏布局骨架（原 classify-layout.css 拆出，320 行逼近强制阈值 400）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 classify-tree.css、classify-stats.css
+ * 之前（原文件的行序即规则优先级），三者整体仍位于 classify-result.css 之前。
+ * 本文件 = 原行 1-108：页面头部 / 双栏容器 / 树面板外壳与父节点。
+ */
+/* ===== 智能分类页双栏布局（对齐交互原型） ===== */
+.classify-page__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.classify-page__subtitle {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.classify-page__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.classify-main,
+.classify-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: var(--sp-4);
+  /* 裁剪溢出：左右两列各自独立滚动，不把滚动泄漏到外层 */
+  overflow: hidden;
+  /* 外层 .classify-page 已统一提供左右 padding: var(--sp-6)，
+     此处不得再设置水平 padding，否则套娃缩进会导致
+     layout 子元素离窗口边界 24+24=48px，与 header 标题不对齐。 */
+  padding: 0 0 var(--sp-5);
+}
+
+.classify-main__tree,
+.classify-tree {
+  min-width: 0;
+}
+
+/* classify-layout 内的外层 .classify-tree 容器：占满剩余宽度（横向 flex），
+   纵向独立滚动（右侧统计面板固定不动） */
+.classify-layout > .classify-tree {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 树形分类预览（对齐原型 tree-panel / tree-node） */
+.classify-tree-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.classify-tree-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-tree-header .count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.tree-panel {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tree-panel.conflict {
+  border-color: var(--danger);
+}
+
+.tree-panel.confirm {
+  border-color: var(--warn);
+}
+
+.tree-node.parent {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg3);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tree-panel.conflict .tree-node.parent {
+  color: var(--danger);
+}
+
+.tree-panel.confirm .tree-node.parent {
+  color: var(--warn);
+}

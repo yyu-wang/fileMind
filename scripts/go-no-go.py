@@ -2,7 +2,7 @@
 """T1.6 Go/No-Go 决策 7 项自动化测试脚本（E1 Sidecar 打包验证 Epic 门控）。
 
 执行范围（阶段 1 = dev 模式下的 Sidecar，无需 PyInstaller）：
-  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <500MB（7）
+  * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <2048MB（7）
   * SKIP：崩溃重启（5，需 Tauri app + watchdog 线程）、三平台（6，需 T1.2+T1.3 产物）
 
 用法：
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import io
 import json
 import os
 import platform
@@ -27,6 +28,15 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+# Windows CI（GitHub Actions en-US runner）的 stdout 编码是 cp1252，而本脚本输出含大量
+# 中文/emoji，print 时会抛 UnicodeEncodeError 直接中断（2026-09-15 merge-build Windows
+# job 实测：T1 已拿到 /health 200，却在打印汇总结果时崩溃 → 门控假失败）。入口处显式
+# 改用 UTF-8，与运行环境的 locale 解耦；非 TextIOWrapper（测试替换的 mock 等）跳过。
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8")
+if isinstance(sys.stderr, io.TextIOWrapper):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 # 允许在 ``scripts/`` 目录外直接运行，不依赖 ``python-sidecar`` 安装到 venv。
 # psutil / httpx 以 import 方式使用，缺失时给出友好错误提示。
@@ -54,7 +64,7 @@ TEST_ITEMS: list[tuple[int, str, str]] = [
     (4, "健康检查", "GET /health → 200，包含 status/version/uptime_seconds 三字段"),
     (5, "崩溃重启", "SIGKILL 模拟崩溃 → 3s 内重启 → new_pid≠old_pid → 重新 HMAC 握手通过（打包态=Phase2，dev=SKIP）"),
     (6, "三平台", "PyInstaller --onedir 产物目录体积≤1600MB + triple 匹配当前机器；另三平台附构建命令 Checklist"),
-    (7, "内存<500MB", "冷启动 GET /metrics → rss_mb < 500 且 within_limit=True"),
+    (7, "内存<2048MB", "冷启动 GET /metrics → rss_mb < 2048 且 within_limit=True"),
 ]
 
 Verdict = Literal["PASS", "FAIL", "SKIP"]
@@ -169,7 +179,10 @@ class DevSidecar:
         """
         if not binary.is_file():
             raise RuntimeError(f"打包主可执行不存在: {binary}")
-        if not os.access(binary, os.X_OK):
+        # Windows 没有 POSIX 执行位语义（os.access(..., os.X_OK) 在 Windows 上对 .exe
+        # 也可能返回 False），故对 .exe 只要求是常规文件，可执行性交给 CreateProcess
+        # 判定；缺失时会在 Popen 处给出明确报错。（2026-09-15 补 Windows CI 运行时门控）
+        if binary.suffix.lower() != ".exe" and not os.access(binary, os.X_OK):
             raise RuntimeError(f"打包二进制无执行权限: {binary}")
         if not _free_port():
             raise RuntimeError(f"端口 {SIDECAR_PORT} 已被占用，请先释放（可能残留 Sidecar 进程）")
@@ -812,15 +825,17 @@ def _classify_binary(head: bytes, system: str) -> str:
 def _memory_limit_mb() -> int:
     """与 Sidecar ``routes_metrics.memory_threshold_mb()`` 同源的门控阈值。
 
-    默认 500（T10.3 放宽），env ``FILEMIND_MEMORY_THRESHOLD_MB`` 覆盖；
-    非法值回落默认，保证脚本断言与 Sidecar 实际判定一致（subprocess 继承 env）。
+    默认 2048（本次放宽：进程内 ONNX int8 embedding 的稳态内存，见
+    ``benchmarks/onnx_embedding_mem_probe.py`` 实测）；env
+    ``FILEMIND_MEMORY_THRESHOLD_MB`` 覆盖；非法值回落默认，保证脚本断言与
+    Sidecar 实际判定一致（subprocess 继承 env）。
     """
     raw = os.environ.get("FILEMIND_MEMORY_THRESHOLD_MB", "")
     try:
         value = int(raw)
     except ValueError:
-        return 500
-    return value if value > 0 else 500
+        return 2048
+    return value if value > 0 else 2048
 
 
 def run_t7_memory() -> TestResult:

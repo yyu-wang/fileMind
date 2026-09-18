@@ -10,43 +10,41 @@ FTS5 由 Rust 层执行（Sidecar 永不碰 SQLite），命中含文本经请求
 SSE 事件契约（04_API详细规格书 §3.4 + IT-005）：
     search_start → search_result → token* → citation → done / error
     （P-04 检测到问题且重试次数 < max_retries 时：token* → retry → token* → citation → done；
-      重试耗尽仍失败：done 带 low_confidence: true）
+      重试耗尽仍失败：done 带 low_confidence: true；
+      检索降级兜底时：search_start 之后、search_result 之前插入 search_warning）
 """
 
 from __future__ import annotations
 
-import dataclasses
-import json
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app import state
-from app.core.logging import getLogger
-from app.models import ChatQueryResponse, ChatStreamRequest, ChatTurn
-from app.rules.llm_classify import LLMUnavailableError
-from app.services.embedding_service import EmbeddingUnavailableError
-from app.services.generation_service import (
-    SourceChunk,
-    build_rag_prompt,
-    format_context_blocks,
-    stream_generate,
-    stream_with_citations,
+from app.api.chat_answer import _answer_events, _sse
+from app.api.chat_answer_events import (
+    AnswerAccumulator,
+    AnswerContext,
+    final_events,
 )
-from app.services.hybrid_search import hybrid_search
-from app.services.provider_factory import resolve_cloud_provider
-from app.services.query_cache import get_query_cache
-from app.services.rerank_service import RerankCandidate, RerankUnavailableError, rerank
-from app.services.rewrite_service import ConversationTurn, rewrite_query
-from app.services.self_correct_service import validate_answer
+from app.api.chat_pipeline import (
+    RetrieveFailure,
+    elapsed_ms,
+    no_result_events,
+    search_events,
+)
+from app.api.chat_retrieve import _retrieve_with_fallback
+from app.core.logging import getLogger
+from app.models import ChatQueryResponse, ChatStreamRequest
+from app.services.provider_factory import resolve_cloud_provider, resolve_local_provider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from app.api.chat_pipeline import RagEvent
     from app.db.lancedb_repo import LanceDBManager
     from app.services.cloud_provider import LLMProvider
 
@@ -64,176 +62,36 @@ async def query() -> ChatQueryResponse:
     return ChatQueryResponse(answer="", citations=[], tokens=0)
 
 
-def _to_turns(history: list[ChatTurn]) -> list[ConversationTurn]:
-    """ChatTurn → ConversationTurn（P-02 查询改写输入）。"""
-    return [ConversationTurn(user=turn.user, assistant=turn.assistant) for turn in history]
-
-
 def _resolve_chat_provider(request: ChatStreamRequest) -> LLMProvider | None:
     """按请求的推理模式解析生成 Provider。
 
     推理模式（``inference_mode``）是用户当前生效选择的权威来源：仅显式
     ``cloud`` 才解析云端 Provider，其余（``local``/``hybrid``/未知值）一律
-    回落本地 Ollama（返回 ``None``）。若不先过滤 ``local``，Rust 启动
-    Sidecar 时注入的 ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在
-    撤回云端同意 / 切回本地后仍然生效（Sidecar 进程不随模式切换重启，
-    env 冻结），导致本地模型名也被 :func:`resolve_cloud_provider` 判定为
-    云端并打到云端代理，最终因缺 Key 报 401。
+    走本地生成。若不先过滤 ``local``，Rust 启动 Sidecar 时注入的
+    ``FILEMIND_ACTIVE_CLOUD_PROVIDER`` 环境变量会在撤回云端同意 / 切回本地后
+    仍然生效（Sidecar 进程不随模式切换重启，env 冻结），导致本地模型名也被
+    :func:`resolve_cloud_provider` 判定为云端并打到云端代理，最终因缺 Key 报 401。
+
+    本地生成按**生效后端**选路（T3）：内置引擎（显式选 builtin，或探测发现
+    Ollama 不可用而自动回落）返回内置 Provider；默认（Ollama）返回 ``None``，
+    交给调用点既有的 Ollama 路径——零行为变化。
 
     Args:
         request: 流式请求（含 ``inference_mode`` 与 ``llm_model``）。
 
     Returns:
-        云端 Provider 实例；非云端模式返回 ``None``（调用方走 Ollama 路径）。
+        云端 Provider 实例；本地模式返回内置引擎 Provider 或 ``None``
+        （``None`` 表示走 Ollama 路径）。
     """
     if request.inference_mode.strip().lower() != "cloud":
-        return None
+        return resolve_local_provider(request.llm_model)
     return resolve_cloud_provider(request.llm_model)
-
-
-def _cache_key(request: ChatStreamRequest) -> tuple[object, ...]:
-    """检索缓存 key：覆盖影响检索结果的输入。
-
-    FTS 命中（``fts_chunks``）由同一 query 在 Rust 侧确定性产生，不入 key；
-    ``llm_model`` 只影响生成阶段，不影响检索结果。
-    """
-    history = tuple((turn.user, turn.assistant) for turn in request.history)
-    return (
-        request.query,
-        history,
-        request.table_name,
-        request.embedding_model,
-        request.top_k,
-        request.rerank_top_k,
-    )
-
-
-async def _retrieve(
-    request: ChatStreamRequest,
-    mgr: LanceDBManager,
-    provider: LLMProvider | None,
-    skip_vector: bool = False,
-) -> tuple[str, int, list[dict[str, object]], list[SourceChunk]]:
-    """改写 → 混合检索 → 重排序，返回 (rewritten_query, candidates, sources, chunks)。
-
-    Args:
-        request: 流式请求（含 FTS 命中与对话历史）。
-        mgr: LanceDB 管理器（向量检索）。
-        provider: 推理 Provider（T8.5）；``None`` 走本地 Ollama（默认）。
-        skip_vector: 跳过向量检索（Embedding 不可用时云端模式降级用）。
-
-    Returns:
-        - ``rewritten_query``：改写后的查询（向量检索 + 生成上下文用）。
-        - ``candidates``：重排前候选池大小（search_result 事件字段）。
-        - ``sources``：精选 Top-K 的来源列表（含引用编号）。
-        - ``chunks``：P-03 上下文片段（含原文，按 citation_id 升序）。
-
-    Raises:
-        LLMUnavailableError / EmbeddingUnavailableError / RerankUnavailableError:
-            推理（改写 / 向量化 / 重排）不可用。
-    """
-    # T10.2 查询缓存：相同请求命中时整条检索管线跳过（改写/向量化/重排归零）。
-    # 降级模式（skip_vector=True）不缓存，以便 embedding 恢复后能重试全向量检索。
-    cache = get_query_cache()
-    cache_key = _cache_key(request)
-    if not skip_vector:
-        cached = await cache.get(cache_key)
-        if cached is not None:
-            logger.info("chat.retrieve.cache_hit")
-            return cached
-
-    t_stage = time.monotonic()
-    rewritten = await rewrite_query(
-        request.query, _to_turns(request.history), provider=provider, model=request.llm_model
-    )
-    rewritten_query = rewritten.rewritten_query
-    logger.info("chat.retrieve.rewrite", ms=_elapsed_ms(t_stage))
-
-    t_stage = time.monotonic()
-    fused = await hybrid_search(
-        rewritten_query,
-        [c.chunk_id for c in request.fts_chunks],
-        mgr,
-        request.table_name,
-        model=request.embedding_model,
-        top_k=request.top_k,
-        skip_vector=skip_vector,
-    )
-    logger.info("chat.retrieve.hybrid_search", ms=_elapsed_ms(t_stage))
-
-    # FTS-only 命中的原文在 Rust 侧（SQLite），用请求 fts_chunks 补全。
-    # 注意：LanceDB chunk_id 格式为 {file_id}-{seq}，FTS 返回的是纯 file_id；
-    # 回填时需要去掉向量 chunk 的 seq 后缀，用文件 ID 前缀匹配 FTS 文本。
-    text_by_file_id = {c.chunk_id: c.text for c in request.fts_chunks}
-    enriched = [
-        dataclasses.replace(
-            hit,
-            chunk_text=hit.chunk_text
-            or text_by_file_id.get(
-                hit.chunk_id.rsplit("-", 1)[0] if "-" in hit.chunk_id else hit.chunk_id,
-                "",
-            ),
-        )
-        for hit in fused
-    ]
-
-    candidates = [
-        RerankCandidate(hit.chunk_id, hit.chunk_text, hit.rrf_score, hit.file_path, hit.page)
-        for hit in enriched
-        if hit.chunk_text
-    ]
-    t_stage = time.monotonic()
-    reranked = await rerank(rewritten_query, candidates, top_k=request.rerank_top_k)
-    logger.info("chat.retrieve.rerank", ms=_elapsed_ms(t_stage))
-
-    hit_by_id = {h.chunk_id: h for h in enriched}
-    sources: list[dict[str, object]] = []
-    chunks: list[SourceChunk] = []
-    for idx, reranked_hit in enumerate(reranked, start=1):
-        hit = hit_by_id.get(reranked_hit.chunk_id)
-        text = hit.chunk_text if hit else ""
-        file_name = Path(reranked_hit.file_path).name if reranked_hit.file_path else ""
-        sources.append(
-            {
-                "id": idx,
-                "file_name": file_name,
-                "page": reranked_hit.page,
-                "score": reranked_hit.score,
-            }
-        )
-        chunks.append(
-            SourceChunk(
-                citation_id=idx,
-                file_name=file_name,
-                page=reranked_hit.page,
-                text=text,
-            )
-        )
-    retrieved = (rewritten_query, len(candidates), sources, chunks)
-    if not skip_vector:
-        await cache.set(cache_key, retrieved)
-    return retrieved
-
-
-def _sse(event: str, data: dict[str, object]) -> str:
-    """SSE 帧序列化：``event: {name}\\ndata: {json}\\n\\n``。"""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _elapsed_ms(started: float) -> int:
-    """自 started（monotonic）以来的毫秒数。"""
-    return int((time.monotonic() - started) * 1000)
-
-
-async def _single_token(text: str) -> AsyncIterator[str]:
-    """把 P-04 修正回答作为单块 token 流，复用 stream_with_citations 解析引用。"""
-    yield text
 
 
 async def _rag_event_stream(
     request: ChatStreamRequest,
     mgr: LanceDBManager,
-) -> AsyncIterator[tuple[str, dict[str, object]]]:
+) -> AsyncIterator[RagEvent]:
     """完整 RAG 流水线事件序列（端点格式化为 SSE 帧）。
 
     Yields:
@@ -245,184 +103,38 @@ async def _rag_event_stream(
     # 避免 Sidecar 启动期冻结的 FILEMIND_ACTIVE_CLOUD_PROVIDER env 把本地
     # 模型也误判为云端（回归：切回本地仍报 401 的内部错误）。
     provider = _resolve_chat_provider(request)
-    version = provider.version if provider is not None else "local"
 
     retrieve_started = time.monotonic()
-    degraded_warning = False
-    try:
-        rewritten_query, candidates, sources, chunks = await _retrieve(request, mgr, provider)
-    except (LLMUnavailableError, EmbeddingUnavailableError, RerankUnavailableError) as exc:
-        # 云端模式：Embedding 不可用时降级到纯 FTS5 检索
-        if isinstance(exc, EmbeddingUnavailableError) and request.inference_mode.lower() == "cloud":
-            logger.warning("chat.embedding_unavailable_cloud_fallback", error=str(exc))
-            try:
-                rewritten_query, candidates, sources, chunks = await _retrieve(
-                    request, mgr, provider, skip_vector=True
-                )
-                degraded_warning = True
-            except (LLMUnavailableError, RerankUnavailableError) as fallback_exc:
-                logger.warning("chat.retrieve_fallback_failed", error=str(fallback_exc))
-                if isinstance(fallback_exc, RerankUnavailableError):
-                    code = "RERANK_UNAVAILABLE"
-                else:
-                    code = "LLM_UNAVAILABLE"
-                yield ("error", {"code": code, "message": str(fallback_exc)})
-                return
-        else:
-            logger.warning("chat.retrieve_failed", error=str(exc))
-            # SC-m10：区分错误码——LLM/Embedding/Rerank 不可用不应统一报 OLLAMA_UNAVAILABLE
-            if isinstance(exc, EmbeddingUnavailableError):
-                code = "EMBEDDING_UNAVAILABLE"
-            elif isinstance(exc, RerankUnavailableError):
-                code = "RERANK_UNAVAILABLE"
-            else:
-                code = "LLM_UNAVAILABLE"
-            yield ("error", {"code": code, "message": str(exc)})
-            return
-    retrieve_ms = _elapsed_ms(retrieve_started)
+    outcome = await _retrieve_with_fallback(request, mgr, provider)
+    retrieve_ms = elapsed_ms(retrieve_started)
+    if isinstance(outcome, RetrieveFailure):
+        yield outcome.event
+        return
     logger.info("chat.retrieve.done", ms=retrieve_ms)
 
-    if degraded_warning:
-        yield (
-            "search_warning",
-            {"code": "EMBEDDING_DEGRADED", "message": "Embedding 不可用，已降级为纯关键词检索"},
-        )
+    for event in search_events(request, outcome):
+        yield event
 
-    yield ("search_start", {"query_original": request.query, "query_rewritten": rewritten_query})
-    yield (
-        "search_result",
-        {"candidates": candidates, "after_rerank": len(sources), "sources": sources},
-    )
-
+    rewritten_query, _candidates, _sources, chunks = outcome.value
     if not chunks:
-        yield ("token", {"content": NOT_FOUND_ANSWER})
-        yield (
-            "done",
-            {
-                "session_id": session_id,
-                "total_tokens": 1,
-                "duration_ms": _elapsed_ms(started),
-                "retrieve_ms": retrieve_ms,
-            },
-        )
+        for event in no_result_events(session_id, started, retrieve_ms, NOT_FOUND_ANSWER):
+            yield event
         return
 
-    system, user = build_rag_prompt(
-        rewritten_query, chunks, version=version, model=request.llm_model
+    acc = AnswerAccumulator(started=started)
+    ctx = AnswerContext(
+        request=request,
+        provider=provider,
+        rewritten_query=rewritten_query,
+        chunks=chunks,
+        version=provider.version if provider is not None else "local",
     )
-    valid_ids = {c.citation_id for c in chunks}
-    total_tokens = 0
-    cited: list[int] = []
-    answer_parts: list[str] = []
-    first_token_ms: int | None = None
-    try:
-        token_stream = stream_generate(system, user, model=request.llm_model, provider=provider)
-        async for event in stream_with_citations(token_stream, valid_ids):
-            if event[0] == "text":
-                if first_token_ms is None:
-                    first_token_ms = _elapsed_ms(started)
-                    logger.info("chat.first_token", ttft_ms=first_token_ms)
-                yield ("token", {"content": event[1]})
-                answer_parts.append(event[1])
-                # SC-m19：按字符数/4 估算 token（原 +=1 统计的是块数非 token）
-                total_tokens += max(1, len(event[1]) // 4)
-            else:
-                cited.append(event[1])
-                answer_parts.append(f"[{event[1]}]")
-    except LLMUnavailableError as exc:
-        logger.warning("chat.generate_failed", error=str(exc))
-        # SC-m10：生成失败报 LLM_UNAVAILABLE（更准确的语义）
-        yield ("error", {"code": "LLM_UNAVAILABLE", "message": str(exc)})
+    async for event in _answer_events(ctx, acc):
+        yield event
+    if acc.failed:
         return
-
-    # P-04 自我纠正：验证失败且重试次数 < max_retries 时重推修正回答（fail-open）
-    context_blocks = format_context_blocks(chunks)
-    try:
-        result = await validate_answer(
-            rewritten_query,
-            context_blocks,
-            "".join(answer_parts),
-            provider=provider,
-            model=request.llm_model,
-        )
-    except LLMUnavailableError:
-        result = None  # 验证不可用 → 跳过纠正，直接输出已生成回答
-
-    low_confidence = False
-    used = 0
-    while result is not None and not result.is_correct and used < request.max_retries:
-        corrected = result.corrected_answer
-        if not corrected:
-            # 无可用修正回答 → 保留原答案，仅标记低置信度，不触发 retry
-            low_confidence = True
-            break
-        used += 1
-        yield (
-            "retry",
-            {"reason": result.reason, "attempt": used, "rewritten_query": rewritten_query},
-        )
-        # 前端收到 retry 后清空缓冲，重推修正回答的 token 流
-        new_parts: list[str] = []
-        new_cited: list[int] = []
-        async for event in stream_with_citations(_single_token(corrected), valid_ids):
-            if event[0] == "text":
-                yield ("token", {"content": event[1]})
-                new_parts.append(event[1])
-                # SC-m19：按字符数/4 估算 token
-                total_tokens += max(1, len(event[1]) // 4)
-            else:
-                new_cited.append(event[1])
-                new_parts.append(f"[{event[1]}]")
-        cited = new_cited
-        answer_text = "".join(new_parts)
-        try:
-            result = await validate_answer(
-                rewritten_query,
-                context_blocks,
-                answer_text,
-                provider=provider,
-                model=request.llm_model,
-            )
-        except LLMUnavailableError:
-            result = None
-
-    if result is not None and not result.is_correct:
-        low_confidence = True
-
-    # 去重：LLM 可能在回答里反复标注同一来源（云端模型尤其明显，
-    # 会生成 [1][2][1][2]... 这种），导致前端 citations 标签重复渲染。
-    # 保留首次出现的顺序，过滤不在 valid_ids 里的脏标注。
-    seen: set[int] = set()
-    unique_cited: list[int] = []
-    for cid in cited:
-        if cid in valid_ids and cid not in seen:
-            seen.add(cid)
-            unique_cited.append(cid)
-
-    citation_map = {c.citation_id: c for c in chunks}
-    citations = [
-        {
-            "id": citation_id,
-            "file_name": citation_map[citation_id].file_name,
-            "page": citation_map[citation_id].page,
-            "text": citation_map[citation_id].text,
-        }
-        for citation_id in unique_cited
-    ]
-    if citations:
-        yield ("citation", {"citations": citations})
-    done_data: dict[str, object] = {
-        "session_id": session_id,
-        "total_tokens": total_tokens,
-        "duration_ms": _elapsed_ms(started),
-        "retrieve_ms": retrieve_ms,
-    }
-    # T10.2 TTFT 指标：首 token 相对请求开始的耗时（未生成 token 的路径不输出）
-    if first_token_ms is not None:
-        done_data["first_token_ms"] = first_token_ms
-    if low_confidence:
-        done_data["low_confidence"] = True
-    yield ("done", done_data)
+    for event in final_events(chunks, acc, session_id, retrieve_ms):
+        yield event
 
 
 @router.post("/stream")

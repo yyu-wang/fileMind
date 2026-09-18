@@ -40,7 +40,7 @@ describe('Sidebar', () => {
   it('renders brand and all nav items with shortcuts', () => {
     renderSidebarAt('/');
     expect(screen.getByText('FileMind')).toBeInTheDocument();
-    expect(screen.getByText('v1.0.0-rc.1')).toBeInTheDocument();
+    expect(screen.getByText('v1.0.0-1')).toBeInTheDocument();
     expect(screen.getAllByRole('navigation')).toHaveLength(2); // 主功能 + 系统
     for (const label of ['文件管理', '智能分类', '知识问答', '规则编辑', '设置']) {
       expect(screen.getByText(label)).toBeInTheDocument();

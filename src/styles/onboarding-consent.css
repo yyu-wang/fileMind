@@ -1,0 +1,86 @@
+/* T6.3 首次启动引导流 · 同意书步骤（提供商选择 / 勾选 / 错误条 / 滚动内容）
+ *
+ * 原 styles/onboarding.css 拆出（该文件 277 行超 CSS 警告阈值 200）。范围是
+ * StepConsent 与 ConsentAgreement（后者也被设置页的同意书对话框复用）。
+ *
+ * 级联顺序依赖：index.css 中需排在目录选择步骤之后（与拆分前在原文件内的相对位置一致，
+ * 选择器与 onboarding.css / onboarding-directory.css 互不重叠）。
+ */
+
+/* provider-select: 同意书步骤的提供商选择 */
+.provider-select {
+  margin: var(--sp-4) var(--sp-0);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.provider-select .field-label {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* consent-check: 同意勾选 */
+.consent-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2-5);
+  margin: var(--sp-4) var(--sp-0);
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.consent-check input {
+  margin-top: var(--sp-0-5);
+  flex-shrink: 0;
+}
+
+/* onboarding error: 错误提示条 */
+.onboarding-error {
+  background: #fee2e2;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--sp-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .onboarding-error {
+    background: rgba(239, 68, 68, 0.1);
+  }
+}
+
+.onboarding-error-dismiss {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 18px;
+  padding: var(--sp-0) var(--sp-1);
+}
+
+/* ========== T7.5 同意书滚动内容（滚动到底门控） ========== */
+.consent-agreement__scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  background: var(--bg);
+  outline-offset: 2px;
+}
+
+.consent-agreement__version-line {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px dashed var(--rule);
+  font-size: 12px;
+  color: var(--muted);
+}

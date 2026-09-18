@@ -5,6 +5,23 @@
 
 import { fileIpc } from './ipc';
 import type { FileInfo } from '@/types/ipc';
+import type { ChatCitation } from '@/types/models';
+
+/**
+ * 判定引用是否带有可用的文件名。
+ *
+ * 引用来自大模型回答的解析结果，可能缺字段或为空串；调用方据此在进匹配流程前
+ * 直接给出提示，避免带着空文件名走完四级匹配与 IPC 兜底。
+ *
+ * Args:
+ *   citation: 引用对象，允许为 null / undefined（解析失败时会出现）
+ *
+ * Returns:
+ *   文件名为非空字符串时为 true
+ */
+export function hasUsableFileName(citation: ChatCitation | null | undefined): boolean {
+  return typeof citation?.fileName === 'string' && citation.fileName.length > 0;
+}
 
 /** 按文件名查找 FileInfo：本地列表优先，兜底走 Rust 文件名搜索（多策略匹配）。 */
 export async function findFileByName(

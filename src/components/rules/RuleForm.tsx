@@ -17,25 +17,22 @@
 //         <span class="hint">…</span>
 //       </div>
 //       <div class="form-group"><label>优先级</label><input type="number"/></div>
-//       <div class="setting-row">
-//         <div class="setting-label"><div class="name">启用规则</div><div class="desc">…</div></div>
-//         <div class="setting-control"><button class="toggle on"/></div>
-//       </div>
-//       <div class="rule-form__actions">
-//         <button class="btn btn-primary">保存</button>
-//         <button class="btn btn-ghost">取消</button>
-//         <button class="btn btn-danger">删除</button>
-//       </div>
+//       <div class="setting-row">…启用规则…</div>
+//       <div class="rule-form__actions">保存 / 取消 / 删除</div>
 //     </div>
 //   </div>
 //
 // 后端约束：rule_type 仅支持 extension / path_keyword / regex；magic_number / size
 // P1 未开发，已从条件类型下拉中隐藏（不渲染禁用占位）。多条件构造（AND/OR）需要后端
 // 支持，当前仅渲染单 condition-row 与 rule_type/pattern 一对一映射。
+//
+// 表单草稿与校验收在 useRuleForm，启用开关是独立的 RuleEnabledToggle。
 
-import { useState } from 'react';
 import type { Category, Rule } from '../../types/ipc';
-import { RULE_TYPE_META, RuleType } from '../../types/models';
+import { RULE_TYPE_META, type RuleType } from '../../types/models';
+
+import { RuleEnabledToggle } from './RuleEnabledToggle';
+import { useRuleForm } from './useRuleForm';
 
 interface RuleFormProps {
   /** 编辑的规则（null 表示新建） */
@@ -57,50 +54,17 @@ const RULE_TYPE_OPTIONS = (Object.keys(RULE_TYPE_META) as RuleType[])
     label: RULE_TYPE_META[value].label,
   }));
 
+/** 标题：编辑态优先显示规则名，其次「编辑规则」；新建为「新建规则」。 */
+function formTitle(initial: Rule | null): string {
+  if (!initial) {
+    return '新建规则';
+  }
+  return initial.name || '编辑规则';
+}
+
 export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: RuleFormProps) {
-  const [name, setName] = useState(initial?.name ?? '');
-  const [ruleType, setRuleType] = useState<RuleType>(
-    (initial?.rule_type as RuleType) ?? RuleType.Extension,
-  );
-  const [pattern, setPattern] = useState(initial?.pattern ?? '');
-  const [targetCategory, setTargetCategory] = useState(initial?.target_category ?? '');
-  const [priority, setPriority] = useState<number>(initial?.priority ?? 100);
-  const [isEnabled, setIsEnabled] = useState<boolean>(initial?.is_enabled ?? true);
-  const [error, setError] = useState<string | null>(null);
-
-  const meta = RULE_TYPE_META[ruleType];
-
-  const handleSubmit = () => {
-    if (!name.trim()) {
-      setError('规则名不能为空');
-      return;
-    }
-    if (!pattern.trim()) {
-      setError('匹配模式不能为空');
-      return;
-    }
-    if (ruleType === RuleType.Regex) {
-      // 前端预校验正则合法性，避免后端执行期才报错
-      try {
-        RegExp(pattern);
-      } catch {
-        setError('正则表达式不合法');
-        return;
-      }
-    }
-
-    onSave({
-      id: initial?.id ?? '',
-      name: name.trim(),
-      rule_type: ruleType,
-      pattern: pattern.trim(),
-      target_category: targetCategory || null,
-      priority,
-      is_enabled: isEnabled,
-      created_at: initial?.created_at ?? '',
-      updated_at: initial?.updated_at ?? '',
-    });
-  };
+  const { draft, error, setField, toggleEnabled, submit } = useRuleForm({ initial, onSave });
+  const meta = RULE_TYPE_META[draft.ruleType];
 
   const handleDelete = () => {
     if (initial && onDelete) {
@@ -110,7 +74,7 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
 
   return (
     <div className="card" data-testid="rule-form">
-      <h3>{initial ? initial.name || '编辑规则' : '新建规则'}</h3>
+      <h3>{formTitle(initial)}</h3>
 
       <div className="rule-form">
         {error && (
@@ -124,8 +88,8 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
           <input
             id="rule-name"
             className="input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
+            value={draft.name}
+            onChange={(e) => setField('name', e.target.value)}
             placeholder="如：PDF 文档归档"
             autoFocus
           />
@@ -137,8 +101,8 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
             id="rule-category"
             className="input"
             style={{ width: 200 }}
-            value={targetCategory}
-            onChange={(e) => setTargetCategory(e.target.value)}
+            value={draft.targetCategory}
+            onChange={(e) => setField('targetCategory', e.target.value)}
           >
             <option value="">不指定（仅打标签不移动）</option>
             {categories.map((c) => (
@@ -155,8 +119,8 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
             <div className="condition-row">
               <select
                 aria-label="规则类型"
-                value={ruleType}
-                onChange={(e) => setRuleType(e.target.value as RuleType)}
+                value={draft.ruleType}
+                onChange={(e) => setField('ruleType', e.target.value as RuleType)}
               >
                 {RULE_TYPE_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -167,8 +131,8 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
               <input
                 className="input condition-row__input"
                 aria-label="匹配模式"
-                value={pattern}
-                onChange={(e) => setPattern(e.target.value)}
+                value={draft.pattern}
+                onChange={(e) => setField('pattern', e.target.value)}
                 placeholder={meta.hint}
               />
             </div>
@@ -183,34 +147,19 @@ export function RuleForm({ initial, categories, onSave, onCancel, onDelete }: Ru
             className="input"
             type="number"
             style={{ maxWidth: 120 }}
-            value={priority}
-            onChange={(e) => setPriority(Number(e.target.value))}
+            value={draft.priority}
+            onChange={(e) => setField('priority', Number(e.target.value))}
           />
           <span className="hint">数字越大越先匹配（也可在列表中拖拽排序）</span>
         </div>
 
-        <div className="setting-row" style={{ border: 'none', padding: 0 }}>
-          <div className="setting-label">
-            <div className="name">启用规则</div>
-            <div className="desc">禁用后该规则不参与分类匹配</div>
-          </div>
-          <div className="setting-control">
-            <button
-              type="button"
-              className={`toggle${isEnabled ? ' on' : ''}`}
-              aria-label={isEnabled ? '禁用规则' : '启用规则'}
-              aria-pressed={isEnabled}
-              data-testid="rule-toggle"
-              onClick={() => setIsEnabled((v) => !v)}
-            />
-          </div>
-        </div>
+        <RuleEnabledToggle enabled={draft.isEnabled} onToggle={toggleEnabled} />
 
         <div className="rule-form__actions">
           <button
             type="button"
             className="btn btn--primary"
-            onClick={handleSubmit}
+            onClick={submit}
             data-testid="rule-save"
           >
             保存

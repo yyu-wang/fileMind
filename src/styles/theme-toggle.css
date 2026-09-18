@@ -1,0 +1,40 @@
+/* ========== T6.9 主题切换 ========== */
+.theme-segmented {
+  display: flex;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  background: var(--bg3);
+  border-radius: var(--radius-md);
+  width: fit-content;
+}
+
+.theme-segmented__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1-5);
+  padding: var(--sp-1-5) var(--sp-3-5);
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.theme-segmented__item:hover {
+  color: var(--ink);
+}
+
+.theme-segmented__item.selected {
+  background: var(--bg2);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.theme-segmented__icon {
+  font-size: 14px;
+}

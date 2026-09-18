@@ -1,0 +1,64 @@
+/* 基础重置、字体、通用工具类与滚动条。
+ *
+ * （2026-09-18 设计令牌已拆至 tokens.css，本文件保留 1:1 无变量的基础样式；
+ * 导入顺序 tokens.css → base.css 与拆分前一致。）
+ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 等宽字体：路径 / 大小 / 进度数值等 */
+code,
+.mono,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* 文档通用工具类：text-muted / text-sm / panel */
+.text-muted {
+  color: var(--muted);
+}
+
+.text-sm {
+  font-size: 13px;
+}
+
+/* 文档 .panel：设置页内嵌信息面板（如 Embedding 当前模型） */
+.panel {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: var(--sp-3-5) var(--sp-4);
+}
+
+/* 滚动条统一外观（对齐交互文档） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule2);
+  border-radius: var(--radius-xs);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted2);
+}
+
+#root {
+  min-height: 100vh;
+}

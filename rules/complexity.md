@@ -18,13 +18,19 @@
 
 ### 函数复杂度限制
 
-| 指标            | 警告阈值 | 强制重构阈值 | 检查方式                                                      |
-| --------------- | -------- | ------------ | ------------------------------------------------------------- |
-| 函数行数        | 40 行    | 60 行        | ESLint `max-lines-per-function` / Ruff `PLR0915`              |
-| 圈复杂度        | 10       | 15           | ESLint `complexity` / Clippy `cognitive-complexity-threshold` |
-| 参数个数        | 4 个     | 6 个         | ESLint `max-params` / Clippy `too-many-arguments-threshold`   |
-| 嵌套深度        | 3 层     | 4 层         | ESLint `max-depth`                                            |
-| 回调/Promise 链 | 2 层     | 3 层         | Code Review                                                   |
+| 指标            | 警告阈值 | 强制重构阈值 | 检查方式                                                                                                                                                   |
+| --------------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 函数行数        | 40 行    | 60 行        | ESLint `max-lines-per-function`（TS）/ Clippy `too_many_lines`（Rust）/ `scripts/check-file-size.sh` 的 ast 扫描（Python）；测试与 e2e 按 2× 放宽到 120 行 |
+| 圈复杂度        | 10       | 15           | ESLint `complexity` / Clippy `cognitive-complexity-threshold`                                                                                              |
+| 参数个数        | 4 个     | 6 个         | ESLint `max-params` / Clippy `too-many-arguments-threshold`                                                                                                |
+| 嵌套深度        | 3 层     | 4 层         | ESLint `max-depth`                                                                                                                                         |
+| 回调/Promise 链 | 2 层     | 3 层         | Code Review                                                                                                                                                |
+
+> 函数行数门禁自 2026-09-16 起三语言同口径落地（此前只有文档约定、没有检查）：TS 走 ESLint（`eslint.config.js`），
+> Rust 走 clippy（`clippy.toml` 的 `too-many-lines-threshold = 60`，`pedantic` 组已随 CI 的 `-D warnings` 生效），
+> Python 由 `scripts/check-file-size.sh` 的 ast 扫描补齐——ruff **没有**「函数行数」规则（`PLR0915` 数的是语句数、
+> 不是行数）。测试与 e2e 按 2× 放宽到 120 行（`describe` 块天然收纳大量用例，拆它只是把用例挪位置）。
+> 历史欠账登记在 `scripts/function-size-baseline.txt`（登记值 = 该文件当前最长函数行数，只允许降不允许升），当前 43 条。
 
 ### React 组件复杂度限制
 
@@ -88,18 +94,29 @@ export function useFileTableLogic(files: FileInfo[]) {
 ### Rust 模块拆分规则
 
 ```rust
-// ❌ 错误：500+ 行的 commands/file_ops.rs
-pub async fn scan_directory() { /* ... */ }
-pub async fn preview_operations() { /* ... */ }
-pub async fn execute_operations() { /* ... */ }
-pub async fn undo_batch() { /* ... */ }
+// ❌ 错误：把整块命令塞进一个 500+ 行的文件
+// commands/big_module.rs
+pub fn scan_directory() { /* ... */ }
+pub fn preview_operations() { /* ... */ }
+pub fn execute_operations() { /* ... */ }
+pub fn undo_batch() { /* ... */ }
 // ... 更多函数
 
-// ✅ 正确：按功能拆分模块
-// commands/file_ops/mod.rs — 导出
-// commands/file_ops/scan.rs — 扫描相关
-// commands/file_ops/operations.rs — 操作相关
-// commands/file_ops/undo.rs — 撤销相关
+// ✅ 正确：按职责拆成目录模块（本仓库 commands/file_ops/ 即此结构）
+// commands/file_ops/mod.rs         — 子模块声明 + 对外再导出 + 测试模块声明
+// commands/file_ops/scan.rs        — 扫描与落库
+// commands/file_ops/fs_walk.rs     — 磁盘遍历底层（递归/黑名单/时间格式化）
+// commands/file_ops/preview.rs     — 预览（dry-run）计划
+// commands/file_ops/execute.rs     — 批量执行
+// commands/file_ops/delete.rs      — 删除到系统回收站
+// commands/file_ops/undo.rs        — 批次撤销
+// commands/file_ops/directories.rs — 扫描目录管理
+// commands/file_ops/index_sync.rs  — 向量索引 best-effort 同步
+//
+// ⚠️ Tauri IPC 命令拆进子模块后，`generate_handler!` / `collect_commands!` 里必须写
+//    子模块全路径（如 `commands::file_ops::scan::scan_directory`）：`#[tauri::command]`
+//    与 `#[specta::specta]` 生成的隐藏辅助项（`__cmd__*` / `__specta__fn__*`）只存在于
+//    命令定义所在模块，`pub use` 再导出不会带过去，宏会报「cannot find `__cmd__xxx`」。
 ```
 
 ### Python 模块拆分规则
@@ -140,29 +157,34 @@ bash scripts/check-file-size.sh
 | 已登记基线且未增长               | PASS，计入「待消账」清单                   |
 | 超过警告阈值但未达强制阈值       | WARN（不阻断）                             |
 
-历史欠账登记在 `scripts/file-size-baseline.txt`（当前 5 个文件，已由 16 消账至 5）；拆分到阈值内后删除对应行即完成消账。
+历史欠账登记在 `scripts/file-size-baseline.txt`，**当前无在册条目**（2026-09 已相继拆分消账：`commands/file_ops.rs`(1395)、`main.rs`(703)、`db/file_repo.rs`(638)、`sidecar/manager.rs`(1111)、`styles/globals.css`(4608)——后者拆为 `src/styles/` 下 22 个分区文件 + `index.css` 清单，最大 389 行）；拆分到阈值内后删除对应行即完成消账。
 统计口径为**原始行数**（等价 `wc -l`，不剔除空行/注释）；生成物（`src/types/ipc.ts` 由 tauri-specta 生成、禁止手改）与 `node_modules` / `target` / `dist` / `.venv` / `__pycache__` / `gen` 不在管控范围。
+
+同一脚本还覆盖 **Python 函数行数**（ast 扫描，源码 60 / 测试与 e2e 120）：ruff 没有对应规则，故与文件行数复用同一次调用，输出单独一行汇总（`---- 函数行数门禁（Python）：FAIL N ----`），同样计入脚本退出码。扫描根与文件门禁一致（`python-sidecar/app`、`python-sidecar/tests`），解析器优先用项目虚拟环境的 Python（系统自带 `python3` 在 macOS 上是 3.9，解析不了 3.12 语法）。
 
 ### ESLint 复杂度规则
 
 **已启用**（`eslint.config.js`，CI 以 `--max-warnings 0` 运行，故一律按 error 拦截）：
 
-| 规则         | 阈值                                       | 说明                                                                                                                                                                                                |
-| ------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `max-lines`  | 组件 300 / 页面 400 / `.ts` 250 / 测试 600 | 与 `scripts/check-file-size.sh` **同口径**（不跳过空行与注释，计原始行数），并**共用** `scripts/file-size-baseline.txt` 作为历史欠账白名单——两套门禁读同一份基线，避免「脚本说通过、ESLint 说超限」 |
-| `complexity` | 15                                         | 函数圈复杂度强制阈值；超限请拆函数                                                                                                                                                                  |
+| 规则                     | 阈值                                       | 说明                                                                                                                                                                                                |
+| ------------------------ | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max-lines`              | 组件 300 / 页面 400 / `.ts` 250 / 测试 600 | 与 `scripts/check-file-size.sh` **同口径**（不跳过空行与注释，计原始行数），并**共用** `scripts/file-size-baseline.txt` 作为历史欠账白名单——两套门禁读同一份基线，避免「脚本说通过、ESLint 说超限」 |
+| `max-lines-per-function` | 60（测试/e2e 120）                         | 与 Rust clippy `too_many_lines`、Python ast 扫描同口径；**共用** `scripts/function-size-baseline.txt` 作为历史欠账白名单（登记值 = 该文件当前最长函数行数，只降不升）                               |
+| `complexity`             | 15                                         | 函数圈复杂度强制阈值；超限请拆函数                                                                                                                                                                  |
 
 圈复杂度历史欠账（登记在 `eslint.config.js`，登记值 = 该文件当前最大复杂度，**只允许降不允许升**）：
 
-| 文件                                                | 当前上限 | 超限函数（ESLint 报点）      |
-| --------------------------------------------------- | -------- | ---------------------------- |
-| `src/pages/ClassifyPage.tsx`                        | 38       | `ClassifyPage`               |
-| `src/components/settings/CloudProviderFormCard.tsx` | 30       | `CloudProviderFormCard`      |
-| `src/lib/format.ts`                                 | 22       | `getFileTypeMeta`            |
-| `src/components/rules/RuleForm.tsx`                 | 20       | `RuleForm`                   |
-| `src/pages/ChatPage.tsx`                            | 19       | 行 109 的匿名 async 箭头函数 |
+当前无登记项——历史欠账已全部消账，各条的消账方式如下：
 
-（`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、事件分发抽成 `dispatchChatEvent`。）
+（`format.ts` 22：`getFileTypeMeta` 的判断链改为有序规则表，扩展名数据表移入 `src/lib/fileExtensions.ts`，
+函数复杂度回到 3，文件 180 → 144 行；`RuleForm.tsx` 20：草稿状态与校验收进 `useRuleForm`，「启用规则」行
+拆为 `RuleEnabledToggle`，组件复杂度回到 4，文件 240 → 189 行；`CloudProviderFormCard.tsx` 30：表单状态收进
+`useCloudProviderForm`，校验规则移入 `src/lib/cloudProviderValidation.ts`，五行字段改用 `ui/SettingsInputRow`；
+`ChatPage.tsx` 19：引用跳转流程收进 `src/hooks/useCitationPreview.ts`，头部与输入区拆为
+`ChatHeader` / `ChatInputArea`；`ClassifyPage.tsx` 38：区域显隐判定收进 `src/lib/classifyView.ts`，各区域拆为
+`ClassifyHeader` / `ClassifyIntroPanel` / `ClassifyHistoryView` / `ClassifyPreviewSection`；
+`settingsStore.ts` 18 与 `chatStore.ts` 16 两条已在拆分 store 时消掉：字段合并抽成 `mergeAppConfig`、
+事件分发抽成 `dispatchChatEvent`。）
 
 消账方式：把函数拆到 15 以内后，删除 `eslint.config.js` 中对应的 `complexity` 覆盖块。
 

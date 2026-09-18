@@ -1,0 +1,5 @@
+# 占位文件：内置 llama.cpp 引擎的产物目录（同 filemind/binaries/ 的处理方式）。
+#
+# 各平台产物由 scripts/fetch-llama-server.sh 按 pin 的 tag + sha256 现场下载解压，
+# 不入库（macOS 约 27MB：llama-server + 同名目录下的 dylib；Windows 约 18MB zip）。
+# 保留本文件使目录在全新检出时就存在，避免路径解析与 CI 报错。

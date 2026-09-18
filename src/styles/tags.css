@@ -1,0 +1,70 @@
+/* 标签与状态徽章原子样式（tag / badge）
+ *
+ * 原 styles/files-table.css 拆出（该文件逼近 CSS 警告阈值 200）。这两组不属于文件表格，
+ * 而是跨页面复用的原子样式：tag 用于分类列、规则列表、设置页与引导页；badge 由
+ * StatusBadge 组件渲染。
+ *
+ * 级联顺序依赖：index.css 中需排在 files-table.css 之后（与拆分前在原文件内的相对位置
+ * 一致；选择器与前两个文件互不重叠，无覆盖关系）。
+ */
+
+/* 分类/状态 tag（对齐交互原型 tag-blue/green/amber/gray/purple） */
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+/* 文档使用单横线命名（tag-blue），保留双横线（tag--blue）作为旧别名 */
+.tag--blue,
+.tag-blue {
+  background: var(--accent-light);
+  color: var(--accent2);
+}
+.tag--green,
+.tag-green {
+  background: var(--success-light);
+  color: var(--success);
+}
+.tag--amber,
+.tag-amber {
+  background: var(--amber-light);
+  color: var(--amber);
+}
+.tag--gray,
+.tag-gray {
+  background: var(--bg3);
+  color: var(--muted);
+}
+.tag--purple,
+.tag-purple {
+  background: var(--purple-bg);
+  color: var(--purple-deep);
+}
+.tag--red,
+.tag-red {
+  background: var(--warn-light);
+  color: var(--warn);
+}
+
+/* 分类状态徽章 */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.badge--categorized {
+  background: var(--success);
+  color: #fff;
+}
+
+.badge--uncategorized {
+  background: var(--bg3);
+  color: var(--muted);
+}

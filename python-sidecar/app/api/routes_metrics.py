@@ -1,9 +1,16 @@
-"""Sidecar 进程内存监控路由：供 Go/No-Go 第 7 项（内存 <500MB）验收。
+"""Sidecar 进程内存监控路由：供 Go/No-Go 第 7 项（内存 <2048MB）验收。
 
 端点 GET /metrics 返回当前进程 RSS/VMS 字节数换算的 MB 值 + 是否在验收阈值内。
-阈值 500MB 是 T10.3（E10 性能优化）放宽的门控：原 300MB 无法容纳 rerank
-懒加载模型的冷启动余量，500MB 仍守住「常驻不预载 rerank」的内存优先取舍
-（模型首次检索时才加载，见 ``rerank_service``）。
+阈值沿革：
+- 300MB（原始）→ 500MB（T10.3 放宽：容纳 rerank 懒加载模型的冷启动余量）
+- 2048MB（本次放宽）：Embedding 改为进程内 ONNX int8 推理后，实测（关内存池）
+  模型加载后 0.55GB、稳态推理 0.85GB（300 字分块）~1.18GB（500 字生产分块，
+  峰值 1.31GB），叠加 Sidecar 基线（约 161MB）后约 1.0~1.4GB，500MB 无法容纳。
+  见 ``benchmarks/onnx_embedding_mem_probe.py``。
+
+口径说明：门控仍按**冷启动**判定——embedding 与 rerank 均为惰性加载，
+冷启动不触碰模型权重；2048MB 是运行期（首次向量化之后）的预算上限，
+用于卡住后续回归。
 env ``FILEMIND_MEMORY_THRESHOLD_MB`` 可覆盖阈值（非法值回落默认）。
 1GB 运行期硬保护（见 ``07_安全合规设计.html`` 第 389 行）在 T7 安全
 合规阶段实现，T1.6 只做采集不做拒绝。
@@ -13,21 +20,21 @@ from __future__ import annotations
 
 import os
 
-import psutil  # type: ignore[import-untyped]
+import psutil
 from fastapi import APIRouter
 
 from app.models import MetricsResponse
 
 router = APIRouter(prefix="/metrics", tags=["监控"])
 
-#: 默认 Go/No-Go 门控线：Sidecar 冷启动内存 <500MB（T10.3 从 300MB 放宽）。
-DEFAULT_MEMORY_THRESHOLD_MB = 500
+#: 默认 Go/No-Go 门控线：Sidecar 内存 <2048MB（含进程内 ONNX embedding 稳态）。
+DEFAULT_MEMORY_THRESHOLD_MB = 2048
 #: 环境变量：门控阈值覆盖（正整数，非法值回落默认）
 _ENV_THRESHOLD_MB = "FILEMIND_MEMORY_THRESHOLD_MB"
 
 
 def memory_threshold_mb() -> int:
-    """内存门控阈值：默认 500，env ``FILEMIND_MEMORY_THRESHOLD_MB`` 可覆盖。
+    """内存门控阈值：默认 2048，env ``FILEMIND_MEMORY_THRESHOLD_MB`` 可覆盖。
 
     非法值（非整数 / 非正数）回落默认，避免配置错误导致门控失效。
     """
@@ -45,7 +52,7 @@ async def get_metrics() -> MetricsResponse:
 
     Returns:
         MetricsResponse — 四字段：``rss_mb`` 物理内存、``vms_mb`` 虚拟内存、
-        ``threshold_mb=500``、``within_limit`` 是否通过 Go/No-Go 门控。
+        ``threshold_mb=2048``、``within_limit`` 是否通过 Go/No-Go 门控。
 
     Security:
         本路由**不**加入 HMAC 豁免路径（仅 Rust 端持有 PSK），防止未授权

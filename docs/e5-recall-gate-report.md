@@ -1,5 +1,11 @@
 # E5 门控决策报告 — Embedding 召回率（T5.2 / 08-§8）
 
+> **复测记录（2026-09-15，T7）**：Embedding 后端由「Ollama HTTP（GGUF）」换为
+> 「Sidecar 进程内 ONNX int8」后重跑本门控：
+> `FILEMIND_MODEL_DIR=/tmp/bge-dl python -m eval.recall`（模型 `Xenova/bge-large-zh-v1.5` 的 int8 权重）。
+> 结果 **总体召回率 98.0%，门禁通过，与下表逐条一致**（含唯一的弱项 q6 = 80.0%）。
+> 结论：换后端**未引入召回质量回退**；已归档的原报告保留作为基线对照。
+
 - 生成时间：2026-08-23
 - 运行方式：`python -m eval.recall`（真实 Ollama，非 mock）
 - 模型：`qllama/bge-large-zh-v1.5`（注册表标识 `bge-large-zh-v1.5`）

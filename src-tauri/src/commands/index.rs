@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::commands::embedding_table;
 use crate::db::file_search::FileSearch;
+use crate::db::models::FileRecord;
 use crate::db::{ConfigRepo, FileRepo};
 use crate::error::{AppError, AppResult};
 use crate::sidecar::proxy;
@@ -78,28 +80,12 @@ pub async fn build_index(state: State<'_, AppState>) -> Result<IndexBuildRespons
 
 /// 建索引纯逻辑入口（便于单元测试，不依赖 `tauri::State`）。
 async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
-    // 1. 读取配置：embedding 模型 + 目标表名（对齐问答 `documents_{model}_v1`）
-    let (embedding_model, table_name) = {
-        let guard = state
-            .db
-            .lock()
-            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        let config = ConfigRepo::get(guard.conn())?;
-        let model = config.embedding_model;
-        let table = format!("documents_{model}_v1");
-        drop(guard);
-        (model, table)
-    };
+    // 1. 读取配置：当前 Embedding 模型（表名留到拿到 PSK 后再解析——版本号来自
+    //    Sidecar 注册表，见 `commands::embedding_table`，此处不再拼表名）
+    let embedding_model = load_embedding_model(state)?;
 
-    // 2. 只取「待向量化」文件：未建过 / 换模型 / 内容变更才入选（增量核心）。
-    //    库中文件已全部建成且未变更 → 直接返回 0/0，不碰 FTS 与 sidecar。
-    let files = {
-        let guard = state
-            .db
-            .lock()
-            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        FileRepo::list_pending_embedding(guard.conn(), &embedding_model, INDEX_FILE_LIMIT)?
-    };
+    // 2. 只取「待向量化」文件：未建过 / 换模型 / 内容变更才入选（增量核心）
+    let files = load_pending_files(state, &embedding_model)?;
     if files.is_empty() {
         return Ok(IndexBuildResponse {
             indexed_count: 0,
@@ -108,25 +94,85 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
     }
 
     // 3. 填充 FTS5 content 列（仅候选文件；已建文件的 FTS 正文保留不动）
-    let (fts_indexed, fts_skipped) = {
-        let guard = state
-            .db
-            .lock()
-            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        FileSearch::populate_fts_content(guard.conn(), &files)?
-    };
+    let (fts_indexed, fts_skipped) = populate_fts(state, &files)?;
 
     // 4. 构造请求 → HMAC 代理调 sidecar /index/build（向量索引）
-    let psk = state
+    let psk = load_psk(state)?;
+    // 表名解析自身要发一次探测请求（消耗一个序号），索引请求另取一个——
+    // Sidecar 中间件要求序号严格递增，复用同一序号会被判重放。
+    let seq_probe = next_seq(state);
+    let seq = next_seq(state);
+    let table_name =
+        embedding_table::resolve_vector_table_parts(&state.db, &psk, seq_probe).await?;
+    let parsed = forward_index_build(&files, &embedding_model, table_name, &psk, seq).await?;
+
+    // 5. 向量化成功后回写索引状态标记。只标记「实际写入向量」的文件
+    //    （sidecar 返回的 indexed_file_ids）；读取失败 / 非文本文件保持未标记，
+    //    下次点击自动重试。content_hash 为 None 的文件无哈希可比，同样跳过标记。
+    let mark_entries = build_mark_entries(&files, &parsed.indexed_file_ids);
+    if !mark_entries.is_empty() {
+        mark_embedded(state, &embedding_model, &mark_entries)?;
+    }
+
+    // 合并 FTS5 + LanceDB 结果：取较大值（两部分成功即可）
+    Ok(IndexBuildResponse {
+        indexed_count: parsed.indexed_count.max(fts_indexed),
+        skipped_count: parsed.skipped_count + fts_skipped,
+    })
+}
+
+/// 读取当前配置的 Embedding 模型名。
+fn load_embedding_model(state: &AppState) -> AppResult<String> {
+    let guard = state
+        .db
+        .lock()
+        .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+    Ok(ConfigRepo::get(guard.conn())?.embedding_model)
+}
+
+/// 取「待向量化」候选文件（未建过 / 换模型 / 内容变更），上限 `INDEX_FILE_LIMIT`。
+fn load_pending_files(state: &AppState, embedding_model: &str) -> AppResult<Vec<FileRecord>> {
+    let guard = state
+        .db
+        .lock()
+        .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+    FileRepo::list_pending_embedding(guard.conn(), embedding_model, INDEX_FILE_LIMIT)
+}
+
+/// 填充候选文件的 FTS5 正文，返回（已填、跳过）计数。
+fn populate_fts(state: &AppState, files: &[FileRecord]) -> AppResult<(i64, i64)> {
+    let guard = state
+        .db
+        .lock()
+        .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+    FileSearch::populate_fts_content(guard.conn(), files)
+}
+
+/// 取当前 PSK（Sidecar 未就绪时报错）。
+fn load_psk(state: &AppState) -> AppResult<Vec<u8>> {
+    state
         .sidecar_psk
         .lock()
         .map_err(|e| AppError::InvalidInput(format!("PSK 锁中毒: {e}")))?
         .clone()
-        .ok_or_else(|| AppError::SidecarUnavailable("sidecar 未就绪".to_string()))?;
-    let seq = state
-        .request_seq
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        .ok_or_else(|| AppError::SidecarUnavailable("sidecar 未就绪".to_string()))
+}
 
+/// 取下一个请求序号（Sidecar 中间件要求严格递增，复用会被判重放）。
+fn next_seq(state: &AppState) -> u64 {
+    state
+        .request_seq
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 组装并发送 `/index/build` 请求，返回解析后的响应。
+async fn forward_index_build(
+    files: &[FileRecord],
+    embedding_model: &str,
+    table_name: String,
+    psk: &[u8],
+    seq: u64,
+) -> AppResult<SidecarIndexBuildResponse> {
     let request = SidecarIndexBuildRequest {
         files: files
             .iter()
@@ -135,47 +181,43 @@ async fn build_index_inner(state: &AppState) -> AppResult<IndexBuildResponse> {
                 path: f.path.clone(),
             })
             .collect(),
-        embedding_model: embedding_model.clone(),
+        embedding_model: embedding_model.to_string(),
         table_name,
     };
     let body = serde_json::to_string(&request)?;
-    let resp = proxy::forward_post("/index/build", &body, &psk, seq).await?;
-    let parsed: SidecarIndexBuildResponse = serde_json::from_str(&resp)?;
+    let resp = proxy::forward_post("/index/build", &body, psk, seq).await?;
+    Ok(serde_json::from_str(&resp)?)
+}
 
-    // 5. 向量化成功后回写索引状态标记。只标记「实际写入向量」的文件
-    //    （sidecar 返回的 indexed_file_ids）；读取失败 / 非文本文件保持未标记，
-    //    下次点击自动重试。content_hash 为 None 的文件无哈希可比，同样跳过标记。
-    let mark_entries: Vec<(String, String)> = {
-        let hash_by_id: HashMap<&str, &str> = files
-            .iter()
-            .filter_map(|f| f.content_hash.as_deref().map(|h| (f.id.as_str(), h)))
-            .collect();
-        parsed
-            .indexed_file_ids
-            .iter()
-            .filter_map(|id| {
-                hash_by_id
-                    .get(id.as_str())
-                    .map(|h| (id.clone(), (*h).to_string()))
-            })
-            .collect()
-    };
-    if !mark_entries.is_empty() {
-        let guard = state
-            .db
-            .lock()
-            .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
-        FileRepo::mark_embedded(guard.conn(), &embedding_model, &mark_entries)?;
-    }
+/// 算出需要回写索引状态的（`file_id`, `content_hash`）条目。
+///
+/// 只覆盖 sidecar 明确回报「已写入向量」的文件；无哈希的文件无法比对，跳过。
+fn build_mark_entries(files: &[FileRecord], indexed_file_ids: &[String]) -> Vec<(String, String)> {
+    let hash_by_id: HashMap<&str, &str> = files
+        .iter()
+        .filter_map(|f| f.content_hash.as_deref().map(|h| (f.id.as_str(), h)))
+        .collect();
+    indexed_file_ids
+        .iter()
+        .filter_map(|id| {
+            hash_by_id
+                .get(id.as_str())
+                .map(|h| (id.clone(), (*h).to_string()))
+        })
+        .collect()
+}
 
-    // 合并 FTS5 + LanceDB 结果：取较大值（两部分成功即可）
-    let indexed_count = parsed.indexed_count.max(fts_indexed);
-    let skipped_count = parsed.skipped_count + fts_skipped;
-
-    Ok(IndexBuildResponse {
-        indexed_count,
-        skipped_count,
-    })
+/// 回写这些文件的索引状态标记（`embedding_model` + `embedding_hash`），返回受影响行数。
+fn mark_embedded(
+    state: &AppState,
+    embedding_model: &str,
+    entries: &[(String, String)],
+) -> AppResult<usize> {
+    let guard = state
+        .db
+        .lock()
+        .map_err(|e| AppError::InvalidInput(format!("DB 锁中毒: {e}")))?;
+    FileRepo::mark_embedded(guard.conn(), embedding_model, entries)
 }
 
 #[cfg(test)]

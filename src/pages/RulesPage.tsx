@@ -13,16 +13,19 @@
 //     </div>
 //   </div>
 //
-// 状态：selectedId（当前编辑的规则），formOpen（点击"新建规则"时打开空表单）。
-// 启用开关与拖拽排序直接落库；删除走二次确认。
+// 页面只做编排：选中/表单/删除确认的状态与动作在 useRuleEditor（导入即订阅规则列表），
+// 头部与主体各为一个区域组件。启用开关与拖拽排序直接落库，删除走二次确认。
 
-import { useEffect, useState } from 'react';
-import { EmptyState, LoadingState } from '../components/common/StateViews';
-import { RuleForm } from '../components/rules/RuleForm';
-import { RuleList } from '../components/rules/RuleList';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
-import { useRuleStore } from '../stores/ruleStore';
-import type { Rule } from '../types/ipc';
+import { useEffect } from 'react';
+
+import { PageErrorBanner } from '@/components/common/PageErrorBanner';
+import { LoadingState } from '@/components/common/StateViews';
+import { RulesEmptyState } from '@/components/rules/RulesEmptyState';
+import { RulesLayout } from '@/components/rules/RulesLayout';
+import { RulesPageHeader } from '@/components/rules/RulesPageHeader';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { useRuleEditor } from '@/hooks/useRuleEditor';
+import { useRuleStore } from '@/stores/ruleStore';
 
 export function RulesPage() {
   const rules = useRuleStore((s) => s.rules);
@@ -30,173 +33,41 @@ export function RulesPage() {
   const isLoading = useRuleStore((s) => s.isLoading);
   const error = useRuleStore((s) => s.error);
   const load = useRuleStore((s) => s.load);
-  const saveRule = useRuleStore((s) => s.saveRule);
-  const deleteRule = useRuleStore((s) => s.deleteRule);
-  const reorder = useRuleStore((s) => s.reorder);
   const clearError = useRuleStore((s) => s.clearError);
-
-  // 当前选中规则 id（null + formOpen=true 表示新建态）
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 新建态：点击"+ 新建规则"时打开空表单，与编辑态互斥
-  const [formOpen, setFormOpen] = useState(false);
-  // 待删除规则（ConfirmDialog 二次确认，替代阻塞式 window.confirm）
-  const [pendingDelete, setPendingDelete] = useState<Rule | null>(null);
+  const editor = useRuleEditor(rules);
+  const pendingDelete = editor.pendingDelete;
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const handleNew = () => {
-    setSelectedId(null);
-    setFormOpen(true);
-  };
-
-  const handleSelect = (rule: Rule) => {
-    setSelectedId(rule.id);
-    setFormOpen(false);
-  };
-
-  const handleSave = async (rule: Rule) => {
-    try {
-      // saveRule 返回保存后的 Rule（含后端生成的 id），用于切换到编辑态
-      const saved = await saveRule(rule);
-      setSelectedId(saved.id);
-      setFormOpen(false);
-    } catch {
-      // 保存失败时错误已由 store 记录，保持表单打开供用户重试
-    }
-  };
-
-  const handleDelete = async (rule: Rule) => {
-    try {
-      await deleteRule(rule.id);
-      setSelectedId(null);
-      setFormOpen(false);
-    } catch {
-      // 错误已由 store 记录
-    }
-  };
-
-  const handleReorder = (orderedIds: string[]) => {
-    void reorder(orderedIds).catch(() => {
-      // 错误已由 store 记录
-    });
-  };
-
-  const selectedRule = selectedId ? (rules.find((r) => r.id === selectedId) ?? null) : null;
-  const showForm = formOpen || selectedRule !== null;
-
   return (
     <div className="page rules-page">
-      <header className="main-header">
-        <h1>规则编辑</h1>
-        <span className="subtitle">分类规则与分类体系管理</span>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            onClick={handleNew}
-            data-testid="rules-new"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{
-                width: 13,
-                height: 13,
-                display: 'inline-block',
-                verticalAlign: '-2px',
-                marginRight: 4,
-              }}
-              aria-hidden
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            新建规则
-          </button>
-        </div>
-      </header>
-
-      {error && (
-        <div className="rules-page__error" role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="rules-page__error-dismiss"
-            aria-label="关闭错误提示"
-            onClick={clearError}
-          >
-            ×
-          </button>
-        </div>
-      )}
-
+      <RulesPageHeader onNew={editor.startNew} />
+      <PageErrorBanner
+        message={error}
+        className="rules-page__error"
+        dismissClassName="rules-page__error-dismiss"
+        onDismiss={clearError}
+      />
       <div className="main-content rules-page__body" data-testid="rules-body">
         {isLoading ? (
           <LoadingState text="加载规则…" />
-        ) : rules.length === 0 && !formOpen ? (
-          <EmptyState
-            title="暂无自定义规则"
-            description="内置类型识别仍会自动分类；新建规则可覆盖默认行为。"
-            action={
-              <button type="button" className="btn btn--primary" onClick={handleNew}>
-                + 新建规则
-              </button>
-            }
-          />
+        ) : rules.length === 0 && !editor.formOpen ? (
+          <RulesEmptyState onNew={editor.startNew} />
         ) : (
-          <div className="rules-layout">
-            <RuleList
-              rules={rules}
-              categories={categories}
-              selectedId={selectedId}
-              onSelect={handleSelect}
-              onReorder={handleReorder}
-            />
-            <div className="rules-detail">
-              {showForm ? (
-                <RuleForm
-                  // key=选中规则 id：切换左侧规则时强制重挂载，避免表单沿用上一条规则的旧状态
-                  key={selectedRule?.id ?? 'new-rule'}
-                  initial={selectedRule}
-                  categories={categories}
-                  onSave={(rule) => void handleSave(rule)}
-                  onCancel={() => {
-                    setSelectedId(null);
-                    setFormOpen(false);
-                  }}
-                  onDelete={(rule) => setPendingDelete(rule)}
-                />
-              ) : (
-                <div className="rules-empty">
-                  <div className="rules-empty__icon">📋</div>
-                  <div className="rules-empty__title">选择左侧规则查看详情</div>
-                  <div className="rules-empty__desc">
-                    点击列表中任意规则进入编辑，或点击右上角&ldquo;新建规则&rdquo;创建新规则
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <RulesLayout rules={rules} categories={categories} editor={editor} />
         )}
       </div>
 
-      {pendingDelete && (
+      {pendingDelete !== null && (
         <ConfirmDialog
           title="删除规则"
           message={`确定删除规则「${pendingDelete.name}」？此操作不可撤销。`}
           confirmLabel="删除"
           danger
-          onCancel={() => setPendingDelete(null)}
-          onConfirm={() => {
-            const target = pendingDelete;
-            setPendingDelete(null);
-            void handleDelete(target);
-          }}
+          onCancel={editor.cancelDelete}
+          onConfirm={editor.confirmDelete}
         />
       )}
     </div>

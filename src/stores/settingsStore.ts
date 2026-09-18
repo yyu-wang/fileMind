@@ -11,8 +11,11 @@
 // 落到 ./settings/ 子模块；对外导入路径 @/stores/settingsStore 与公开符号保持不变。
 //   ./settings/types.ts    状态结构 + 动作工厂的依赖面
 //   ./settings/config.ts   加载配置 / 推理模式 / 更新配置 / 本地模型 / 完成引导
+//   ./settings/configMapping.ts  配置默认值 + partial↔AppConfig↔state 映射（纯函数）
 //   ./settings/cloud.ts    同意书 / API Key / 云提供商 CRUD 与激活
-//   ./settings/ollama.ts   本地 Ollama 探测与 Embedding 模型安装
+//   ./settings/cloudProviders.ts  P-07 自定义云提供商动作（由 cloud.ts 展开）
+//   ./settings/ollama.ts   本地 Ollama 环境探测
+//   ./settings/modelDownload.ts  Embedding / Rerank / GGUF 下载与离线包导入
 
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -20,6 +23,8 @@ import { applyTheme } from '../lib/theme';
 import { ThemeMode } from '../types/models';
 import { createCloudActions } from './settings/cloud';
 import { createConfigActions } from './settings/config';
+import { DEFAULT_LOCAL_LLM_BACKEND, DEFAULT_LOCAL_LLM_MODEL } from './settings/configMapping';
+import { createModelDownloadActions } from './settings/modelDownload';
 import { createOllamaActions } from './settings/ollama';
 import type { SettingsState } from './settings/types';
 
@@ -51,9 +56,17 @@ export const useSettingsStore = create<SettingsState>()(
       theme: ThemeMode.System,
       apiKeyStatus: {},
       cloudModel: '',
+      // 本地生成后端与内置 GGUF 标识：默认值统一取自 config 模块常量
+      // （与 Rust AppConfig::default、V019 迁移列默认值三处一致）
+      localLlmBackend: DEFAULT_LOCAL_LLM_BACKEND,
+      localLlmModel: DEFAULT_LOCAL_LLM_MODEL,
       temperature: 0.2,
-      installingModel: null,
-      installError: null,
+      downloadingModel: null,
+      modelDownloads: {},
+      installErrors: {},
+      importingPackage: false,
+      importResult: null,
+      importError: null,
       cloudProviders: [],
       activeCloudProvider: '',
       cloudProvidersLoading: false,
@@ -61,6 +74,7 @@ export const useSettingsStore = create<SettingsState>()(
       ...createConfigActions({ set, get }),
       ...createCloudActions({ set, get }),
       ...createOllamaActions({ set, get }),
+      ...createModelDownloadActions({ set, get }),
 
       setTheme: (mode) => {
         set({ theme: mode });

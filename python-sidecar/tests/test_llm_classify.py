@@ -20,12 +20,12 @@ from app.rules.llm_classify import (  # noqa: E402
     CONFIDENCE_THRESHOLD,
     ClassifyResult,
     LLMUnavailableError,
-    _human_size,
     build_classify_prompt,
     call_ollama_json,
     classify_file_with_llm,
     parse_classify_response,
 )
+from app.rules.llm_classify_prompt import _human_size  # noqa: E402
 
 
 def make_item(

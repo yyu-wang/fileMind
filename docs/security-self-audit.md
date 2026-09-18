@@ -43,7 +43,7 @@
 **缓解实现**：
 
 - 启动握手协议（`src-tauri/src/security/handshake.rs`）：PSK 每次启动经系统熵生成，经 stdin 管道注入（防 `ps` 读取），非对称握手 + HMAC-SHA256 签名证明身份
-- `main.rs:start_sidecar_with_handshake`：握手失败直接退出，**不进入主循环**（"避免在未验证身份时进入主循环"）
+- `SidecarManager::start_with_handshake`（[manager.rs](src-tauri/src/sidecar/manager.rs)，由 [bootstrap.rs](src-tauri/src/sidecar/bootstrap.rs) 的后台引导调用）：握手成功前不写入 PSK，**不进入已认证代理路径**（"避免在未验证身份时进入主循环"）；P1-1 起失败收敛为 `sidecar-status: failed` + 前端手动重试（`retry_sidecar_start`），不再退出进程
 - 请求签名带 nonce + 递增序号防重放
 
 **自动化证据**：
@@ -117,7 +117,7 @@
 
 - T3.5 操作日志链式哈希（`src-tauri/src/db/log_chain.rs` + `operation_repo.rs`）：每条记录含 `prev_hash → current_hash → chain_hash`，事务内顺序计算
 - `V007` 触发器：非状态字段 UPDATE / DELETE 直接阻断（`operations_log_insert_only`）
-- 启动时 `verify_chain` 全链校验，断裂打 error 日志并报告断裂记录号（`main.rs`）
+- 启动时 `verify_chain` 全链校验，断裂打 error 日志并报告断裂记录号（[startup.rs](src-tauri/src/startup.rs) `verify_operation_chain`）
 
 **自动化证据**：
 
@@ -227,7 +227,7 @@
 
 **缓解实现**：
 
-- `main.rs:spawn_watchdog`：后台线程每秒 tick，连续 3 次 `/health` 失败或进程已退出 → 指数退避（1s→8s 上限）后 `restart()`
+- `watchdog::spawn`（[watchdog.rs](src-tauri/src/watchdog.rs)）：后台线程每秒 tick，连续 3 次 `/health` 失败或进程已退出 → 指数退避（1s→8s 上限）后 `restart()`
 - 重启后同步新 PSK 到 AppState + 重置请求序号；1 分钟 10 次重启 → CrashLoop 暂停自动恢复（打 error 日志后仅告警）
 - `Drop` 兜底保证优雅退出不残留孤儿进程
 

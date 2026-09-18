@@ -128,6 +128,7 @@ beforeEach(() => {
     apiKeyStatus: { Openai: noKey, Deepseek: noDeep },
     cloudProviders: builtinCloudProviders,
     cloudProvidersLoading: false,
+    modelDownloads: {},
   });
   // 重置 fileStore，避免 EmbeddingModelSection useEffect 触发真实 loadStats
   useFileStore.setState({ stats: emptyStats, total: 0, files: [], selectedIds: [] });
@@ -153,6 +154,9 @@ describe('SettingsPage', () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 3, name: /推理模式/ })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 3, name: /AI 模型配置/ })).toBeInTheDocument();
+    // 模型区块连续排列：Embedding → Rerank → 本地生成模型（GGUF）
+    expect(screen.getByRole('heading', { level: 3, name: /重排模型/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: /本地生成模型/ })).toBeInTheDocument();
     expect(screen.getByText('跟随系统')).toBeInTheDocument();
   });
 

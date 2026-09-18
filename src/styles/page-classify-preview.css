@@ -1,0 +1,163 @@
+/* 分类结果预览树：分组卡片 / 待确认提示 / 文件行 / 批量勾选与批量指定
+ * （2026-09-18 按区域拆自 page-classify.css，259 行超 CSS 警告阈值 200。
+ * 与 .classify-page* 无同名选择器，级联上互不影响，仍保持原文件行序导入） */
+
+/* 预览树 */
+.classify-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.classify-preview__stats {
+  display: flex;
+  gap: var(--sp-4);
+  font-size: 12px;
+  color: var(--muted);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.classify-preview__groups {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.classify-preview__group {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.classify-preview__group--pending {
+  border-color: var(--warn);
+}
+
+.classify-preview__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg3);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-preview__group--pending .classify-preview__group-head {
+  background: #fef3c7;
+  color: var(--warn);
+}
+
+@media (prefers-color-scheme: dark) {
+  .classify-preview__group--pending .classify-preview__group-head {
+    background: rgba(245, 158, 11, 0.15);
+  }
+}
+
+.classify-preview__group-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-preview__list {
+  list-style: none;
+}
+
+.classify-preview__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+}
+
+/* T6.12 手动分类下拉（待确认文件行内） */
+.classify-preview__assign {
+  margin-left: auto;
+  padding: var(--sp-0-5) var(--sp-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 140px;
+}
+
+/* T6.12 批量勾选与批量指定 */
+.classify-preview__check {
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.classify-preview__select-all {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  margin-right: var(--sp-1);
+}
+
+.classify-preview__select-all input {
+  cursor: pointer;
+}
+
+.classify-preview__batch {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--accent-light);
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.classify-preview__batch .classify-preview__assign {
+  margin-left: 0;
+}
+
+.classify-preview__batch-cancel {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.classify-preview__batch-cancel:hover {
+  color: var(--ink);
+}
+
+.classify-preview__item:first-child {
+  border-top: none;
+}
+
+.classify-preview__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.classify-preview__conflict {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.classify-preview__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}

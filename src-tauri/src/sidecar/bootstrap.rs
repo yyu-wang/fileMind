@@ -14,9 +14,7 @@ use tauri::{Emitter, Manager};
 use crate::error::{AppError, AppResult};
 use crate::events::types::SidecarStatusEvent;
 use crate::security::log_redact;
-use crate::sidecar::manager::{
-    main_exe_in_dir, resolve_bundle_binary_path, CloudSidecarEnv, SidecarManager,
-};
+use crate::sidecar::manager::{main_exe_in_dir, resolve_bundle_binary_path, SidecarManager};
 use crate::{AppState, SidecarStatus};
 
 /// 启动 Sidecar 并完成握手（内部新建 current-thread tokio runtime）。
@@ -123,14 +121,22 @@ fn set_binary_path(app: &tauri::AppHandle, path: PathBuf) {
     }
 }
 
-/// 读取当前 manager 的云端 env 配置（供新 manager 继承，T7.4）。
-fn current_cloud_env(app: &tauri::AppHandle) -> Option<CloudSidecarEnv> {
+/// 让新 manager 继承当前 manager 的 env 配置（云端代理 T7.4 + 本地生成后端 T3b）。
+///
+/// 打包态引导会用 bundle 路径重建 manager，若不继承，用户已配置的云端代理与本地
+/// 生成后端会在重启后丢失。两种 env 一次取锁一并继承。
+fn inherit_manager_env(app: &tauri::AppHandle, new_mgr: &mut SidecarManager) {
     let state = app.state::<AppState>();
-    state
-        .sidecar_manager
-        .lock()
-        .ok()
-        .and_then(|m| m.cloud_env().cloned())
+    let Ok(current) = state.sidecar_manager.lock() else {
+        log::warn!("sidecar_manager Mutex 中毒，env 配置未继承");
+        return;
+    };
+    if let Some(cloud) = current.cloud_env().cloned() {
+        new_mgr.set_cloud_env(cloud);
+    }
+    if let Some(local) = current.local_llm_env().cloned() {
+        new_mgr.set_local_llm_env(local);
+    }
 }
 
 /// 引导成功后替换 `AppState` 中的 manager / PSK / seq。
@@ -180,10 +186,8 @@ fn bootstrap_worker(app: tauri::AppHandle, binary_hint: PathBuf, env_override: O
     set_binary_path(&app, binary_path.clone());
 
     let mut new_mgr = SidecarManager::new(binary_path);
-    // 继承云端模式 env（代理地址/token/脱敏开关），重启后保持（T7.4）
-    if let Some(cloud) = current_cloud_env(&app) {
-        new_mgr.set_cloud_env(cloud);
-    }
+    // 继承云端模式 env（代理地址/token/脱敏开关）与本地生成后端配置，重启后保持
+    inherit_manager_env(&app, &mut new_mgr);
 
     match start_with_handshake_blocking(&mut new_mgr) {
         Ok(new_psk) => {

@@ -1,0 +1,127 @@
+/* 规则编辑页：布局与规则列表（原 page-rules.css 拆出，220 行超 CSS 警告阈值 200）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-rule-form.css 之前
+ * （原文件的行序即规则优先级）。
+ * 本文件 = 原行 1-121：页面骨架 / 左列表 / 单条规则 / 右侧详情容器。
+ */
+/* ========== T6.8 规则编辑页（对齐交互原型 §规则编辑） ========== */
+/* 文档结构：
+   .page > .main-header + .main-content > .rules-layout
+     ├ .rules-list（左 280px）
+     │   ├ .rules-list-header（h3 + 数量 tag）
+     │   └ .rule-item（rule-name + rule-desc + rule-meta tag）
+     └ .rules-detail（右 flex:1）
+         └ .card > h3 + .rule-form
+             ├ .form-group（label + input/select + .hint）
+             ├ .form-group > .condition-builder（多 .condition-row）
+             ├ .setting-row（setting-label + setting-control > .toggle）
+             └ 按钮组：保存/测试/删除
+*/
+.rules-layout {
+  display: flex;
+  gap: var(--sp-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.rules-list {
+  width: 280px;
+  flex-shrink: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.rules-list-header {
+  padding: var(--sp-3) var(--sp-3-5);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  position: relative;
+}
+
+.rules-list-header h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.rules-list-header .rules-list-count {
+  margin-left: auto;
+}
+
+/* 单条规则：左主信息（name + desc + meta tags）+ 右优先级/拖拽条 */
+.rule-item {
+  padding: var(--sp-2-5) var(--sp-3-5);
+  border-bottom: 1px solid var(--rule);
+  cursor: pointer;
+  transition: background 0.1s var(--ease);
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+
+.rule-item:last-child {
+  border-bottom: none;
+}
+
+.rule-item:hover {
+  background: var(--bg-hover);
+}
+
+.rule-item.active {
+  background: var(--accent-light);
+  border-left: 3px solid var(--accent);
+  padding-left: calc(var(--sp-3-5) - 3px);
+}
+
+.rule-item--dragging {
+  opacity: 0.5;
+}
+
+.rule-item .rule-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rule-item .rule-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-item .rule-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: var(--sp-0-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-item .rule-meta {
+  display: flex;
+  gap: var(--sp-1-5);
+  margin-top: var(--sp-1);
+  flex-wrap: wrap;
+}
+
+.rule-item .rule-priority {
+  font-size: 11px;
+  color: var(--muted2);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.rules-detail {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+}

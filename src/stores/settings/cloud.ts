@@ -1,11 +1,16 @@
-// 云端相关动作：同意书签署/撤销、API Key 状态、自定义云提供商 CRUD 与激活选择。
+// 云端相关动作：同意书签署/撤销、API Key 状态（P-07 提供商 CRUD 见 ./cloudProviders.ts）。
 //
 // 与 store 分离的原因：这一组动作都围绕「云端可用性」这一条主线（同意书是前置条件，
 // API Key 与提供商列表互相刷新），且共用一个错误处理形态（失败写 error + throw）。
+//
+// 拆分（原单文件 165 行，逼近 .ts 警告阈值 150）：P-07 的 4 个提供商 CRUD 动作移到
+// ./cloudProviders.ts，由本工厂展开——settingsStore 的装配方式（只调 createCloudActions）
+// 保持不变。
 
 import { fileIpc } from '@/lib/ipc';
 import { CLOUD_CONSENT_VERSION } from '@/lib/consent';
 import type { ApiKeyStatus } from '@/types/ipc';
+import { createCloudProviderActions } from './cloudProviders';
 import type { SettingsGet, SettingsSet, SettingsState } from './types';
 
 /**
@@ -114,52 +119,7 @@ export function createCloudActions(deps: {
       }
     },
 
-    // ---------- P-07：用户自定义云提供商 CRUD + 激活选择 ----------
-
-    loadCloudProviders: async () => {
-      set({ cloudProvidersLoading: true, error: null });
-      try {
-        const result = await fileIpc.listCloudProviders();
-        if (result.status === 'ok') {
-          set({ cloudProviders: result.data });
-          // 提供商列表刷新后，一并刷新 API Key 状态（Key 状态按 slug 对齐）
-          await get().loadApiKeyStatus();
-        } else {
-          set({ error: result.error });
-        }
-      } catch (e) {
-        set({ error: e instanceof Error ? e.message : String(e) });
-      } finally {
-        set({ cloudProvidersLoading: false });
-      }
-    },
-
-    upsertCloudProvider: async (input) => {
-      const result = await fileIpc.upsertCloudProvider(input);
-      if (result.status !== 'ok') {
-        set({ error: result.error });
-        throw new Error(result.error);
-      }
-      // 成功后刷新列表和 Key 状态（新 provider 立刻能在 Key 卡片看到）
-      await get().loadCloudProviders();
-      return result.data;
-    },
-
-    deleteCloudProvider: async (providerKey) => {
-      const result = await fileIpc.deleteCloudProvider(providerKey);
-      if (result.status !== 'ok') {
-        set({ error: result.error });
-        throw new Error(result.error);
-      }
-      // 删除 slug 正好是当前激活 → 清空激活（避免 DB 侧留着一个已删 slug 激活）
-      if (get().activeCloudProvider === providerKey) {
-        await get().setActiveCloudProvider('');
-      }
-      await get().loadCloudProviders();
-    },
-
-    setActiveCloudProvider: async (providerKey) => {
-      await get().updateConfig({ active_cloud_provider: providerKey || null });
-    },
+    // ---------- P-07：用户自定义云提供商 CRUD + 激活选择（见 ./cloudProviders.ts） ----------
+    ...createCloudProviderActions(deps),
   };
 }

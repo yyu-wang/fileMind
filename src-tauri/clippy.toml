@@ -1,4 +1,8 @@
 cognitive-complexity-threshold = 15
 too-many-arguments-threshold = 6
+# 函数行数上限（rules/complexity.md §函数复杂度限制：警告 40 / 强制 60）。
+# `too_many_lines` 属 pedantic，本仓 Cargo.toml 已 `pedantic = warn` + CI `-D warnings`，
+# 故这里的数值就是强制阈值本身（默认 100 偏松，与 TS/Python 口径不一致）。
+too-many-lines-threshold = 60
 type-complexity-threshold = 250
 enum-variant-size-threshold = 200

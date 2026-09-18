@@ -1,0 +1,171 @@
+/* T6.11 LLM 兜底命中 / 待人工确认 标签 */
+.classify-rule-tag--llm {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.classify-rule-tag--needs-review {
+  background: #fde8e8;
+  color: #c0392b;
+}
+
+/* T6.12 手动指定分类标签 */
+.classify-rule-tag--manual {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .classify-rule-tag--heuristic {
+    background: rgba(107, 70, 193, 0.25);
+    color: #b39ddb;
+  }
+
+  .classify-rule-tag--pending {
+    background: rgba(245, 158, 11, 0.15);
+  }
+
+  .classify-rule-tag--llm {
+    background: rgba(21, 128, 61, 0.2);
+    color: #86efac;
+  }
+
+  .classify-rule-tag--needs-review {
+    background: rgba(192, 57, 43, 0.2);
+    color: #fca5a5;
+  }
+
+  .classify-rule-tag--manual {
+    background: rgba(29, 78, 216, 0.2);
+    color: #93c5fd;
+  }
+}
+
+/* 执行进度遮罩 */
+.classify-progress {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.classify-progress__panel {
+  width: 320px;
+  background: var(--bg2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-6);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.classify-progress__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-progress__count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.classify-progress__bar {
+  height: 10px;
+  background: var(--bg3);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.classify-progress__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  transition: width 0.2s ease;
+}
+
+.classify-progress__percent {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.classify-progress__controls {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+/* 分类结果面板 */
+.classify-done {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  background: var(--bg2);
+}
+
+.classify-done__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.classify-done__stats {
+  list-style: none;
+  display: flex;
+  gap: var(--sp-8);
+  padding: var(--sp-0);
+}
+
+.classify-done__stats li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.classify-done__num {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.classify-done__num--success {
+  color: var(--success);
+}
+
+.classify-done__num--failed {
+  color: var(--danger);
+}
+
+.classify-done__num--pending {
+  color: var(--warn);
+}
+
+.classify-done__num--muted {
+  color: var(--muted);
+}
+
+.classify-done__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.classify-done__actions {
+  display: flex;
+  gap: var(--sp-2);
+}

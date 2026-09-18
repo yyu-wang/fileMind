@@ -16,3 +16,8 @@ sentence-transformers==6.0.0
 # transformers 是 sentence-transformers 的传递依赖，不锁会版本漂移：
 # CI 装到 5.16.1 而本地 venv 是 5.15.1。锁定为本地实测可用的版本。
 transformers==5.15.1
+# 进程内 Embedding（ONNX int8 推理，见 app/services/embedding_service.py）：
+# onnxruntime 跑 bge-large-zh-v1.5 的 int8 权重；tokenizers 直接读 tokenizer.json
+# 做分词（避免为此导入整个 transformers）。两者版本锁定为本地实测可用值。
+onnxruntime==1.30.0
+tokenizers==0.22.2

@@ -17,7 +17,14 @@ import { resolve } from 'node:path';
 export const config = {
   runner: 'local',
   specs: ['./e2e/specs/**/*.e2e.ts'],
-  exclude: ['./e2e/specs/003-*.e2e.ts'], // RAG 由 e2e-run.sh 按 RUN_E2E 门控
+  // 刻意不设 exclude：spec 选择一律交给 scripts/e2e-run.sh 的 case 门控 + `--spec`。
+  // 两个已踩过的坑，勿回退成 exclude：
+  //   1. WDIO 的 `--spec` 同样会被 exclude 过滤（filterSpecs 做精确路径比对），
+  //      加 exclude 等于让被排除的 spec 永远跑不起来（--rag / RUN_E2E 会静默失效）。
+  //   2. 本 config 的 rootDir 是配置文件所在目录 `e2e/`，所以上面这条 specs（以及
+  //      任何 `./e2e/...` 写法的 exclude）其实都匹配不到文件——启动日志里那句
+  //      `pattern ./e2e/specs/**/*.e2e.ts did not match any file` 即由此而来。
+  //      真正生效的 spec 列表全部来自 e2e-run.sh 传入的绝对路径 `--spec`。
   maxInstances: 1,
   maxInstancesPerCapability: 1,
 
@@ -52,7 +59,9 @@ export const config = {
   framework: 'mocha',
   mochaOpts: {
     ui: 'bdd',
-    timeout: 180000,
+    // 默认 180s；E2E-006 要等一次真实 313MB 模型下载，由 scripts/e2e-run.sh 用
+    // FILEMIND_E2E_MOCHA_TIMEOUT 单独上调（写在 config 里会波及全部 spec）
+    timeout: Number(process.env.FILEMIND_E2E_MOCHA_TIMEOUT ?? 180000),
     // 冒烟保险：应用冷启动（sidecar ~30-40s + 嵌入式驱动）是唯一偶发点，
     // 单个用例失败重跑 1 次，避免 CI 因一次冷启动抖动误报
     retries: 1,

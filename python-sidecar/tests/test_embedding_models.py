@@ -1,7 +1,7 @@
 """T2.6 — core.embedding_models 单元测试。
 
 覆盖：list_model_names 有序稳定；get_model_info/get_model_dim 合法/非法分支；
-注册表三个模型 dim/default_version 与 MAIN DEFAULT_MODEL 对齐。
+注册表模型 dim/default_version/HF 来源/ONNX 权重与 MAIN DEFAULT_MODEL 对齐。
 """
 
 from __future__ import annotations
@@ -17,12 +17,10 @@ from app.core import embedding_models  # noqa: E402
 
 
 def test_list_model_names_sorted_stable() -> None:
-    """返回有序 list：字母序升序，3 个注册表项目已就位。"""
+    """返回有序 list：字母序升序，只保留 bge-large 一项。"""
     names = embedding_models.list_model_names()
     assert names == sorted(names), "必须返回按名字排序后的稳定列表"
-    assert "bge-large-zh-v1.5" in names
-    assert "bge-m3" in names
-    assert "bge-small-zh-v1.5" in names
+    assert names == ["bge-large-zh-v1.5"]
 
 
 def test_default_model_in_registry() -> None:
@@ -31,12 +29,14 @@ def test_default_model_in_registry() -> None:
 
 
 def test_each_model_dim_and_default_version_positive() -> None:
-    """每个注册的模型：dim >= 128（小模型最小 512）、default_version == 1。"""
+    """每个注册的模型：dim >= 128、default_version >= 1、HF 来源与 ONNX 权重齐备。"""
     for name, info in embedding_models.MODEL_REGISTRY.items():
         assert info.name == name, f"{name}: info.name 不与 key 对齐"
         assert info.dim >= 128, f"{name}: dim 过小（当前={info.dim}）"
         assert info.dim in {512, 1024}, f"{name}: dim 应是 512 或 1024（约定）"
         assert info.default_version >= 1
+        assert info.hf_repo, f"{name}: hf_repo 不能为空（模型下载源）"
+        assert info.onnx_file.endswith(".onnx"), f"{name}: onnx_file 应指向 ONNX 权重"
         assert info.description, f"{name}: description 不能为空字符串"
 
 
@@ -44,10 +44,13 @@ def test_get_model_dim_known() -> None:
     """get_model_dim 对已知模型返回正确 dim。"""
     # bge-large-zh-v1.5 = 1024
     assert embedding_models.get_model_dim("bge-large-zh-v1.5") == 1024
-    # bge-m3 = 1024
-    assert embedding_models.get_model_dim("bge-m3") == 1024
-    # bge-small-zh-v1.5 = 512
-    assert embedding_models.get_model_dim("bge-small-zh-v1.5") == 512
+
+
+def test_onnx_source_is_int8_quantized() -> None:
+    """ONNX 权重指向 int8 量化版（体积/内存权衡，见 GO/NO-GO 内存门控修订）。"""
+    info = embedding_models.get_model_info("bge-large-zh-v1.5")
+    assert info.hf_repo == "Xenova/bge-large-zh-v1.5"
+    assert "quantized" in info.onnx_file
 
 
 def test_get_model_info_known_has_name() -> None:

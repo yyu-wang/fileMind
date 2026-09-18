@@ -1,0 +1,103 @@
+/* 设置页嵌入模型列表（原 page-settings.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-settings.css、
+ * page-settings-form.css 之后，page-settings-dialog.css 之前
+ * （原文件的行序即规则优先级）。
+ * 本文件 = 原行 206-301。
+ */
+.settings-embedding-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1-5);
+}
+
+.settings-embedding-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2-5);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+}
+
+.settings-embedding-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-0-5);
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-embedding-current-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  margin-bottom: var(--sp-3);
+}
+
+.settings-embedding-current-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.settings-embedding-current-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  font-family: monospace;
+}
+
+.settings-embedding-current-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-embedding-item--current {
+  border-color: var(--accent2);
+  background: var(--accent-light);
+}
+
+.settings-embedding-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  font-family: monospace;
+}
+
+.settings-embedding-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-embedding-badge {
+  margin-left: auto;
+  padding: var(--sp-0-5) var(--sp-2);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.settings-embedding-badge--ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+}
+
+.settings-embedding-badge--missing {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warn);
+}
+
+.settings-toggle-placeholder {
+  width: 18px;
+  height: 18px;
+  cursor: not-allowed;
+  flex-shrink: 0;
+}

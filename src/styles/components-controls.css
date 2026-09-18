@@ -1,0 +1,146 @@
+/* ========== 通用：表单组 / 条件构造器 / 设置行 / Toggle / Card（对齐交互原型 §规则编辑 §设置） ========== */
+/* 文档 .form-group：label + input/select + .hint，竖向栈 */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.form-group .hint {
+  font-size: 11px;
+  color: var(--muted2);
+}
+
+/* 文档 .condition-builder：边框容器内含多 .condition-row + 添加按钮 */
+.condition-builder {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: var(--bg2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.condition-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.condition-row select,
+.condition-row input {
+  padding: 6px 10px;
+  border: 1px solid var(--rule2);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--ink);
+  outline: none;
+  font-family: var(--font-sans);
+}
+
+.condition-row select:focus,
+.condition-row input:focus {
+  border-color: var(--accent);
+}
+
+.condition-row .condition-row__input {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* 文档 .setting-row：左标签(name + desc) 右控件 */
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.setting-row:last-child {
+  border-bottom: none;
+}
+
+.setting-row .setting-label {
+  flex: 1;
+}
+
+.setting-row .setting-label .name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.setting-row .setting-label .desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.setting-row .setting-control {
+  flex-shrink: 0;
+}
+
+/* 文档 .toggle：纯 div + .on 修饰类（width 40 height 22 圆角 11） */
+.toggle {
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--rule2);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s var(--ease);
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+}
+
+.toggle.on {
+  background: var(--accent);
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s var(--ease-spring);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle.on::after {
+  transform: translateX(18px);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 文档 .card：通用容器（rules-detail / settings 内嵌） */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 16px;
+}

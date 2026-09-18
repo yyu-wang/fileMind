@@ -22,7 +22,9 @@ disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = "app.models"
+# app.models 已拆为包（classify/chat/index/embedding/system）：pydantic.mypy 对
+# BaseModel 字段的 Field(...) 生成显式 Any __init__ 语义，故整包沿用既有 override
+module = ["app.models", "app.models.*"]
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
@@ -31,7 +33,9 @@ module = "app.models.doc_preview"
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
-module = "app.db.lancedb_repo"
+# lancedb_repo 已拆为同名包（types/tables/chunks/search/manager）：pydantic.mypy 对
+# BaseModel 字段生成显式 Any（DocumentChunk 位于 types.py），故整包沿用既有 override
+module = ["app.db.lancedb_repo", "app.db.lancedb_repo.*"]
 disallow_any_explicit = false
 
 [[tool.mypy.overrides]]
@@ -69,6 +73,16 @@ module = "sentence_transformers"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# onnxruntime / tokenizers 均未提供 py.typed（进程内 Embedding 的后端依赖），
+# 动态模块；调用点已用显式断言收敛返回值类型（同 sentence_transformers 处理）
+module = "onnxruntime"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tokenizers"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # openpyxl 未内置 py.typed；仅在 doc_extract 惰性导入，动态模块（同 jieba 处理）
 module = "openpyxl"
 ignore_missing_imports = true
@@ -79,6 +93,13 @@ ignore_missing_imports = true
 module = "app.core.logging"
 warn_return_any = false
 disable_error_code = ["unused-ignore", "return-value"]
+
+[[tool.mypy.overrides]]
+# psutil 无 stubs（types-psutil 未随 requirements-dev 安装）。仅在内置 llama.cpp
+# 引擎的孤儿清理里用于「该 PID 的可执行文件是不是我们的引擎」，且整段包在宽 except
+# 中——取不到信息就保守放弃清理，故丢失类型信息无实际风险（同 jieba 处理）。
+module = "psutil"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

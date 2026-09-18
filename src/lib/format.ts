@@ -1,54 +1,25 @@
-// 格式化工具：文件大小、时间、类型的纯函数。
+// 格式化工具：文件大小、时间、类型与类型图标的纯函数。
 //
 // 设计说明：
 // - formatDateTime 解析 Rust 端 UTC 格式 "YYYY-MM-DD HH:MM:SS"，转为本地时间显示
 // - getFileKind 与后端 file_preview.rs 的扩展名映射保持一致
+// - 扩展名数据表见 lib/fileExtensions.ts（本文件的三个判定函数共用）
+
+import {
+  CODE_EXTENSIONS,
+  IMAGE_MIMES,
+  MUSIC_EXTENSIONS,
+  TEXT_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  ZIP_EXTENSIONS,
+  extensionOf,
+} from './fileExtensions';
 
 export type FileKind = 'text' | 'image' | 'pdf' | 'unsupported';
 
 const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
 
 const RUST_DATETIME_RE = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
-
-const TEXT_EXTENSIONS = new Set([
-  'txt',
-  'md',
-  'log',
-  'json',
-  'yaml',
-  'yml',
-  'csv',
-  'xml',
-  'toml',
-  'ini',
-  'conf',
-  'ts',
-  'tsx',
-  'js',
-  'jsx',
-  'py',
-  'rs',
-  'go',
-  'java',
-  'c',
-  'h',
-  'cpp',
-  'css',
-  'html',
-  'sh',
-  'sql',
-]);
-
-const IMAGE_MIMES: Record<string, string | undefined> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-};
 
 /** 文件大小字节 → 人类可读形式（B 取整，KB/MB/GB 保留 1 位小数）。 */
 export function formatFileSize(bytes: number): string {
@@ -82,7 +53,7 @@ export function formatDateTime(ts: string): string {
 
 /** 按扩展名判定预览类型，映射与后端 file_preview.rs 的 classify_extension 一致。 */
 export function getFileKind(fileName: string): FileKind {
-  const ext = fileName.split('.').pop()?.toLowerCase();
+  const ext = extensionOf(fileName);
   if (!ext) {
     return 'unsupported';
   }
@@ -129,52 +100,45 @@ export interface FileTypeMeta {
   kind: FileTypeKind;
 }
 
-const CODE_EXTENSIONS = new Set([
-  'ts',
-  'tsx',
-  'js',
-  'jsx',
-  'py',
-  'rs',
-  'java',
-  'c',
-  'h',
-  'cpp',
-  'css',
-  'html',
-  'sh',
-  'sql',
-  'go',
-  'json',
-  'yaml',
-  'yml',
-  'toml',
-  'xml',
-  'log',
-]);
+/** 无扩展名时的类型块。 */
+const GENERIC_META: FileTypeMeta = { label: 'FILE', kind: 'file' };
 
-const ZIP_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz']);
-const MUSIC_EXTENSIONS = new Set(['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a']);
-const VIDEO_EXTENSIONS = new Set(['mp4', 'mkv', 'mov', 'avi', 'wmv', 'flv', 'webm', 'm4v']);
+/** 单条图标规则：命中任一扩展名即取该类型块。 */
+interface TypeRule {
+  extensions: ReadonlySet<string>;
+  meta: FileTypeMeta;
+}
 
-/** 按文件名判定类型图标；无扩展名/未知扩展名回退 generic 文件块。 */
+/**
+ * 类型图标规则表，按顺序判定（先命中先返回）。
+ *
+ * 拆成表而非 if 链的原因：原判断链有 12 个分支、8 处 `||`，圈复杂度 22；
+ * 规则表把「扩展名分组」变成数据，函数体只剩查表与兜底。
+ */
+const TYPE_RULES: readonly TypeRule[] = [
+  { extensions: new Set(['pdf']), meta: { label: 'PDF', kind: 'pdf' } },
+  { extensions: new Set(['doc', 'docx']), meta: { label: 'DOC', kind: 'doc' } },
+  { extensions: new Set(['xls', 'xlsx', 'csv', 'tsv']), meta: { label: 'XLS', kind: 'xls' } },
+  { extensions: new Set(['ppt', 'pptx', 'odp']), meta: { label: 'PPT', kind: 'ppt' } },
+  {
+    extensions: new Set([...Object.keys(IMAGE_MIMES), 'heic', 'avif']),
+    meta: { label: 'IMG', kind: 'img' },
+  },
+  { extensions: new Set(['md']), meta: { label: 'MD', kind: 'md' } },
+  { extensions: new Set(['txt']), meta: { label: 'TXT', kind: 'txt' } },
+  { extensions: CODE_EXTENSIONS, meta: { label: '{ }', kind: 'code' } },
+  { extensions: ZIP_EXTENSIONS, meta: { label: 'ZIP', kind: 'zip' } },
+  { extensions: MUSIC_EXTENSIONS, meta: { label: 'AUD', kind: 'music' } },
+  { extensions: VIDEO_EXTENSIONS, meta: { label: 'VID', kind: 'video' } },
+];
+
+/** 按文件名判定类型图标；无扩展名或未知扩展名回退 generic 文件块。 */
 export function getFileTypeMeta(fileName: string): FileTypeMeta {
-  const dot = fileName.lastIndexOf('.');
-  const ext = dot >= 0 ? fileName.slice(dot + 1).toLowerCase() : '';
-  if (!ext) return { label: 'FILE', kind: 'file' };
-  if (ext === 'pdf') return { label: 'PDF', kind: 'pdf' };
-  if (ext === 'doc' || ext === 'docx') return { label: 'DOC', kind: 'doc' };
-  if (ext === 'xls' || ext === 'xlsx' || ext === 'csv' || ext === 'tsv') {
-    return { label: 'XLS', kind: 'xls' };
+  const ext = extensionOf(fileName);
+  if (!ext) {
+    return GENERIC_META;
   }
-  if (ext === 'ppt' || ext === 'pptx' || ext === 'odp') return { label: 'PPT', kind: 'ppt' };
-  if (IMAGE_MIMES[ext] || ext === 'heic' || ext === 'avif') return { label: 'IMG', kind: 'img' };
-  if (ext === 'md') return { label: 'MD', kind: 'md' };
-  if (ext === 'txt') return { label: 'TXT', kind: 'txt' };
-  if (CODE_EXTENSIONS.has(ext)) return { label: '{ }', kind: 'code' };
-  if (ZIP_EXTENSIONS.has(ext)) return { label: 'ZIP', kind: 'zip' };
-  if (MUSIC_EXTENSIONS.has(ext)) return { label: 'AUD', kind: 'music' };
-  if (VIDEO_EXTENSIONS.has(ext)) return { label: 'VID', kind: 'video' };
+  const rule = TYPE_RULES.find((item) => item.extensions.has(ext));
   // 未知扩展名：回退 generic 文件块（显示扩展名前 3 位大写）
-  return { label: ext.slice(0, 3).toUpperCase(), kind: 'file' };
+  return rule ? rule.meta : { label: ext.slice(0, 3).toUpperCase(), kind: 'file' };
 }

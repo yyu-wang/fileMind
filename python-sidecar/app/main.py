@@ -1,16 +1,18 @@
 """FileMind Sidecar 入口：FastAPI 应用 + 生命周期管理。
 
 启动流程：
-1. ``lifespan`` 启动时拉起父进程死亡看门狗（POSIX）——父进程异常消失时自退
-2. ``lifespan`` 启动时从 stdin 读取 PSK（hex 编码），存入 ``app.state`` 模块
-3. HMAC 中间件对每个非豁免路由验签 + 检查序号防重放
-4. 握手路由 ``/handshake`` 完成 Sidecar 身份验证
+1. ``lifespan`` 启动时安装事件循环断连噪声过滤器（客户端探活断连不再刷 traceback）
+2. ``lifespan`` 启动时拉起父进程死亡看门狗（POSIX）——父进程异常消失时自退
+3. ``lifespan`` 启动时从 stdin 读取 PSK（hex 编码），存入 ``app.state`` 模块
+4. HMAC 中间件对每个非豁免路由验签 + 检查序号防重放
+5. 握手路由 ``/handshake`` 完成 Sidecar 身份验证
 
 安全映射：S-01（Sidecar 端口冒充）、T-01（Sidecar 通信篡改）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import threading
@@ -31,15 +33,18 @@ from app.api import (
     routes_index,
     routes_inference,
     routes_metrics,
+    routes_models,
     routes_preview,
     routes_search,
     routes_shutdown,
 )
 from app.core import embedding_models
 from app.core.logging import getLogger
+from app.core.loop_errors import install_client_disconnect_filter
 from app.core.parent_watchdog import watch_parent
 from app.db.lancedb_repo import LanceDBManager
 from app.middleware.hmac_auth import HMACMiddleware
+from app.services.inference_probe_service import probe_ollama
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -52,33 +57,38 @@ os.environ.setdefault("OMP_NUM_THREADS", str(max(1, (os.cpu_count() or 1) - 1)))
 
 logger = getLogger()
 
-# 默认 Embedding 模型：bge-large-zh-v1.5（1024 维，中文场景下语义向量 SOTA）
-# 与 E2 后续任务 T2.6（模型切换流程）的"初始默认表"保持一致
-DEFAULT_EMBEDDING_MODEL = "bge-large-zh-v1.5"
-DEFAULT_EMBEDDING_DIM = 1024
-DEFAULT_EMBEDDING_VERSION = 1
+# 默认 Embedding 模型及其维度/版本全部派生自注册表（唯一事实来源），
+# 避免在 main 里出现第二份硬编码（历史上这里的 version=1 与注册表各写一份）。
+DEFAULT_EMBEDDING_MODEL = embedding_models.DEFAULT_MODEL
+DEFAULT_EMBEDDING_DIM = embedding_models.get_model_dim(DEFAULT_EMBEDDING_MODEL)
+DEFAULT_EMBEDDING_VERSION = embedding_models.get_model_info(DEFAULT_EMBEDDING_MODEL).default_version
 
 # 数据根目录：与 SQLite (~/.filemind/data/filemind.db) 同层
 DATA_HOME = Path(os.environ.get("FILEMIND_DATA_HOME", str(Path.home() / ".filemind")))
 LANCEDB_HOME = DATA_HOME / "data" / "lancedb"
 
+#: 后台任务强引用集合（启动期后台探测等；asyncio 要求调用方持有引用防 GC）
+_background_tasks: set[asyncio.Task[None]] = set()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期钩子。
 
-    startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
-        0. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
-        1. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
-        2. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
+def _install_disconnect_noise_filter() -> None:
+    """步骤 0：安装事件循环断连噪声过滤器（见 ``app.core.loop_errors``）。
 
-    shutdown：当前无特殊清理，Sidecar 由 Rust 端 ``SidecarManager`` kill。
+    Rust 端每秒探活 /health；连接回收时 Windows proactor 循环会把
+    ConnectionResetError（WinError 10054）抛进回调，asyncio 默认处理器打成完整
+    traceback 刷屏（2026-09-15 实机）。这类断连是探活常态，降级为 debug。
     """
-    # --- 步骤 0：父进程死亡看门狗 ----------------------------------------
-    # macOS ⌘Q（AppKit terminate）直接 exit()，Rust 侧收不到任何退出事件，
-    # Sidecar 会被 launchd 收养并继续占用 8765；由 Sidecar 自己识别孤儿身份自退。
-    # 仅 POSIX 启用：Windows 无 reparent 语义（孤儿保留已死父进程的 PID），
-    # 该判定不成立——Windows 依赖窗口关闭路径 + 启动期 cleanup_orphan_sidecar。
+    install_client_disconnect_filter(asyncio.get_running_loop())
+
+
+def _start_parent_watchdog() -> None:
+    """步骤 1：拉起父进程死亡看门狗（仅 POSIX，见 ``app.core.parent_watchdog``）。
+
+    macOS ⌘Q（AppKit terminate）直接 exit()，Rust 侧收不到任何退出事件，
+    Sidecar 会被 launchd 收养并继续占用 8765；由 Sidecar 自己识别孤儿身份自退。
+    仅 POSIX 启用：Windows 无 reparent 语义（孤儿保留已死父进程的 PID），
+    该判定不成立——Windows 依赖窗口关闭路径 + 启动期 cleanup_orphan_sidecar。
+    """
     if sys.platform != "win32":
         threading.Thread(
             target=watch_parent,
@@ -86,12 +96,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             daemon=True,
         ).start()
 
-    # --- 步骤 1：PSK 注入 -------------------------------------------------
+
+def _inject_psk_from_stdin() -> None:
+    """步骤 2：从 stdin 读取 PSK（hex 编码）注入 ``app.state``。
+
+    非 PyInstaller 模式（dev / Rust 直接调 python -m uvicorn），或 PyInstaller
+    模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
+    dev 模式 PSK 保持 None，中间件跳过验签。
+    """
     if (
         os.environ.get("PYINSTALLER_RUNTIME") != "1" or state.get_psk() is None
     ) and not sys.stdin.isatty():
-        # 非 PyInstaller 模式（dev / Rust 直接调 python -m uvicorn），或 PyInstaller
-        # 模式但入口脚本未注入 PSK（fallback）时，stdin PIPE 首行是 PSK hex。
         psk_hex = sys.stdin.readline().strip()
         if psk_hex:
             # SC-m20：hex 非法时不应崩 lifespan，跳过 PSK（dev 模式中间件跳过验签）
@@ -99,10 +114,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 state.set_psk(bytes.fromhex(psk_hex))
             except ValueError:
                 logger.error("main.psk_invalid_hex", psk_len=len(psk_hex))
-    # dev 模式：PSK 保持 None，中间件跳过验签
 
-    # --- 步骤 2：LanceDB 初始化（T2.2 新增） ------------------------------
-    # 异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过
+
+def _init_lancedb() -> None:
+    """步骤 3：LanceDB 初始化（T2.2）。
+
+    异常不阻塞 Sidecar 启动：索引/查询功能降级报错，健康检查仍通过。
+    """
     try:
         mgr = LanceDBManager(LANCEDB_HOME)
         mgr.connect()
@@ -130,12 +148,55 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("lancedb.init_failed", home=str(LANCEDB_HOME), error=str(exc))
         state.set_lancedb(None)
 
+
+def _start_local_backend_probe() -> None:
+    """步骤 4：后台判定「本地生成该用哪个后端」（不阻塞启动）。
+
+    Ollama 缺席时探测要等满超时（3s），放在启动路径上会拖慢每次冷启动；而判定结果
+    只影响后续生成请求，晚几百毫秒无妨。判定与回写逻辑在探测服务内（它是「Ollama
+    是否可用」的唯一事实来源）——未安装 Ollama 的机器据此自动回落到内置引擎。
+    """
+
+    async def _probe() -> None:
+        try:
+            await probe_ollama()
+        except Exception as exc:  # noqa: BLE001 - 探测失败不影响启动（生成阶段另有报错）
+            logger.warning("main.local_backend_probe_failed", error=str(exc))
+
+    task = asyncio.create_task(_probe())
+    # asyncio 文档要求持有任务强引用：否则任务可能在完成前被 GC 掉
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """应用生命周期钩子。
+
+    startup 顺序（按依赖顺序执行，异常不阻塞 Core，但会记录 warning）：
+        0. 安装事件循环断连噪声过滤器——见 ``app.core.loop_errors``
+        1. 拉起父进程死亡看门狗（POSIX）——见 ``app.core.parent_watchdog``
+        2. 读 PSK（stdin 注入 / PyInstaller onefile 入口已注入两种情形）
+        3. 初始化 LanceDB：目录+权限 + 默认模型表 ensure_table
+        4. 后台探测 Ollama 并判定本地生成后端（T3b，不阻塞启动）
+
+    shutdown：取消后台探测任务；其余资源由 Rust 端 ``SidecarManager`` kill 回收。
+    """
+    _install_disconnect_noise_filter()
+    _start_parent_watchdog()
+    _inject_psk_from_stdin()
+    _init_lancedb()
+    _start_local_backend_probe()
+
     yield
+
+    for task in list(_background_tasks):
+        task.cancel()
 
 
 app = FastAPI(
     title="FileMind Sidecar",
-    version="1.0.0-rc.1",
+    version="1.0.0-1",
     description="Python Sidecar for FileMind — classification + RAG + embedding",
     lifespan=lifespan,
 )
@@ -159,4 +220,5 @@ app.include_router(routes_inference.router)
 app.include_router(routes_preview.router)
 app.include_router(routes_chat.router)
 app.include_router(routes_embedding.router)
+app.include_router(routes_models.router)
 app.include_router(routes_search.router)

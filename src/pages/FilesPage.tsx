@@ -1,263 +1,62 @@
 // 文件管理主页：虚拟滚动列表 + 筛选排序 + 预览抽屉（设计稿 05_交互原型 §文件管理）。
 //
 // 结构：main-header(h1 + subtitle + header-actions) → main-content(file-toolbar + file-table)
-// 选中与文件数据走 fileStore；搜索/筛选/排序在 useFilesPageFilters（页面级，不进 store）；
-// 工具栏抽到 components/file/FileToolbar。
+// 页面只做编排：订阅与派生在 useFilesPageData，动作（扫描/选中/预览/删除）在
+// useFilesPageActions，头部与主体各为一个区域组件（components/file/）。
 
-import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { open } from '@tauri-apps/plugin-dialog';
-
-import { FileListTable } from '@/components/file/FileListTable';
-import { FileToolbar } from '@/components/file/FileToolbar';
-import { ScannedDirectoriesPanel } from '@/components/file/ScannedDirectoriesPanel';
-import { LazyFilePreviewDrawer } from '@/components/common/LazyFilePreviewDrawer';
+import { PageErrorBanner } from '@/components/common/PageErrorBanner';
+import { FilesPageBody } from '@/components/file/FilesPageBody';
+import { FilesPageHeader } from '@/components/file/FilesPageHeader';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { useFilesPageFilters } from '@/hooks/useFilesPageFilters';
-import { useHotkeys } from '@/hooks/useHotkeys';
-import { getE2eTestDir } from '@/lib/e2e';
-import { useClassifyStore } from '@/stores/classifyStore';
-import { useFileStore } from '@/stores/fileStore';
-import { useSettingsStore } from '@/stores/settingsStore';
-import type { FileInfo } from '@/types/ipc';
-
-/**
- * 空态文案：区分「从未扫描 / 扫描中 / 列表加载中 / 已索引但列表未取回」四种情况。
- *
- * 此前只看 `files.length === 0` 就说「尚未扫描目录」，会出现「状态栏 47 文件 +
- * 已扫描目录 1 个」与主区「尚未扫描目录」同时成立的语义矛盾。
- */
-function emptyStateCopy(args: {
-  isScanning: boolean;
-  isLoadingList: boolean;
-  hasScanPath: boolean;
-  totalFiles: number;
-}): { title: string; sub: string | null } {
-  if (args.isScanning) {
-    return { title: args.isLoadingList ? '正在加载文件列表…' : '正在扫描…', sub: null };
-  }
-  if (args.hasScanPath) {
-    return { title: '当前目录暂无文件', sub: '点击「扫描目录」重新扫描' };
-  }
-  if (args.totalFiles > 0) {
-    // 兜底出口：正常路径下自动加载即可填满列表，这里只服务「自动加载失败」的情况
-    return { title: '文件列表尚未加载', sub: `已索引 ${args.totalFiles} 个文件，点击「刷新」加载` };
-  }
-  return { title: '尚未扫描目录', sub: '点击「扫描目录」选择要管理的文件夹' };
-}
+import { useFilesPageActions } from '@/hooks/useFilesPageActions';
+import { useFilesPageData } from '@/hooks/useFilesPageData';
 
 export function FilesPage() {
-  const files = useFileStore((s) => s.files);
-  // 已索引文件总数（stats 来源）：用于判断是否需要挂载兜底补拉列表
-  const totalFiles = useFileStore((s) => s.total);
-  const scanPath = useFileStore((s) => s.scanPath);
-  const isScanning = useFileStore((s) => s.isScanning);
-  // 区分「扫描目录」与「加载列表」——两者共用 isScanning 防抖，空态文案需要分辨
-  const isLoadingList = useFileStore((s) => s.isLoadingList);
-  const selectedIds = useFileStore((s) => s.selectedIds);
-  const error = useFileStore((s) => s.error);
-  const scanFiles = useFileStore((s) => s.scanFiles);
-  const loadAllFiles = useFileStore((s) => s.loadAllFiles);
-  const toggleSelect = useFileStore((s) => s.toggleSelect);
-  const setSelection = useFileStore((s) => s.setSelection);
-  const clearSelection = useFileStore((s) => s.clearSelection);
-  const clearError = useFileStore((s) => s.clearError);
-  const deleteFiles = useFileStore((s) => s.deleteFiles);
-  const dataDirectory = useSettingsStore((s) => s.dataDirectory);
-  const navigate = useNavigate();
-
-  const filters = useFilesPageFilters(files);
-  const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
-  const [pendingDelete, setPendingDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  // 挂载兜底加载：启动时只取了 stats（main.tsx）与已扫描目录（面板自身 effect），
-  // 文件列表却要等用户点「刷新」——于是「状态栏 47 文件 + 已扫描目录 1 个」会和主区
-  // 「尚未扫描目录」同时出现。这里在确有已索引文件时补拉一次全量列表
-  // （list_all_files 明确为虚拟滚动表「一次取回全部」而设计，表侧也是虚拟滚动）。
-  // 门闩防重入：loadAllFiles 会翻转 isScanning，不锁会让 effect 反复触发
-  // （ChatPage 同款门闩，真实翻车表现是 IPC 刷屏 + 页面反复重渲染）。
-  const bootstrappedRef = useRef(false);
-  useEffect(() => {
-    if (bootstrappedRef.current || isScanning || files.length > 0) return;
-    if (totalFiles === 0) return;
-    bootstrappedRef.current = true;
-    void loadAllFiles().catch(() => {
-      // 兜底：loadAllFiles 内部已吞掉 IPC 失败（写 store.error 横幅）并通过「刷新」
-      // 提供重试入口；这里只防意外抛出把门闩锁死
-      bootstrappedRef.current = false;
-    });
-  }, [totalFiles, isScanning, files.length, loadAllFiles]);
-
-  // T6.10 快捷键：Space 预览选中的第一个文件（无修饰键，输入框内自动跳过）
-  useHotkeys([
-    {
-      key: ' ',
-      handler: () => {
-        // FE-M8：find 内逐个 includes 是 O(N×M)，Set 化后整体 O(N+M)
-        const selectedSet = new Set(selectedIds);
-        const first = files.find((f) => selectedSet.has(f.id));
-        if (first) setPreviewFile(first);
-      },
-    },
-  ]);
-
-  // T9.5 E2E：测试目录存在时跳过原生对话框（原生 open() 无法被 WebDriver 点击）。
-  const handleScan = async () => {
-    const testDir = await getE2eTestDir();
-    if (testDir) {
-      await scanFiles(testDir);
-      return;
-    }
-    const dialogOptions: Parameters<typeof open>[0] = {
-      directory: true,
-      multiple: false,
-      title: '选择要管理的目录',
-    };
-    if (dataDirectory) {
-      dialogOptions.defaultPath = dataDirectory;
-    }
-    const selected = await open(dialogOptions);
-    if (typeof selected === 'string') {
-      await scanFiles(selected);
-    }
-  };
-
-  const handleSelectAll = (ids: string[] | null) => {
-    if (ids === null) {
-      clearSelection();
-    } else {
-      setSelection(ids);
-    }
-  };
-
-  const handleClearSelection = () => {
-    clearSelection();
-    // 清除选中语义上等价于放弃"这批待分类文件"，同步作废分类页的旧预览缓存，
-    // 否则用户返回分类页会看到上一批 12k+ 文件的旧预览树，误以为选中还残留。
-    useClassifyStore.getState().reset();
-  };
-
-  const handleClassifySelected = () => {
-    useClassifyStore.getState().reset();
-    navigate('/classify');
-  };
-
-  /** 列表为空时的空态文案（非空时为 null，直接渲染表格） */
-  const emptyCopy =
-    files.length === 0
-      ? emptyStateCopy({
-          isScanning,
-          isLoadingList,
-          hasScanPath: scanPath !== null,
-          totalFiles,
-        })
-      : null;
-
-  /** 确认删除：调用 store 移入系统回收站，结束后清空整批选中（错误经 store.error 提示）。 */
-  const handleConfirmDelete = async () => {
-    setDeleting(true);
-    try {
-      await deleteFiles(selectedIds);
-    } catch {
-      // 全量失败：错误已写入 store.error（顶部横幅展示）
-    } finally {
-      clearSelection();
-      setDeleting(false);
-      setPendingDelete(false);
-    }
-  };
+  const data = useFilesPageData();
+  const actions = useFilesPageActions();
 
   return (
     <div className="page files-page">
-      <header className="main-header">
-        <h1>文件管理</h1>
-        {scanPath && (
-          <span className="subtitle" title={scanPath}>
-            {scanPath}
-          </span>
-        )}
-        <div className="header-actions">
-          {/* FE-C4：刷新也进 isScanning 态（store），狂点被防抖 */}
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => void loadAllFiles()}
-            disabled={isScanning}
-          >
-            刷新
-          </button>
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            data-testid="files-scan"
-            onClick={() => void handleScan()}
-            disabled={isScanning}
-          >
-            {isScanning ? '扫描中…' : '扫描目录'}
-          </button>
-        </div>
-      </header>
+      <FilesPageHeader
+        scanPath={data.scanPath}
+        isScanning={data.isScanning}
+        onRefresh={actions.refresh}
+        onScan={actions.scan}
+      />
+      <PageErrorBanner
+        message={data.error}
+        className="files-page__error"
+        dismissClassName="files-page__error-dismiss"
+        onDismiss={actions.clearError}
+      />
+      <FilesPageBody
+        list={{
+          filters: data.filters,
+          selectedIds: data.selectedIds,
+          emptyCopy: data.emptyCopy,
+          previewFile: actions.previewFile,
+        }}
+        actions={{
+          onRefresh: actions.refresh,
+          onToggleSelect: actions.toggleSelect,
+          onSelectAll: actions.selectAll,
+          onOpenPreview: actions.openPreview,
+          onClosePreview: actions.closePreview,
+          onClassifySelected: actions.classifySelected,
+          onClearSelection: actions.clearSelection,
+          onRequestDelete: actions.requestDelete,
+        }}
+      />
 
-      {error && (
-        <div className="files-page__error" role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            className="files-page__error-dismiss"
-            aria-label="关闭错误提示"
-            onClick={clearError}
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      {/* 文件页主体：虚拟滚动自带滚动容器，不用 main-content 的 overflow */}
-      <div className="files-page__body">
-        <ScannedDirectoriesPanel onRemoved={() => void loadAllFiles()} />
-        <FileToolbar
-          selectedCount={selectedIds.length}
-          filters={filters}
-          onClassifySelected={handleClassifySelected}
-          onClearSelection={handleClearSelection}
-          onRequestDelete={() => setPendingDelete(true)}
-        />
-
-        {emptyCopy !== null ? (
-          <div className="files-page__empty">
-            <p className="files-page__empty-title">{emptyCopy.title}</p>
-            {emptyCopy.sub !== null && <p className="files-page__empty-sub">{emptyCopy.sub}</p>}
-          </div>
-        ) : (
-          <div className="files-page__table">
-            <FileListTable
-              files={filters.visibleFiles}
-              selectedIds={selectedIds}
-              onToggleSelect={toggleSelect}
-              onSelectAll={handleSelectAll}
-              onOpenPreview={setPreviewFile}
-              sort={filters.sort}
-              onSortChange={filters.toggleSort}
-            />
-          </div>
-        )}
-        <LazyFilePreviewDrawer
-          key={previewFile?.id}
-          file={previewFile}
-          onClose={() => setPreviewFile(null)}
-        />
-      </div>
-
-      {pendingDelete && (
+      {actions.pendingDelete && (
         <ConfirmDialog
           title="删除选中文件"
-          message={`将把选中的 ${selectedIds.length} 个文件移入系统回收站（可在系统回收站恢复）；应用内不提供撤销。`}
+          message={`将把选中的 ${data.selectedIds.length} 个文件移入系统回收站（可在系统回收站恢复）；应用内不提供撤销。`}
           confirmLabel="移入回收站"
           danger
-          loading={deleting}
-          onConfirm={() => void handleConfirmDelete()}
-          onCancel={() => setPendingDelete(false)}
+          loading={actions.deleting}
+          onConfirm={actions.confirmDelete}
+          onCancel={actions.cancelDelete}
         />
       )}
     </div>

@@ -8,6 +8,7 @@
 - 错误签名 → 401
 - seq 重放或乱序（seq <= last_seq）→ 401
 - seq 格式无效（非数字）→ 401
+- 带查询串的 GET：按「path?query」签名放行；只签 path 则 401（查询串纳入验签）
 - /health、/docs、/openapi.json 豁免 → 无签名头也放行
 - dev 模式（PSK 未设置）所有路由跳过验签
 
@@ -57,13 +58,26 @@ def client() -> TestClient:
 
 
 def _signed_get(
-    client: TestClient, path: str, seq: int, psk: bytes = _TEST_PSK
+    client: TestClient,
+    path: str,
+    seq: int,
+    psk: bytes = _TEST_PSK,
+    request_path: str | None = None,
 ) -> _testclient_httpx.Response:
-    """携带正确签名 + seq 访问 GET 路由。"""
+    """携带正确签名 + seq 访问 GET 路由。
+
+    Args:
+        client: 测试客户端。
+        path: 参与签名的路径（含查询串）。
+        seq: 请求序号。
+        psk: 签名密钥。
+        request_path: 实际请求的路径；与 ``path`` 不同可用于构造「签名未覆盖
+            查询串」的场景（默认与 ``path`` 相同）。
+    """
     canonical = _build_canonical("GET", path, "", seq)
     signature = _sign(psk, canonical)
     return client.get(
-        path,
+        request_path if request_path is not None else path,
         headers={"X-Signature": signature, "X-Request-Seq": str(seq)},
     )
 
@@ -72,6 +86,23 @@ def test_middleware_verify_pass(client: TestClient) -> None:
     """正确签名 + 递增 seq → 中间件放行（下游返回 404 证明到达路由层）。"""
     response = _signed_get(client, "/nonexistent", seq=1)
     assert response.status_code == 404  # 中间件放行后路由未匹配
+
+
+def test_middleware_signature_covers_query_string(client: TestClient) -> None:
+    """带查询串的 GET：按「path?query」签名（Rust proxy 的口径）→ 放行。
+
+    回归：``request.url.path`` 不含查询串，早先拿它验签导致
+    ``/models/download/status?model_name=...`` 恒 401，前端进度永远 0。
+    """
+    response = _signed_get(client, "/nonexistent?model_name=bge-large-zh-v1.5", seq=1)
+    assert response.status_code == 404
+
+
+def test_middleware_query_string_not_covered_by_signature(client: TestClient) -> None:
+    """只签裸 path、却带上查询串 → 401（查询串必须纳入验签，防篡改）。"""
+    response = _signed_get(client, "/nonexistent", seq=1, request_path="/nonexistent?a=1")
+    assert response.status_code == 401
+    assert "SEC-E-002" in response.json()["detail"]
 
 
 def test_middleware_missing_signature(client: TestClient) -> None:

@@ -1,0 +1,92 @@
+/* 抽屉内文件路径树（原 page-files-preview.css 拆出）
+ *
+ * 级联顺序依赖：本文件在 index.css 中必须排在 page-files-preview.css、
+ * page-files-preview-content.css 之后（原文件的行序即规则优先级）。
+ * 本文件 = 原行 288-371。
+ */
+/* ========== 文件路径树（预览抽屉内） ========== */
+.file-path-tree {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.file-path-tree__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.file-path-tree__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.file-path-tree__node {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink);
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.12s;
+}
+
+.file-path-tree__node.is-dir {
+  color: var(--ink);
+}
+
+.file-path-tree__node.is-leaf.is-target {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.file-path-tree__prefix {
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  white-space: pre;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.file-path-tree__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.file-path-tree__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.file-path-tree__name.is-target {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.file-path-tree__badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* base.css 亦定义同名工具类，此处靠「更靠后的 import 位置」覆盖，
+   故必须紧跟前两个预览文件之后，不可前移 */
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}

@@ -1,0 +1,74 @@
+/* 文件类型图标（对齐交互原型彩色块）
+ *
+ * 原 styles/files-table.css 拆出（该文件逼近 CSS 警告阈值 200）。被 FileRow 用于
+ * 类型列；渐变按扩展名分组（设计稿 05_交互原型 §文件类型图标）。
+ *
+ * 级联顺序依赖：index.css 中需排在 tags.css 之前、files-table.css 之后
+ * （与拆分前在原文件内的相对位置一致，选择器互不重叠）。
+ */
+
+.file-type-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+}
+
+/* 渐变背景（设计稿 05_交互原型 §文件类型图标） */
+.file-type-icon.pdf,
+.file-type-icon--pdf {
+  background: linear-gradient(135deg, #e53e3e, #c53030);
+}
+.file-type-icon.doc,
+.file-type-icon--doc {
+  background: linear-gradient(135deg, #3182ce, #2b6cb0);
+}
+.file-type-icon.img,
+.file-type-icon--img {
+  background: linear-gradient(135deg, #38a169, #2f855a);
+}
+.file-type-icon.code,
+.file-type-icon--code {
+  background: linear-gradient(135deg, #805ad5, #6b46c1);
+}
+.file-type-icon.xls,
+.file-type-icon--xls {
+  background: linear-gradient(135deg, #2f855a, #276749);
+}
+.file-type-icon.md,
+.file-type-icon--md {
+  background: linear-gradient(135deg, #718096, #4a5568);
+}
+.file-type-icon.ppt,
+.file-type-icon--ppt {
+  background: linear-gradient(135deg, #dd6b20, #c05621);
+}
+.file-type-icon.txt,
+.file-type-icon--txt {
+  background: linear-gradient(135deg, #a0aec0, #718096);
+}
+.file-type-icon.zip,
+.file-type-icon--zip {
+  background: linear-gradient(135deg, #d69e2e, #b7791f);
+}
+.file-type-icon.music,
+.file-type-icon--music {
+  background: linear-gradient(135deg, #ed64a6, #d53f8c);
+}
+.file-type-icon.video,
+.file-type-icon--video {
+  background: linear-gradient(135deg, #9f7aea, #6b46c1);
+}
+.file-type-icon.file,
+.file-type-icon.other,
+.file-type-icon--file {
+  background: linear-gradient(135deg, #a0aec0, #718096);
+}
