@@ -5,7 +5,8 @@
   * PASS / FAIL：启动（1）、握手（2）、IPC（3）、健康检查（4）、内存 <2048MB（7）
   * SKIP：崩溃重启（5，需 Tauri app + watchdog 线程）、三平台（6，需 T1.2+T1.3 产物）
 
-启动项含 P3-3 耗时门禁：打包态「spawn → /health 首次 200」≤ STARTUP_BUDGET_MS（热盘口径）。
+启动项含 P3-3 耗时门禁：打包态「spawn → /health 首次 200」须在平台分档预算内（热盘口径，
+macOS 2000ms / Windows 5000ms，见 `_startup_budget_ms`）。
 
 用法：
   ``python3 scripts/go-no-go.py --all``      跑全部 7 项
@@ -58,12 +59,26 @@ DEMO_BIN_DIR: Path = ROOT_DIR / "filemind" / "binaries"
 SIDECAR_PORT: int = 8765
 SIDECAR_BASE: str = f"http://127.0.0.1:{SIDECAR_PORT}"
 
-# P3-3 启动耗时门禁（毫秒）：「进程 spawn → /health 首次 200」整段耗时的预算。
-# 依据 docs/packaging-implementation-plan.md「P3」小节实测（打包态 1133 / 1237ms）留约 60% 余量。
-# ⚠️ 只对**热盘**成立：安装后首启需冷读 ~1.4GB 产物（P2-2 记录约 15s），那条留在发布前人工检查，
-#    不进自动门禁（15s 也顶穿打包态 15s 启动超时窗口，自动化里无法稳定区分冷/热）。
-# ⚠️ 只判**打包态**：dev 模式（python -m uvicorn）实测 1.4~3.2s，不代表用户路径，只报数不判定。
-STARTUP_BUDGET_MS: int = 2000
+# P3-3 启动耗时门禁（毫秒）：「进程 spawn → /health 首次 200」整段耗时的预算，**按平台分档**。
+# 依据 docs/packaging-implementation-plan.md「P3」小节实测（均为热盘口径）：
+#   - macOS arm64：1129 / 1133 / 1237ms → 2000ms（约 60% 余量）
+#   - Windows x64（CI runner）：3578ms（冷盘首次 3687ms，重试几乎无改善——瓶颈是 Windows
+#     进程拉起 + Python 导入，不是页缓存）→ 5000ms（约 40% 余量）
+# 拆档由来：2026-09-19 merge-build 首次跑本门禁，macOS 通过、Windows 被 2000ms 挡下
+# （FAIL 3578ms > 2000ms）。故 macOS 保持紧信号，Windows 用宽档，两者都仍能挡住
+# onefile 级别（稳态 ~15.7s）的回归。
+# ⚠️ 只对**热盘**成立：安装后首启需冷读 ~1.4GB 产物（P2-2 记录约 15s），那条留在发布前人工检查；
+#    脚本内已有「首次超预算 → 重启一次取热盘值」的冷盘容错。
+# ⚠️ 只判**打包态**：dev 模式（python -m uvicorn）实测 1.2~3.2s，不代表用户路径，只报数不判定。
+STARTUP_BUDGET_MS_BY_PLATFORM: dict[str, int] = {"darwin": 2000, "win32": 5000}
+#: 未列出平台（如 Linux）的回落值——Linux 当前不分发打包态 Sidecar，取宽档即可。
+STARTUP_BUDGET_MS_FALLBACK: int = 5000
+
+
+def _startup_budget_ms() -> int:
+    """当前平台的启动耗时预算（P3-3，热盘口径，毫秒）。"""
+    return STARTUP_BUDGET_MS_BY_PLATFORM.get(sys.platform, STARTUP_BUDGET_MS_FALLBACK)
+
 
 # 7 项定义（顺序与 10_开发任务拆解与排期 第 380 行一致）
 TEST_ITEMS: list[tuple[int, str, str]] = [
@@ -71,7 +86,7 @@ TEST_ITEMS: list[tuple[int, str, str]] = [
         1,
         "启动",
         "拉起 dev uvicorn 或 onedir Sidecar，/health 在 10~15s 内返回 200（打包态放宽）；"
-        + f"打包态整段启动耗时 ≤{STARTUP_BUDGET_MS}ms（P3-3，热盘口径）",
+        + f"打包态整段启动耗时 ≤{_startup_budget_ms()}ms（P3-3，热盘口径，平台分档）",
     ),
     (2, "握手", "POST /handshake 带 nonce + HMAC-SHA256，双向 proof 验证通过"),
     (3, "IPC", "POST /shutdown 带签名 → 200 shutting_down，进程在 3s 内自退并释放端口"),
@@ -382,13 +397,14 @@ def run_t1_start() -> TestResult:
     # P3-3 冷盘容错：打包态首次启动可能需冷读 ~1.4GB 产物（P2-2 记录约 15s，本机实测同样顶穿
     # 打包态 15s 超时窗口），会误报成启动回归。超预算就重启一次——产物此时已进页缓存，
     # 第二次量的才是门禁口径（热盘）；冷盘值如实记进 detail，便于看趋势。
+    budget = _startup_budget_ms()
     cold_ms: float | None = None
     if (
         resp is not None
         and resp.status_code == 200
         and mode == "打包二进制"
         and startup_ms is not None
-        and startup_ms > STARTUP_BUDGET_MS
+        and startup_ms > budget
     ):
         cold_ms = startup_ms
         sc.stop()
@@ -405,22 +421,22 @@ def run_t1_start() -> TestResult:
         fallback = "（打包态构建漂移→回退 dev stdin-PIPE 模式验证；与 Rust manager 真实路径等价）" \
             if mode == "dev stdin-PIPE" and ACTIVE_BINARY is not None else ""
         detail = f"/health 200 [{mode}]（{resp.elapsed.total_seconds()*1000:.0f}ms 达到）{fallback}"
-        # P3-3 门禁：只判打包态（热盘口径），dev 模式只报数——见 STARTUP_BUDGET_MS 注释
+        # P3-3 门禁：只判打包态（热盘口径，预算按平台分档），dev 模式只报数
         if mode == "打包二进制" and startup_ms is not None:
             cold_note = f"冷盘首次 {cold_ms:.0f}ms → " if cold_ms is not None else ""
             detail += (
                 f"；{cold_note}整段启动耗时 {startup_ms:.0f}ms"
-                f"（预算 {STARTUP_BUDGET_MS}ms，热盘口径）"
+                f"（预算 {budget}ms，热盘口径）"
             )
-            if startup_ms > STARTUP_BUDGET_MS:
+            if startup_ms > budget:
                 return TestResult(
                     1,
                     "启动",
                     "FAIL",
-                    f"打包态热盘启动耗时 {startup_ms:.0f}ms 超出预算 {STARTUP_BUDGET_MS}ms"
+                    f"打包态热盘启动耗时 {startup_ms:.0f}ms 超出预算 {budget}ms"
                     + (f"（冷盘首次 {cold_ms:.0f}ms）" if cold_ms is not None else ""),
                     time.time() - t0,
-                    {"startup_ms": round(startup_ms), "budget_ms": STARTUP_BUDGET_MS},
+                    {"startup_ms": round(startup_ms), "budget_ms": budget},
                 )
         return TestResult(1, "启动", "PASS", detail, time.time() - t0)
     return TestResult(1, "启动", "FAIL", f"/health 返回 {resp.status_code} [{mode}]", time.time() - t0,

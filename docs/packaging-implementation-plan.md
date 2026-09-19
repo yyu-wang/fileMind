@@ -333,15 +333,19 @@
     grep sidecar.startup_ms /tmp/p3-home/logs/filemind.log
     ```
 
-- **P3-3 门禁已落地**（`scripts/go-no-go.py`）：T1（启动）新增 `STARTUP_BUDGET_MS = 2000` 断言，
-  量「spawn → `/health` 首次 200」整段耗时；**只判打包态**（dev 实测 1.2~3.2s，不代表用户路径，
-  只报数）。CI 不需要新步骤——merge-build 的 `Smoke check Sidecar runtime (/health)` 本来就是
+- **P3-3 门禁已落地**（`scripts/go-no-go.py`）：T1（启动）新增**平台分档**预算断言
+  （`STARTUP_BUDGET_MS_BY_PLATFORM`：macOS 2000ms / Windows 5000ms），量「spawn →
+  `/health` 首次 200」整段耗时；**只判打包态**（dev 实测 1.2~3.2s，不代表用户路径，只报数）。
+  CI 不需要新步骤——merge-build 的 `Smoke check Sidecar runtime (/health)` 本来就是
   `go-no-go.py --test 1 --binary <bundle 内 sidecar 目录>`（见 `.github/workflows/merge-build.yml`）。
-  - **冷盘容错**：首次启动若超预算（冷读 ~1.4GB 产物，实测 >15s），脚本**重启一次**并用第二次
-    （热盘）数字判定，冷盘值记进 detail。即「判热盘、观测冷盘」，否则 CI 首次运行会因页缓存冷而假失败。
-  - 本机实测：`python3 scripts/go-no-go.py --test 1 --binary filemind/binaries/filemind-sidecar-aarch64-apple-darwin`
-    → `[T1 启动] PASS — /health 200 [打包二进制]（3ms 达到）；整段启动耗时 1129ms（预算 2000ms，热盘口径）`
-    （与 Rust 侧埋点 1133ms 同量级，两条独立链路互证）。
+  - **为什么按平台分档**（2026-09-19 merge-build 实测）：首版用单一 2000ms，macOS 通过
+    （1129ms），**Windows 失败**：`FAIL — 打包态热盘启动耗时 3578ms 超出预算 2000ms
+（冷盘首次 3687ms）`。Windows 的瓶颈是进程拉起（无 fork + Defender 扫可执行）与 Python
+    导入，不是页缓存——重试几乎不改善，且该阈值本按 macOS 标定。故拆档：macOS 保持紧信号，
+    Windows 放宽到 5000ms（约 40% 余量，仍能挡住 onefile 级别 ~15.7s 的回归）。
+  - **冷盘容错**：首次超预算则重启一次、用第二次（热盘）数字判定，冷盘值记进 detail。
+    实机复现（本机页缓存冷却后跑 T1）：
+    `PASS — 冷盘首次 4671ms → 整段启动耗时 1218ms（预算 2000ms，热盘口径）`。
   - 冷启口径仍留人工发布前检查（`purge` / 重启或真机新装后量），不进自动门禁。
 
 ---
