@@ -148,3 +148,29 @@ fn test_resolve_bundle_missing_reports_candidates() {
         other => panic!("候选均不存在时应返回 SidecarUnavailable，实际: {other:?}"),
     }
 }
+
+/// P3-1：启动失败必须清掉上次成功留下的耗时记录。
+///
+/// 语义契约：`last_startup()` 返回 `Some` 就代表「本次启动成功」。若失败路径上残留
+/// 上一次的数字，后续据它做的基线比对/门禁会把失败读成一次「极快的启动」。
+/// 用例以「预设一次成功记录 + 再跑一次必然失败的启动」验证清理，不依赖真实 Sidecar
+/// 进程（不存在的二进制在 spawn 阶段即失败，走 `?` 早退路径）。
+#[tokio::test]
+async fn test_failed_start_clears_stale_startup_timings() {
+    let mut m = SidecarManager::new(PathBuf::from(
+        "/does/not/exist/filemind-sidecar-startup-timings",
+    ));
+    let preset = StartupTimings {
+        spawn: std::time::Duration::from_millis(11),
+        ready: std::time::Duration::from_millis(22),
+        handshake: std::time::Duration::from_millis(33),
+        total: std::time::Duration::from_millis(66),
+    };
+    m.set_last_startup_for_test(preset);
+    assert_eq!(m.last_startup(), Some(preset), "预设值应可读回");
+
+    let started = m.start_with_handshake().await;
+
+    assert!(started.is_err(), "不存在的二进制应启动失败");
+    assert_eq!(m.last_startup(), None, "启动失败后不得残留耗时记录");
+}

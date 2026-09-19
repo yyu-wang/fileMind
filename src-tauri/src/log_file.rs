@@ -17,6 +17,14 @@ use std::path::{Path, PathBuf};
 /// 单文件上限（字节）：启动时超过该值先把现行日志轮转为 `.1`。
 pub const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
+/// 默认放行到 `info` 的日志 target：Sidecar 启动链路（`manager::start`）。
+///
+/// P3-3：`sidecar.startup_ms` 启动耗时埋点（见 `sidecar/manager/start.rs`）是 `info` 级，
+/// 而全局默认级别是 `warn`；打包版由 GUI 双击启动、stderr 无处可看，若不放行则生产日志里
+/// 拿不到这个数字（只能靠 `RUST_LOG=info` 重启才能取数）。故按 target 放行该模块——
+/// 顺带让「准备启动 Sidecar / 握手成功」这两条启动排障关键日志默认落盘。
+const STARTUP_LOG_TARGET: &str = "filemind_lib::sidecar::manager::start";
+
 /// 轮转备份扩展名：`filemind.log` → `filemind.log.1`。
 const ROTATED_EXT: &str = "log.1";
 
@@ -37,6 +45,8 @@ pub fn data_home() -> Option<PathBuf> {
 /// - formatter 走 `log_redact` 单一出口脱敏（安全 I-03），文件里落的是同一份已脱敏文本；
 /// - 默认 `warn`：watchdog 的「需要重启 / 重启失败 / CrashLoop」全在此级别以上，
 ///   避免默认 `error` 级把关键事件漏掉；`RUST_LOG` 存在时由 `parse_default_env` 覆盖；
+/// - 例外：Sidecar 启动链路（[`STARTUP_LOG_TARGET`]）默认放行到 `info`，让
+///   `sidecar.startup_ms` 埋点与启动排障日志无需 `RUST_LOG` 即可见（P3-3）；
 /// - 文件不可写时降级为只写 stderr，并（logger 就绪后）打一条告警。
 pub fn init_logger() {
     let (writer, warning) = build_writer();
@@ -46,6 +56,8 @@ pub fn init_logger() {
             writeln!(buf, "[{} {}] {}", record.level(), record.target(), message)
         })
         .filter_level(log::LevelFilter::Warn)
+        // 放在 parse_default_env 之前：显式 `RUST_LOG` 仍优先于本默认放行（同一 target 后写覆盖）
+        .filter_module(STARTUP_LOG_TARGET, log::LevelFilter::Info)
         .parse_default_env()
         .target(env_logger::Target::Pipe(writer))
         .init();

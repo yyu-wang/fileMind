@@ -30,7 +30,7 @@
 use std::collections::VecDeque;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod orphan_cleanup;
 mod paths;
@@ -123,6 +123,24 @@ pub struct LocalLlmSidecarEnv {
     pub model: String,
 }
 
+/// 最近一次**成功**启动的分阶段耗时（P3-1 启动性能埋点）。
+///
+/// 三段与 [`SidecarManager::start_with_handshake`] 的串行步骤一一对应，各段独立测量，
+/// 段间存在微小间隙，故不保证 `total == spawn + ready + handshake`。
+/// 对齐 `rules/observability.md` 的 `sidecar.startup_ms` 指标（采集点为 `SidecarManager`）：
+/// 该指标以结构化日志字段输出，全仓尚无指标聚合后端，故不另建导出通道。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupTimings {
+    /// 进程拉起阶段：PSK 生成 + `Command::spawn` + stdin 注入 PSK。
+    pub spawn: Duration,
+    /// 就绪阶段：spawn 返回 → `/health` 首次返回成功（打包态冷启动的主要耗时）。
+    pub ready: Duration,
+    /// 握手阶段：nonce 生成 + `POST /handshake` + proof 校验。
+    pub handshake: Duration,
+    /// 总耗时：进入 `start_with_handshake` → 握手成功。
+    pub total: Duration,
+}
+
 /// Sidecar 进程管理器：持有子进程句柄，析构时自动停止。
 pub struct SidecarManager {
     /// Sidecar 二进制绝对路径，由调用方在构造时显式注入。
@@ -152,6 +170,8 @@ pub struct SidecarManager {
     /// 是否已执行过真实停止动作：`stop_graceful` 首次 `set`，
     /// `Drop` 中检查为 `true` 则跳过，避免 `on_exit` 主路径 + `Drop` 重复 `kill`。
     stopped: AtomicBool,
+    /// 最近一次**成功**启动的分阶段耗时（P3-1）；未启动或上次失败时为 `None`。
+    last_startup: Option<StartupTimings>,
 }
 
 impl SidecarManager {
@@ -173,6 +193,7 @@ impl SidecarManager {
             consecutive_failures: 0,
             recent_health_fails: 0,
             stopped: AtomicBool::new(false),
+            last_startup: None,
         }
     }
 
@@ -231,6 +252,18 @@ impl SidecarManager {
     #[must_use]
     pub const fn local_llm_env(&self) -> Option<&LocalLlmSidecarEnv> {
         self.local_llm_env.as_ref()
+    }
+
+    /// 最近一次成功启动的分阶段耗时（P3-1）；未启动或上次启动失败时为 `None`。
+    #[must_use]
+    pub const fn last_startup(&self) -> Option<StartupTimings> {
+        self.last_startup
+    }
+
+    /// 测试场景：预置一条「上次成功启动」的耗时记录，用于验证失败路径会清理陈旧值。
+    #[cfg(test)]
+    pub(crate) const fn set_last_startup_for_test(&mut self, timings: StartupTimings) {
+        self.last_startup = Some(timings);
     }
 }
 
