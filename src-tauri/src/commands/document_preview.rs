@@ -6,7 +6,7 @@
 //!
 //! ⚠️ `#[tauri::command] read_document_preview` 仍留在 `file_preview.rs`：宏生成的隐藏辅助项
 //! （`__cmd__*` / `__specta__fn__*`）只存在于命令定义所在模块（同 `commands/file_ops` 的说明），
-//! 故 `ipc_handler.rs` / `bin/export_specta.rs` 的注册路径保持
+//! 故 `ipc_handler.rs` / `examples/export_specta.rs` 的注册路径保持
 //! `commands::file_preview::read_document_preview` 不变。
 
 use std::sync::atomic::Ordering;

@@ -14,7 +14,7 @@
 //!   - `index_sync`  向量索引 best-effort 同步
 //!
 //! 路径变化：命令注册需用子模块全路径（如 `file_ops::scan::scan_directory`，原因见下方
-//! 再导出处的说明），`main.rs` 与 `bin/export_specta` 已同步；类型与工具函数
+//! 再导出处的说明），`main.rs` 与 `examples/export_specta.rs` 已同步；类型与工具函数
 //! （`OperationType` / `PlanItem` / `scan_and_persist` 等）仍在 `file_ops` 根上再导出，
 //! 故 `services::operation_executor` 与 `tests/scan_perf` 无需改动。
 
@@ -31,7 +31,7 @@ pub mod undo;
 // 注意：**命令无法靠再导出给宏用**。`#[tauri::command]` / `#[specta::specta]` 生成的
 // 隐藏辅助项（`__cmd__*` / `__specta__fn__*`）只存在于命令定义所在模块，宏是按「给定
 // 路径的父模块」去找它们的，`pub use` 不会把辅助项带过来。因此 `main.rs` /
-// `bin/export_specta.rs` 注册的是子模块全路径（如 `file_ops::scan::scan_directory`）；
+// `examples/export_specta.rs` 注册的是子模块全路径（如 `file_ops::scan::scan_directory`）；
 // 下面仅再导出类型与工具函数，供非宏调用方沿用拆分前的路径：
 pub use delete::DeleteFilesResult;
 pub use directories::RemoveDirectoryResponse;

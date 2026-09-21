@@ -74,7 +74,7 @@ tauri::generate_handler![
 ]
 ```
 
-Add to `src-tauri/src/bin/export_specta.rs`（`collect_commands!`；与上面清单保持同一顺序，便于对照维护）:
+Add to `src-tauri/examples/export_specta.rs`（`collect_commands!`；与上面清单保持同一顺序，便于对照维护）:
 
 ```rust
 commands::{module}::{command_name},

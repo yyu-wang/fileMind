@@ -5,7 +5,8 @@ description = "Desktop file organizer with RAG Q&A"
 authors = ["FileMind"]
 edition = "2021"
 rust-version = "1.97"
-# 存在 src/bin/export-specta 工具二进制，默认跑主应用（tauri dev 的 cargo run 需要）
+# 存在 examples/（export_specta / init_db）不参与默认运行；显式声明主应用，
+# 供 tauri-cli 定位打包用的可执行文件名（见 src-tauri/examples/export_specta.rs 顶部说明）
 default-run = "filemind"
 
 [lib]
@@ -87,10 +88,6 @@ print_stderr = "warn"
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
-
-[[bin]]
-name = "export-specta"
-path = "src/bin/export_specta.rs"
 
 [profile.release]
 panic = "abort"
