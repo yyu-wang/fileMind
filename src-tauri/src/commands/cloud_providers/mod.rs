@@ -19,7 +19,7 @@
 //! `#[specta::specta]` 生成的隐藏辅助项（`__cmd__*` / `__specta__fn__*`）只存在于命令
 //! 定义所在模块，宏是按「给定路径的父模块」去找它们的，`pub use` 不会把辅助项带过来
 //! （同 `commands/file_ops/mod.rs` 的说明），故 `ipc_handler.rs` /
-//! `examples/export_specta.rs` 的注册路径保持 `commands::cloud_providers::xxx` 不变。
+//! `bin/export_specta.rs` 的注册路径保持 `commands::cloud_providers::xxx` 不变。
 
 use tauri::State;
 

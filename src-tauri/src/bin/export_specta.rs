@@ -2,13 +2,9 @@
 //!
 //! 用法：
 //! ```sh
-//! cargo run --example export_specta -- --output ../src/types/ipc.ts
+//! cargo run --bin export-specta -- --output ../src/types/ipc.ts
 //! ```
 //! 未传 `--output` 时回退默认 `../src/types/ipc.ts`（保持向后兼容）。
-//!
-//! ⚠️ 必须留在 `examples/` 而非 `[[bin]]`：`tauri build` 会把**所有 bin 目标**在 release
-//! 下构建并拷进 macOS `.app` 的 `Contents/MacOS/`（实测 6.3MB 的 `export-specta` 曾随包分发），
-//! examples 不参与该拷贝路径。同类工具见同目录 `init_db.rs`。
 
 use filemind_lib::commands;
 

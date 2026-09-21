@@ -5,7 +5,7 @@
 //! 定义所在模块，宏按「给定路径的父模块」去解析它们（tauri-macros 2.6.3
 //! `command/handler.rs`），`pub use` 再导出带不过去，会报 `cannot find __cmd__xxx`。
 //!
-//! 清单与 `examples/export_specta.rs` 的 `collect_commands!` 保持同一顺序，便于对照维护。
+//! 清单与 `bin/export_specta.rs` 的 `collect_commands!` 保持同一顺序，便于对照维护。
 
 use filemind_lib::commands;
 

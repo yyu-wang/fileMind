@@ -35,7 +35,7 @@ format:
 	cd python-sidecar && source ../.venv/bin/activate && ruff format .
 
 gen-ipc:
-	cargo run --example export_specta --manifest-path src-tauri/Cargo.toml -- --output src/types/ipc.ts
+	cargo run --bin export-specta --manifest-path src-tauri/Cargo.toml -- --output src/types/ipc.ts
 
 clean:
 	rm -rf dist node_modules/.vite

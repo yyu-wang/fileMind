@@ -364,21 +364,20 @@ must be present`：app 内**没有 `Contents/_CodeSignature`**，主可执行只
   而链接器已给主可执行打上 adhoc 签名，缺 bundle 级 `_CodeSignature` 时校验必失败。
 - 改动：
   1. `tauri.conf.json` 增加 `bundle.macOS.signingIdentity = "-"`（Tauri 对 app 与主可执行
-     执行 ad-hoc 签名）；
-  2. **打包卫生**：`export-specta`（开发用 IPC 类型导出工具）由 `[[bin]]` 移到
-     `examples/export_specta.rs`——`tauri build` 会构建**所有 bin 目标**并把它们拷进
-     `Contents/MacOS/`（实测 6.3MB 的 `export-specta` 曾随包分发，9-14 Release 里也有）；
-     examples 不参与该拷贝路径。同步改 `package.json` / `Makefile` 的 `gen:ipc`（`--bin` →
-     `--example`）与 5 处指向旧路径的文档注释。
+     执行 ad-hoc 签名）。
 - 验证（本机 `tauri build --bundles app`，2m23s）：
   - `Signing with identity "-"` 出现，`Contents/_CodeSignature/CodeResources` 生成（2MB）
   - `codesign --verify --deep --strict` → **valid on disk / satisfies its Designated Requirement**
     （修复前是 `code has no resources …` 那条报错）
-  - `Contents/MacOS/` 只剩 `filemind`（`export-specta` 已不再随包）
   - `spctl --assess` 仍 **rejected** —— ad-hoc 签名不被 Gatekeeper 信任，用户需右键 → 打开；
     要让下载者双击即开，仍需 Developer ID 签名 + 公证（T6 人工清单，需 Apple 开发者账号）
   - 实跑冒烟：bundle 内 sidecar 正常拉起、`/health` 200、`sidecar.startup_ms = 1452ms`
-  - `npm run gen:ipc` 走 example 后生成的 `src/types/ipc.ts` **零 diff**（行为等价）
+- **未做的打包卫生项（建议另立任务）**：`Contents/MacOS/` 里仍会带一个 6.3MB 的开发工具
+  `export-specta`（`tauri build` 会构建**所有 bin 目标**并拷进 bundle，9-14 的 Release 里也有）。
+  本次曾把它移到 `examples/export_specta.rs` 规避，但 **Windows CI 上 `cargo run --example`
+  起不来**：`exit code: 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`（同一个二进制当 `[[bin]]`
+  时正常，PR #21 实测），已撤回该部分。后续可选方案：给该 bin 加 `required-features` 门控
+  （`tauri build` 不启用该 feature → cargo 不构建 → 不拷贝），或拆成独立 workspace 成员包。
 
 ---
 
