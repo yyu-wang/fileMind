@@ -350,6 +350,37 @@
 
 ---
 
+### S1：macOS 包「已损坏」修复（ad-hoc 签名）+ 打包卫生（2026-09-21）
+
+- 背景：用户下载 CI 出的 `FileMind_1.0.0-1_aarch64.dmg` 装完打开，macOS 报**安装包已损坏**。
+- 排查（本机复现 + 对照）：
+  1. 下载物本身完好——zip 无错、`hdiutil verify` 报 dmg 校验 VALID；
+  2. 挂载 dmg 后 `codesign --verify` 报 `code has no resources but signature indicates they
+must be present`：app 内**没有 `Contents/_CodeSignature`**，主可执行只有 arm64 链接器
+     自动打的 `adhoc, linker-signed` 签名——这个组合让 Gatekeeper 判成「已损坏」，而不是可
+     右键绕过的「未验证开发者」；
+  3. **对照 9-14 的 Release dmg：状态完全相同** → 一直如此，非本次引入。
+- 根因：`bundle.macOS.signingIdentity` 未配置，Tauri 跳过签名（CI 无 Developer ID 证书）；
+  而链接器已给主可执行打上 adhoc 签名，缺 bundle 级 `_CodeSignature` 时校验必失败。
+- 改动：
+  1. `tauri.conf.json` 增加 `bundle.macOS.signingIdentity = "-"`（Tauri 对 app 与主可执行
+     执行 ad-hoc 签名）。
+- 验证（本机 `tauri build --bundles app`，2m23s）：
+  - `Signing with identity "-"` 出现，`Contents/_CodeSignature/CodeResources` 生成（2MB）
+  - `codesign --verify --deep --strict` → **valid on disk / satisfies its Designated Requirement**
+    （修复前是 `code has no resources …` 那条报错）
+  - `spctl --assess` 仍 **rejected** —— ad-hoc 签名不被 Gatekeeper 信任，用户需右键 → 打开；
+    要让下载者双击即开，仍需 Developer ID 签名 + 公证（T6 人工清单，需 Apple 开发者账号）
+  - 实跑冒烟：bundle 内 sidecar 正常拉起、`/health` 200、`sidecar.startup_ms = 1452ms`
+- **未做的打包卫生项（建议另立任务）**：`Contents/MacOS/` 里仍会带一个 6.3MB 的开发工具
+  `export-specta`（`tauri build` 会构建**所有 bin 目标**并拷进 bundle，9-14 的 Release 里也有）。
+  本次曾把它移到 `examples/export_specta.rs` 规避，但 **Windows CI 上 `cargo run --example`
+  起不来**：`exit code: 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`（同一个二进制当 `[[bin]]`
+  时正常，PR #21 实测），已撤回该部分。后续可选方案：给该 bin 加 `required-features` 门控
+  （`tauri build` 不启用该 feature → cargo 不构建 → 不拷贝），或拆成独立 workspace 成员包。
+
+---
+
 ### W3：Windows 安装包配置补齐（2026-09-14）
 
 - 背景：发版链路（W1/W2）打通后，`bundle.windows` 段仍为空 —— WebView2 安装方式、NSIS

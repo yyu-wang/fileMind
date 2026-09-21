@@ -59,6 +59,9 @@
       "../filemind/binaries/filemind-sidecar/": "sidecar"
     },
     "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
